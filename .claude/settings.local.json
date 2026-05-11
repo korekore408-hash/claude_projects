@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:tenki.jp)",
+      "WebFetch(domain:weather.yahoo.co.jp)"
+    ]
+  }
+}
