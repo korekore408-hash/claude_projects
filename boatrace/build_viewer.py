@@ -39,6 +39,8 @@ def main():
     ap.add_argument("--pred", default="predict_win.csv")
     ap.add_argument("--flags", default="race_flags.csv")
     ap.add_argument("--out", default="viewer.html")
+    ap.add_argument("--last-days", type=int, default=0,
+                    help="直近N日だけ出力（0=全期間）。iPhone表示はファイル肥大を避けて 14〜30 推奨")
     args = ap.parse_args()
 
     hist = {(r["race_id"], r["枠番"]): r for r in load(args.hist)}
@@ -112,6 +114,13 @@ def main():
     for race in data:
         race["boats"].sort(key=lambda b: b["枠"])
 
+    # iPhone 表示はファイルが肥大すると開けないので直近 N 日に絞れるようにする。
+    if args.last_days and data:
+        from datetime import date as _date
+        all_dates = sorted({r["date"] for r in data})
+        keep = set(all_dates[-args.last_days:])
+        data = [r for r in data if r["date"] in keep]
+
     n_races = len(data)
     n_rows = sum(len(r["boats"]) for r in data)
     dmin = min(r["date"] for r in data)
@@ -140,6 +149,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body { font-family: "Segoe UI", "Yu Gothic UI", system-ui, sans-serif;
          margin: 0; padding: 0 0 40px; background: #0f1115; color: #e6e6e6; }
   header { padding: 16px 20px; background: #161a22; border-bottom: 1px solid #2a2f3a;
@@ -147,12 +157,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   h1 { font-size: 18px; margin: 0 0 4px; }
   .sub { font-size: 12px; color: #9aa3b2; }
   .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+  /* font-size 16px 以上で iOS の入力時オートズームを抑止 */
   select { background: #0f1115; color: #e6e6e6; border: 1px solid #39404d;
-           border-radius: 6px; padding: 6px 8px; font-size: 14px; }
+           border-radius: 6px; padding: 8px 10px; font-size: 16px; }
   label { font-size: 12px; color: #9aa3b2; display: flex; flex-direction: column; gap: 3px; }
   .meta { font-size: 13px; color: #c9d1dc; margin: 14px 20px 6px; }
   .meta b { color: #fff; }
-  .wrap { padding: 0 20px; overflow-x: auto; }
+  .wrap { padding: 0 20px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .scrollhint { display:none; font-size:11px; color:#7e8796; margin:6px 20px 0; }
   table { border-collapse: collapse; width: 100%; min-width: 1000px; font-size: 13px; }
   th, td { border: 1px solid #2a2f3a; padding: 5px 8px; text-align: right; white-space: nowrap; }
   th { background: #1b212b; color: #b9c2d0; position: sticky; top: 0; font-weight: 600; }
@@ -187,6 +199,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .exclude { margin:8px 20px 0; padding:8px 12px; background:#2a2015; border:1px solid #6b5a1a;
              border-radius:6px; font-size:13px; color:#f0c674; }
   .exclude b { color:#ffd082; }
+
+  /* ───────── iPhone / 狭幅画面向け ───────── */
+  @media (max-width:600px) {
+    body { padding-bottom: 24px; }
+    header { padding: 10px 12px; }
+    h1 { font-size: 16px; }
+    h1 .sub { display:block; margin-top:2px; }
+    .sub { font-size: 11px; }
+    /* セレクタは3つを横並びのまま大きめタップ領域に */
+    .controls { gap: 8px; margin-top: 10px; }
+    .controls label { flex: 1 1 0; }
+    .controls select { width: 100%; }
+    .meta, .legend, .comment, .result, .exclude { margin-left: 12px; margin-right: 12px; }
+    .meta { font-size: 12px; }
+    /* 予想カードを主役に（1カラム・大きめ） */
+    .pred { margin: 6px 12px 4px; gap: 10px; }
+    .prow { font-size: 14px; }
+    /* 特徴量テーブルは横スクロール。フォント/余白を詰めて指スクロール前提 */
+    .wrap { padding: 0 12px; }
+    table { min-width: 760px; font-size: 12px; }
+    th, td { padding: 4px 6px; }
+    .scrollhint { display:block; }
+  }
 </style>
 </head>
 <body>
@@ -205,6 +240,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div class="comment" id="comment"></div>
 <div class="result" id="result"></div>
 <div class="pred" id="pred"></div>
+<div class="scrollhint">↔ 表は横スクロールできます</div>
 <div class="wrap"><table id="tbl"></table></div>
 <div class="legend">
   ※ <b>順位</b>系（win_rank/motor_rank/st_rank）は 1=最上位、黄色字が 1 位。<b>st_rank</b> は平均STが小さいほど上位。<br>

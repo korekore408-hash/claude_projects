@@ -37,13 +37,39 @@ from collections import defaultdict
 
 from features_player_history import VENUE_CODE
 
-# 使用する連続特徴（標準化対象）。lane ダミーは別途 0/1 で追加。
-# venue_lane1_winrate はレース内で全艇共通＝条件付きロジットでは打ち消される
-# ため学習には入れない（表示用に CSV/ビューアには残す）。
+# 候補となる全連続特徴 → どの CSV の列から引くか（"hist" or "rel"）。
+# 条件付きロジット（レース内 softmax）ではレース内で全艇共通の特徴は打ち消される
+# ため学習に入れない: venue_lane1_winrate / field_strength_std（表示用に CSV には残す）。
+FEATURE_SOURCE = {
+    # 履歴 CSV（as-of）
+    "lane_win_rate": "hist", "lane_top3_rate": "hist",
+    "local_win_rate": "hist", "local_top3_rate": "hist",
+    "flying_rate": "hist", "st_avg": "hist", "st_std": "hist",
+    "recent30_winrate": "hist", "recent30_avgrank": "hist",
+    "recentN_winrate": "hist", "recentN_avgrank": "hist",
+    "venue_own_lane_winrate": "hist",
+    "motor_intrinsic_win": "hist", "motor_intrinsic_top2": "hist",
+    # レース内相対 CSV（B-file 印字 + as-of 派生）
+    "class_ord": "rel", "win_rate_national": "rel", "motor_top2_rate": "rel",
+    "class_gap": "rel", "winrate_rank_in_race": "rel",
+    "winrate_diff_top": "rel", "motor_rank_in_race": "rel",
+    "st_rank_in_race": "rel",
+    # B-file 印字値（公式の長期集計＝母数大）
+    "top2_rate_national": "rel", "win_rate_local": "rel", "top2_rate_local": "rel",
+    "boat_top2_rate": "rel", "weight": "rel", "age": "rel",
+}
+
+# 既定の連続特徴（標準化対象）。lane ダミーは別途 0/1 で追加。--features で上書き可。
+# experiment_features.py の貪欲前進選択（2025/8 split, logloss最小化）で得た暫定セット。
+# ※ test漏れを含む選択なので、データ拡充後（2026年分追加）に再選定する前提。
+#   旧 base 9特徴に B-file 印字値（age/体重/当地2率）と相対量を加えて
+#   1着的中 0.564→0.578 / logloss 1.220→1.205（test 2025/8/22以降）。
 CONT_FEATURES = [
     "class_ord", "win_rate_national", "motor_top2_rate",
     "st_avg", "lane_win_rate", "recent30_winrate",
     "venue_own_lane_winrate", "motor_intrinsic_win", "motor_intrinsic_top2",
+    "age", "top2_rate_local", "motor_rank_in_race", "weight",
+    "local_win_rate", "st_std", "winrate_rank_in_race", "winrate_diff_top",
 ]
 
 
@@ -55,7 +81,8 @@ def to_float(s):
 
 
 def load_joined(hist_path, rel_path):
-    """history と relative を (race_id, 枠) で結合して 1 行 = 1 艇の dict 群にする。"""
+    """history と relative を (race_id, 枠) で結合して 1 行 = 1 艇の dict 群にする。
+    FEATURE_SOURCE の全候補列を読み込む（実際にモデルへ入れる列は CONT_FEATURES で選択）。"""
     hist = {}
     with open(hist_path, encoding="cp932") as f:
         for r in csv.DictReader(f):
@@ -64,22 +91,17 @@ def load_joined(hist_path, rel_path):
     with open(rel_path, encoding="cp932") as f:
         for r in csv.DictReader(f):
             h = hist.get((r["race_id"], r["枠番"]), {})
-            rows.append({
+            row = {
                 "race_id": r["race_id"],
                 "date": r["日付"],
                 "枠": int(r["枠番"]),
                 "登番": r["登番"],
                 "選手名": r["選手名"],
-                "class_ord": to_float(r["class_ord"]),
-                "win_rate_national": to_float(r["win_rate_national"]),
-                "motor_top2_rate": to_float(r["motor_top2_rate"]),
-                "st_avg": to_float(h.get("st_avg")),
-                "lane_win_rate": to_float(h.get("lane_win_rate")),
-                "recent30_winrate": to_float(h.get("recent30_winrate")),
-                "venue_own_lane_winrate": to_float(h.get("venue_own_lane_winrate")),
-                "motor_intrinsic_win": to_float(h.get("motor_intrinsic_win")),
-                "motor_intrinsic_top2": to_float(h.get("motor_intrinsic_top2")),
-            })
+            }
+            for feat, src in FEATURE_SOURCE.items():
+                col = h.get(feat) if src == "hist" else r.get(feat)
+                row[feat] = to_float(col)
+            rows.append(row)
     return rows
 
 
@@ -403,8 +425,21 @@ def main():
     ap.add_argument("--warmup-days", type=int, default=7, help="walkforward: 種学習の日数")
     ap.add_argument("--iters", type=int, default=300)
     ap.add_argument("--refit-iters", type=int, default=40, help="walkforward: 日次再フィット反復")
+    ap.add_argument("--features", default=None,
+                    help="使用する連続特徴をカンマ区切りで上書き（アブレーション用）。"
+                         "例: --features class_ord,win_rate_national,st_avg")
     ap.add_argument("--out", default="predict_win.csv")
     args = ap.parse_args()
+
+    # --features で連続特徴を差し替え（FEATURE_SOURCE にある名前のみ許可）。
+    global CONT_FEATURES
+    if args.features:
+        sel = [f.strip() for f in args.features.split(",") if f.strip()]
+        bad = [f for f in sel if f not in FEATURE_SOURCE]
+        if bad:
+            ap.error(f"未知の特徴: {bad}（候補: {sorted(FEATURE_SOURCE)}）")
+        CONT_FEATURES = sel
+        print(f"[features] {len(sel)}個: {sel}")
 
     if args.mode == "walkforward":
         rows = load_joined(args.hist, args.rel)

@@ -172,11 +172,18 @@ def save_csv(rows: list, path: str):
 
 
 def main():
-    start = datetime.datetime.strptime(START_DATE, "%Y-%m-%d").date()
-    end = datetime.datetime.strptime(END_DATE, "%Y-%m-%d").date()
+    import argparse
+    ap = argparse.ArgumentParser(description="期間指定でB/Kを取得・解凍・txt保存")
+    ap.add_argument("--start", default=START_DATE, help="開始日 YYYY-MM-DD（含む）")
+    ap.add_argument("--end", default=END_DATE, help="終了日 YYYY-MM-DD（含む）")
+    ap.add_argument("--which", default=WHICH, choices=["program", "results", "both"])
+    args = ap.parse_args()
+
+    start = datetime.datetime.strptime(args.start, "%Y-%m-%d").date()
+    end = datetime.datetime.strptime(args.end, "%Y-%m-%d").date()
     os.makedirs(SAVE_DIR, exist_ok=True)
 
-    types = ["program", "results"] if WHICH == "both" else [WHICH]
+    types = ["program", "results"] if args.which == "both" else [args.which]
     print(f"期間: {start} 〜 {end} （{(end-start).days+1} 日間） / 対象: {types}")
     print("=" * 60)
 

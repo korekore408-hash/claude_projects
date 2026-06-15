@@ -192,7 +192,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .sub { font-size:12px; color:#9aa3b2; }
   a.link { color:#6ea8fe; text-decoration:none; font-size:13px; }
   .controls { margin-top:12px; }
-  select { background:#0f1115; color:#e6e6e6; border:1px solid #39404d; border-radius:6px; padding:6px 8px; font-size:14px; }
+  select { background:#0f1115; color:#e6e6e6; border:1px solid #39404d; border-radius:6px; padding:8px 10px; font-size:16px; }
   section { padding:0 24px; }
   h2 { font-size:14px; color:#b9c2d0; margin:22px 0 10px; font-weight:600; }
   .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; max-width:760px; }
@@ -212,6 +212,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .num { position:relative; font-variant-numeric:tabular-nums; }
   .grp2 { color:#7fb2ff; } .grp3 { color:#ffd082; }
   .note { font-size:11px; color:#7e8796; margin:14px 24px; line-height:1.7; max-width:920px; }
+  html { -webkit-text-size-adjust:100%; }
+  .tblwrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  /* ───────── iPhone / 狭幅画面向け ───────── */
+  @media (max-width:600px) {
+    header { padding:12px 14px; }
+    h1 { font-size:17px; }
+    section { padding:0 14px; }
+    .note { margin:14px 14px; }
+    .cards { gap:8px; }
+    .mc { padding:10px 12px; }
+    .mc .val { font-size:22px; }
+    table { font-size:12px; min-width:560px; }
+    th,td { padding:6px 7px; }
+  }
 </style>
 </head>
 <body>
@@ -231,6 +245,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="cards" id="triCards"></div>
 
   <h2>競艇場ごとの的中率</h2>
+  <div class="tblwrap">
   <table id="venueTbl">
     <thead><tr>
       <th class="k" data-sort="name">会場</th>
@@ -244,6 +259,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </tr></thead>
     <tbody></tbody>
   </table>
+  </div>
 </section>
 
 <div class="note">

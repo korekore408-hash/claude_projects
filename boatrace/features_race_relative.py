@@ -108,6 +108,13 @@ def main():
                     "win_rate_national": to_float(r["全国勝率"]),
                     "motor_top2_rate": to_float(r["モーター2率"]),
                     "st_avg": st_avg_by.get((race_id, waku)),
+                    # B-file 印字値（公式の長期集計＝母数大・リークなし）。
+                    "top2_rate_national": to_float(r.get("全国2率")),
+                    "win_rate_local": to_float(r.get("当地勝率")),
+                    "top2_rate_local": to_float(r.get("当地2率")),
+                    "boat_top2_rate": to_float(r.get("ボート2率")),
+                    "weight": to_float(r.get("体重")),
+                    "age": to_float(r.get("年齢")),
                 }
                 races[race_id].append(entry)
                 race_meta[race_id] = (f"{d:%Y-%m-%d}", code, venue, race_no)
@@ -149,6 +156,12 @@ def main():
                 "st_avg": e["st_avg"],
                 "st_rank_in_race": rank_asc(sts, e["st_avg"]),
                 "field_strength_std": field_std,
+                "top2_rate_national": e["top2_rate_national"],
+                "win_rate_local": e["win_rate_local"],
+                "top2_rate_local": e["top2_rate_local"],
+                "boat_top2_rate": e["boat_top2_rate"],
+                "weight": e["weight"],
+                "age": e["age"],
             })
 
     if not out_rows:
