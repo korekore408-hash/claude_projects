@@ -266,6 +266,8 @@ const selRace = document.getElementById('selRace');
 
 const dates = [...new Set(DATA.map(r => r.date))].sort();
 for (const d of dates) selDate.add(new Option(d, d));
+// メイン画面は当日（データ最新日）を既定表示にする。
+if (dates.length) selDate.value = dates[dates.length - 1];
 
 function fillVenues() {
   const d = selDate.value;
