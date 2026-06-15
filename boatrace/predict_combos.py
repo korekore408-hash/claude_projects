@@ -49,6 +49,7 @@ FEATURE_SOURCE = {
     "recentN_winrate": "hist", "recentN_avgrank": "hist",
     "venue_own_lane_winrate": "hist",
     "motor_intrinsic_win": "hist", "motor_intrinsic_top2": "hist",
+    "wakunari_rate": "hist", "maezuke_rate": "hist",
     # レース内相対 CSV（B-file 印字 + as-of 派生）
     "class_ord": "rel", "win_rate_national": "rel", "motor_top2_rate": "rel",
     "class_gap": "rel", "winrate_rank_in_race": "rel",

@@ -49,9 +49,13 @@ def main():
                           "winrate_rank_in_race", "winrate_diff_top"]
     history_rich = improved17 + ["lane_top3_rate", "recentN_winrate",
                                  "flying_rate", "local_top3_rate"]
+    plus_wakunari = improved17 + ["wakunari_rate"]
+    plus_shinnyu = improved17 + ["wakunari_rate", "maezuke_rate"]
 
     sets = [("base9", base9), ("printed14", printed),
-            ("improved17", improved17), ("history_rich21", history_rich)]
+            ("improved17", improved17), ("history_rich21", history_rich),
+            ("imp17+wakunari", plus_wakunari),
+            ("imp17+waku+maezuke", plus_shinnyu)]
 
     print(f"\n=== set comparison (train<={args.train_end} / test_after) ===")
     print(f"{'set':16} {'nfeat':>5} {'win_acc':>8} {'exacta':>7} "

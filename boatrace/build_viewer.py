@@ -69,6 +69,8 @@ def main():
             "code": r["場コード"],
             "no": int(r["レース"]),
             "field_std": num(r["field_strength_std"]),
+            "maezuke_flag": int(r.get("field_maezuke_flag", 0) or 0),
+            "maezuke_max": num(r.get("maezuke_max")),
             "excluded": int(fl.get("excluded", 0) or 0),
             "reason": fl.get("reason", ""),
             "boats": [],
@@ -97,6 +99,8 @@ def main():
             "mintr": num(h.get("motor_intrinsic_win")),
             "mintr_n": num(h.get("motor_intrinsic_n")),
             "flying": num(h.get("flying_rate")),
+            "wakunari": num(h.get("wakunari_rate")),
+            "maezuke": num(h.get("maezuke_rate")),
             "st_avg": num(h.get("st_avg")),
             "st_std": num(h.get("st_std")),
             "r30_win": num(h.get("recent30_winrate")),
@@ -199,6 +203,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .exclude { margin:8px 20px 0; padding:8px 12px; background:#2a2015; border:1px solid #6b5a1a;
              border-radius:6px; font-size:13px; color:#f0c674; }
   .exclude b { color:#ffd082; }
+  .maezuke { margin:8px 20px 0; padding:8px 12px; background:#2a1f2c; border:1px solid #6b4a6b;
+             border-radius:6px; font-size:13px; color:#e0b0e0; }
+  .maezuke b { color:#f0c0f0; }
 
   /* ───────── iPhone / 狭幅画面向け ───────── */
   @media (max-width:600px) {
@@ -237,6 +244,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="meta" id="meta"></div>
 <div class="exclude" id="exclude"></div>
+<div class="maezuke" id="maezuke"></div>
 <div class="comment" id="comment"></div>
 <div class="result" id="result"></div>
 <div class="pred" id="pred"></div>
@@ -285,6 +293,7 @@ const COLS = [
   ['枠成績（as-of 5.1）', [['枠勝率','lane_win'],['枠3連','lane_top3'],['n','lane_n','i']]],
   ['当地', [['当地勝率','local_win'],['n','local_n','i']]],
   ['場×枠/機力（5.3/5.2）', [['場枠1率','venue1'],['場自枠率','vown'],['機力素','mintr'],['n','mintr_n','i']]],
+  ['進入（as-of 5.4）', [['枠なり率','wakunari'],['前づけ率','maezuke']]],
   ['調子', [['F率','flying'],['30日勝率','r30_win'],['30日平着','r30_rank'],['20走勝率','rN_win']]],
   ['母数', [['総走','n_used','i'],['','low','flag']]],
 ];
@@ -296,6 +305,7 @@ function render() {
     `<b>${race.date}</b> ・ <b>${race.venue}</b>（${race.code}） <b>${race.no}R</b> ・ race_id <b>${race.id}</b> ・ field_strength_std <b>${f(race.field_std)}</b>`;
 
   renderExclude(race);
+  renderMaezuke(race);
   renderComment(race);
   renderResult(race);
   renderPred(race);
@@ -362,6 +372,19 @@ function renderExclude(race) {
     el.style.display = 'none';
     el.innerHTML = '';
   }
+}
+
+function renderMaezuke(race) {
+  const el = document.getElementById('maezuke');
+  if (!race.maezuke_flag) { el.style.display = 'none'; return; }
+  // 前づけ常習者（枠2以上 maezuke_rate>=0.15）を名指しで表示。
+  const cands = race.boats
+    .filter(b => b['枠'] >= 2 && typeof b.maezuke === 'number' && b.maezuke >= 0.15)
+    .sort((a, b) => b.maezuke - a.maezuke);
+  const who = cands.map(b => `${b['枠']}号艇 ${b['名']}（前づけ率${(b.maezuke*100).toFixed(0)}%）`).join('・');
+  el.style.display = '';
+  el.innerHTML = `<b>⚠ 隊形警戒</b> ― ${who} が前づけ傾向。確定進入が枠なりから崩れ、`
+    + `枠番ベースの予想が当てにくいレースです（直前情報なしモデルの構造的弱点）。`;
 }
 
 function renderComment(race) {

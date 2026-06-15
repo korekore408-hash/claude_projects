@@ -69,14 +69,18 @@ def main():
     ap.add_argument("--out", default="features_race_relative.csv", help="出力 CSV パス")
     args = ap.parse_args()
 
-    # ── st_avg を (race_id, 枠) で引けるようにする ────────────────────
+    # ── st_avg / 進入挙動 を (race_id, 枠) で引けるようにする ──────────
     st_avg_by = {}
+    maezuke_by = {}   # (race_id,枠) -> (maezuke_rate, course_n)
     try:
         with open(args.hist, encoding="cp932") as f:
             for r in csv.DictReader(f):
-                st_avg_by[(r["race_id"], r["枠番"])] = to_float(r["st_avg"])
+                key = (r["race_id"], r["枠番"])
+                st_avg_by[key] = to_float(r["st_avg"])
+                maezuke_by[key] = (to_float(r.get("maezuke_rate")),
+                                   to_float(r.get("course_n")))
     except FileNotFoundError:
-        print(f"! 履歴 CSV が無いので st_rank_in_race は空になります: {args.hist}")
+        print(f"! 履歴 CSV が無いので st_rank_in_race 等は空になります: {args.hist}")
 
     # ── B-file を読み、レースごとに 6 艇をまとめる ───────────────────
     bpaths = sorted(glob.glob(args.b_glob), key=file_date_key)
@@ -115,6 +119,8 @@ def main():
                     "boat_top2_rate": to_float(r.get("ボート2率")),
                     "weight": to_float(r.get("体重")),
                     "age": to_float(r.get("年齢")),
+                    "maezuke_rate": maezuke_by.get((race_id, waku), (None, None))[0],
+                    "course_n": maezuke_by.get((race_id, waku), (None, None))[1],
                 }
                 races[race_id].append(entry)
                 race_meta[race_id] = (f"{d:%Y-%m-%d}", code, venue, race_no)
@@ -132,6 +138,16 @@ def main():
         max_win = max((w for w in winrates if w is not None), default=None)
         win_vals = [w for w in winrates if w is not None]
         field_std = statistics.pstdev(win_vals) if len(win_vals) >= 2 else None
+
+        # 5.4 field_maezuke_flag: 枠2以上に前づけ常習者（maezuke_rate>=閾値, 母数十分）が
+        # いれば隊形が崩れやすい＝予測難度が上がる、というレース単位の警戒シグナル。
+        # 枠1は前づけ不可なので判定対象外。
+        MZ_TH, MZ_MIN_N = 0.15, 30
+        mz_cands = [e["maezuke_rate"] for e in ents
+                    if int(e["枠番"]) >= 2 and e["maezuke_rate"] is not None
+                    and e["course_n"] is not None and e["course_n"] >= MZ_MIN_N]
+        maezuke_max = max(mz_cands) if mz_cands else None
+        field_maezuke_flag = 1 if (maezuke_max is not None and maezuke_max >= MZ_TH) else 0
 
         date_str, code, venue, race_no = race_meta[race_id]
         for e in ents:
@@ -162,6 +178,9 @@ def main():
                 "boat_top2_rate": e["boat_top2_rate"],
                 "weight": e["weight"],
                 "age": e["age"],
+                "maezuke_rate": e["maezuke_rate"],
+                "field_maezuke_flag": field_maezuke_flag,
+                "maezuke_max": maezuke_max,
             })
 
     if not out_rows:

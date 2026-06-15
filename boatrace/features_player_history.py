@@ -150,6 +150,8 @@ def main():
     total_races = defaultdict(int)              # 登番 -> 完走数（is_low_sample 用）
     starts = defaultdict(int)                   # 登番 -> 出走数（欠場Kを除く。flying_rate 分母）
     flying = defaultdict(int)                   # 登番 -> F（フライング）回数
+    # 5.4 進入: 枠なり率・前づけ率（K-file の進入コース from as-of 集計）
+    course = defaultdict(lambda: [0, 0, 0])     # 登番 -> [進入判明数, 枠なり数, 前づけ数]
     # 5.3 場特徴: 場×枠の as-of 1着率（venue_lane1_winrate = 場×枠1）
     venue_lane = defaultdict(lambda: [0, 0])    # (場コード, 枠) -> [出走数, 勝数]
     # 5.2 モーター: 場×モーター番号で全乗り手の成績を集計（腕と機力の分離）
@@ -184,6 +186,11 @@ def main():
             # flying_rate（F回数 / 出走数。出走は欠場を除く）
             sc = starts[toban]
             flying_rate = (flying[toban] / sc) if sc else None
+
+            # 5.4 wakunari_rate / maezuke_rate（過去の進入挙動。as-of。当日の進入は使わない）
+            cn, cw, cm = course[toban]
+            wakunari_rate = (cw / cn) if cn else None
+            maezuke_rate = (cm / cn) if cn else None
 
             # 5.3 venue_lane1_winrate（場×枠1の1着率）・venue_own_lane（場×自枠）
             v1n, v1w = venue_lane[(code, 1)]
@@ -245,6 +252,9 @@ def main():
                 "flying_rate": flying_rate,
                 "flying_n": flying[toban],
                 "starts_n": sc,
+                "wakunari_rate": wakunari_rate,
+                "maezuke_rate": maezuke_rate,
+                "course_n": cn,
                 "venue_lane1_winrate": venue_lane1_winrate,
                 "venue_own_lane_winrate": venue_own_lane_winrate,
                 "venue_lane_n": von,
@@ -313,6 +323,17 @@ def main():
                 st[toban][1] += stv
                 st[toban][2] += stv * stv
             except (ValueError, KeyError):
+                pass
+
+            # 5.4 進入コース（finish 行のみ。枠なり=進入==艇番 / 前づけ=進入<艇番）
+            try:
+                shin = int(r["進入コース"])
+                course[toban][0] += 1
+                if shin == waku:
+                    course[toban][1] += 1
+                elif shin < waku:
+                    course[toban][2] += 1
+            except (ValueError, KeyError, TypeError):
                 pass
 
             recent[toban].append((d, rank, is_win))
