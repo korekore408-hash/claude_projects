@@ -51,12 +51,15 @@ def main():
     run(["race_flags.py"])
     # 4. 予測（train<=260430 で学習し全レース出力。当日は finish 無し＝予想のみ）
     run(["predict_combos.py", "--mode", "split", "--train-end", "260430"])
-    # 5,6. ページ生成
+    # 5-7. ページ生成（HTMLアプリ ＋ 携帯どこでも用PDF ＋ 詳細ビューア）
     run(["build_today.py", "--date", today.isoformat()])
+    run(["build_today_pdf.py", "--date", today.isoformat()])
     run(["build_viewer.py", "--last-days", "14"])
 
-    print(f"\n○ 完了: today.html（当日予想）/ viewer.html（直近14日詳細）")
-    print("  携帯で見るには today.html を共有するか、daily 実行後にアーティファクト化する。")
+    print(f"\n○ 完了:")
+    print("  today.html … 当日予想アプリ（自宅LAN配信や保存用）")
+    print("  today.pdf  … 携帯でどこでも開ける当日予想（OneDrive同期で外出先もOK）")
+    print("  viewer.html… 直近14日の詳細ビューア（PC向け）")
 
 
 if __name__ == "__main__":
