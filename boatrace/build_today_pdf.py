@@ -19,7 +19,7 @@ import csv
 import itertools
 
 from fpdf import FPDF
-from build_today import venue_stats
+from build_today import venue_stats, _pl_rank
 
 FONT = "C:/Windows/Fonts/msgothic.ttc"
 LANE = {1: ((255, 255, 255), 0), 2: ((30, 30, 30), 1), 3: ((226, 59, 59), 1),
@@ -102,15 +102,21 @@ def main():
             continue
         s = [rc["b"][w][1] for w in range(1, 7)]
         fins = [rc["b"][w][2] for w in range(1, 7)]
-        done = all(f is not None and f >= 1 for f in fins)
-        hm = max(range(6), key=lambda i: s[i])
-        order = None
+        # 完走艇だけで 1-2-3着 を決める（F/失格混在でも結果あり扱い）。
+        order = sorted([w for w in range(1, 7)
+                        if fins[w - 1] is not None and fins[w - 1] >= 1],
+                       key=lambda w: fins[w - 1])
+        done = len(order) >= 1 and fins[order[0] - 1] == 1
+        hm = max(range(6), key=lambda i: s[i]) + 1
+        hit = None
         if done:
-            order = [w + 1 for w in sorted(range(6), key=lambda i: fins[i])]
-        rec = {"no": rc["no"], "mz": rc["mz"], "hm": hm + 1,
-               "nm": rc["b"][hm + 1][0], "pw": round(s[hm] / 10),
+            hit = (hm == order[0]) \
+                or (len(order) >= 2 and _pl_rank(s, 2, tuple(order[:2])) <= 5) \
+                or (len(order) >= 3 and _pl_rank(s, 3, tuple(order[:3])) <= 10)
+        rec = {"no": rc["no"], "mz": rc["mz"], "hm": hm,
+               "nm": rc["b"][hm][0], "pw": round(s[hm - 1] / 10),
                "ex": pl_top1(s, 2), "tri": pl_top1(s, 3),
-               "done": done, "win": order[0] if done else None}
+               "done": done, "win": order[0] if done else None, "hit": hit}
         by_day[rc["d"]].setdefault((rc["c"], rc["v"]), []).append(rec)
     for d in by_day:
         for v in by_day[d].values():
@@ -134,7 +140,7 @@ def main():
         pdf.set_x(X["tri"]); pdf.cell(24, 5, "3連単")
         if past:
             pdf.set_x(X["res"]); pdf.cell(18, 5, "結果")
-            pdf.set_x(X["ok"]); pdf.cell(16, 5, "◎的中")
+            pdf.set_x(X["ok"]); pdf.cell(16, 5, "的中")
         pdf.set_x(X["mz"]); pdf.cell(10, 5, "警", new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(0, 0, 0)
 
@@ -148,7 +154,7 @@ def main():
         pdf.set_font("jp", "", 8)
         pdf.set_text_color(110, 110, 110)
         pdf.cell(0, 5, "直前情報なしモデル（朝の出走表のみ）/ ◎=本命 / 警=前づけ警戒"
-                       + ("（○=本命的中 ×=外れ）" if past else ""),
+                       + ("（的中=本命1着 / 2連単top5 / 3連単top10 圏内）" if past else ""),
                  new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(0, 0, 0)
 
@@ -172,10 +178,10 @@ def main():
                 pdf.set_xy(X["tri"], y0); pdf.cell(24, 6, "-".join(map(str, r["tri"])) if r["tri"] else "")
                 if r["done"]:
                     wkbox(pdf, X["res"], r["win"], y0)
-                    hit = (r["win"] == r["hm"])
+                    hit = r["hit"]
                     pdf.set_xy(X["ok"], y0)
                     pdf.set_text_color(*(0, 150, 100) if hit else (200, 70, 70))
-                    pdf.cell(16, 6, "○ 的中" if hit else "×")
+                    pdf.cell(16, 6, "的中" if hit else "×")
                     pdf.set_text_color(0, 0, 0)
                 if r["mz"]:
                     pdf.set_text_color(200, 120, 0)

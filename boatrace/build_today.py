@@ -112,10 +112,15 @@ def venue_stats(rel, pred, since):
             continue
         s = [rc["b"][w][0] for w in range(1, 7)]
         fins = [rc["b"][w][1] for w in range(1, 7)]
-        if any(x is None for x in s) or any(f is None or f < 1 for f in fins):
+        if any(x is None for x in s):
+            continue
+        # 完走艇（着順あり）だけで 1-2-3着 を決める。F/失格混在でも 3着まで分かれば集計。
+        order = sorted([w for w in range(1, 7)
+                        if fins[w - 1] is not None and fins[w - 1] >= 1],
+                       key=lambda w: fins[w - 1])
+        if len(order) < 3 or fins[order[0] - 1] != 1:
             continue
         hm = max(range(6), key=lambda i: s[i]) + 1
-        order = [w + 1 for w in sorted(range(6), key=lambda i: fins[i])]
         er = _pl_rank(s, 2, tuple(order[:2]))
         tr = _pl_rank(s, 3, tuple(order[:3]))
         a = agg[rc["c"]]
@@ -262,7 +267,6 @@ HTML = r"""<!DOCTYPE html>
   .res{font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:4px}
   .reslab{font-size:10px;color:#6b7280}
   .ok{color:#43c59e;font-weight:700}.ng{color:#e06b6b}
-  .hit2{color:#5dc7e0;font-weight:700}.hit3{color:#7fb2ff;font-weight:700}
   .chev{color:#5b6472;font-size:16px}
   .back{display:inline-flex;align-items:center;gap:4px;font-size:14px;color:#6ea8fe;background:transparent;border:none;cursor:pointer;padding:8px 0}
   .dh{font-size:19px;font-weight:700;margin:2px 0}
@@ -312,7 +316,7 @@ const root=document.getElementById('app');
 const mmdd=s=>s.slice(5);
 function chip(w,cls){const a=LC[w];return '<span class="'+(cls||'wk')+'" style="background:'+a[0]+';color:'+a[1]+'">'+w+'</span>';}
 function dayRaces(){return D.races.filter(r=>r.d===selDate);}
-function hasResult(r){return r.b.every(x=>x[2]!==null&&x[2]>=1);}
+function hasResult(r){return r.b.some(x=>x[2]===1);}  // 1着が決まっていれば結果あり（F/失格混在でも可）
 function finishOrder(r){return r.b.map((b,i)=>[i+1,b[2]]).filter(x=>x[1]).sort((a,b)=>a[1]-b[1]).map(x=>x[0]);}
 function eqArr(a,b){return a&&b&&a.length===b.length&&a.every((v,i)=>v===b[i]);}
 function plTop(s,kind,k){const idx=[0,1,2,3,4,5].filter(i=>s[i]>0);const tot=s.reduce((a,b)=>a+b,0);const out=[];
@@ -327,7 +331,7 @@ function listView(){
   for(const l of D.labels)h+='<button class="dbtn'+(selDate===l[1]?' on':'')+'" data-d="'+l[1]+'">'+l[0]+'<small>'+mmdd(l[1])+'</small></button>';
   h+='</div>';
   h+='<div class="meta">直前情報なしモデル（朝の出走表のみ）・ '+rs.length+'レース ・ タップで詳細'
-    +(hasResult(rs[0]||{b:[]})?' ・ 結果: 本命的中＞2連的中(2連単top5圏内)＞3連的中(3連単top10圏内)＞×':'')+'</div>';
+    +(hasResult(rs[0]||{b:[]})?' ・ 結果あり（的中=本命1着 / 2連単top5 / 3連単top10 のいずれか圏内）':'')+'</div>';
   const venues=[];const seen={};for(const r of rs){if(!seen[r.c]){seen[r.c]=1;venues.push([r.c,r.v]);}}
   h+='<div class="vfilter"><button class="vbtn'+(cur==='ALL'?' on':'')+'" data-v="ALL">全場</button>';
   for(const a of venues)h+='<button class="vbtn'+(cur===a[0]?' on':'')+'" data-v="'+a[0]+'">'+a[1]+'</button>';
@@ -341,13 +345,11 @@ function listView(){
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
     if(hasResult(r)){
       const s=r.b.map(x=>x[1]);const ord=finishOrder(r);const win=ord[0];
-      const aEx=ord.slice(0,2),aTri=ord.slice(0,3);
-      let badge;
-      if(win===hm+1) badge='<span class="ok">本命的中</span>';
-      else if(plTop(s,2,5).some(c=>eqArr(c[0],aEx))) badge='<span class="hit2">2連的中</span>';
-      else if(plTop(s,3,10).some(c=>eqArr(c[0],aTri))) badge='<span class="hit3">3連的中</span>';
-      else badge='<span class="ng">×</span>';
-      h+='<span class="res"><span class="reslab">結果</span>'+chip(win,'mc')+badge+'</span>';
+      const hit=(win===hm+1)
+        ||(ord.length>=2&&plTop(s,2,5).some(c=>eqArr(c[0],ord.slice(0,2))))
+        ||(ord.length>=3&&plTop(s,3,10).some(c=>eqArr(c[0],ord.slice(0,3))));
+      h+='<span class="res"><span class="reslab">結果</span>'+chip(win,'mc')
+        +(hit?'<span class="ok">的中</span>':'<span class="ng">×</span>')+'</span>';
     }else{
       h+='<span class="pw'+(pw>=50?' s':'')+'">'+pw+'%</span>';
     }
@@ -359,7 +361,7 @@ function listView(){
 function detailView(r){
   const s=r.b.map(x=>x[1]);const mx=Math.max(...s);
   const done=hasResult(r);const ord=done?finishOrder(r):null;
-  const actEx=done?ord.slice(0,2):null, actTri=done?ord.slice(0,3):null;
+  const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
   let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
   let h='<button class="back">&lsaquo; 一覧へ戻る</button>';
   h+='<div class="dh">'+r.v+' '+r.no+'R</div>';
@@ -373,7 +375,7 @@ function detailView(r){
   }
   h+='<div class="sec">1着確率（モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];
-    h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':fin+'着')+'</span>':'')
+    h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +'<div class="barw"><div class="bar" style="width:'+Math.max(b[1]/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(b[1]/10).toFixed(1)+'%</span></div>';});
