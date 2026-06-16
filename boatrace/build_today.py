@@ -24,12 +24,91 @@ def load(path):
         return list(csv.DictReader(f))
 
 
+def _pl_prob(s, combo):
+    p, rem = 1.0, sum(s)
+    for w in combo:
+        p *= s[w - 1] / rem
+        rem -= s[w - 1]
+    return p
+
+
+def _pl_rank(s, kind, actual):
+    """actual（枠tuple）の PL 確率順位（1=最尤）。"""
+    import itertools
+    idx = [i for i in range(6) if s[i] > 0]
+    pa = _pl_prob(s, actual)
+    g = 0
+    for c in itertools.permutations(idx, kind):
+        if _pl_prob(s, [i + 1 for i in c]) > pa:
+            g += 1
+    return g + 1
+
+
+def venue_stats(rel, pred, since):
+    """since 以降の結果がある全レースから、場別の的中率を集計。
+    各場: 本命1着 / 2連単(本命=top1,top3,top5) / 3連単(本命,top3,top10)。"""
+    from collections import defaultdict
+    races = {}
+    for r in rel:
+        if r["日付"] < since:
+            continue
+        rid = r["race_id"]
+        pr = pred.get((rid, r["枠番"]), {})
+        try:
+            pm = float(pr.get("p_win"))
+        except (TypeError, ValueError):
+            pm = None
+        try:
+            fin = int(pr.get("finish_rank"))
+        except (TypeError, ValueError):
+            fin = None
+        rc = races.setdefault(rid, {"c": r["場コード"], "v": r["会場"],
+                                    "d": r["日付"], "b": {}})
+        rc["b"][int(r["枠番"])] = (pm, fin)
+    agg = defaultdict(lambda: [0, 0, 0, 0, 0, 0, 0, 0])   # n,win,e1,e3,e5,t1,t3,t10
+    name = {}
+    dmin = dmax = None
+    for rc in races.values():
+        if len(rc["b"]) != 6:
+            continue
+        s = [rc["b"][w][0] for w in range(1, 7)]
+        fins = [rc["b"][w][1] for w in range(1, 7)]
+        if any(x is None for x in s) or any(f is None or f < 1 for f in fins):
+            continue
+        hm = max(range(6), key=lambda i: s[i]) + 1
+        order = [w + 1 for w in sorted(range(6), key=lambda i: fins[i])]
+        er = _pl_rank(s, 2, tuple(order[:2]))
+        tr = _pl_rank(s, 3, tuple(order[:3]))
+        a = agg[rc["c"]]
+        name[rc["c"]] = rc["v"]
+        dmin = rc["d"] if dmin is None or rc["d"] < dmin else dmin
+        dmax = rc["d"] if dmax is None or rc["d"] > dmax else dmax
+        a[0] += 1
+        a[1] += (hm == order[0])
+        a[2] += er <= 1; a[3] += er <= 3; a[4] += er <= 5
+        a[5] += tr <= 1; a[6] += tr <= 3; a[7] += tr <= 10
+    pct = lambda x, n: round(x / n * 100) if n else 0
+    rows = []
+    for c, a in agg.items():
+        n = a[0]
+        rows.append([name[c], n, pct(a[1], n), pct(a[2], n), pct(a[3], n),
+                     pct(a[4], n), pct(a[5], n), pct(a[6], n), pct(a[7], n)])
+    rows.sort(key=lambda r: r[2], reverse=True)
+    T = [sum(agg[c][i] for c in agg) for i in range(8)]
+    n = T[0]
+    allrow = ["全場", n, pct(T[1], n), pct(T[2], n), pct(T[3], n), pct(T[4], n),
+              pct(T[5], n), pct(T[6], n), pct(T[7], n)]
+    return {"from": dmin, "to": dmax, "n": n, "rows": rows, "all": allrow}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pred", default="predict_win.csv")
     ap.add_argument("--rel", default="features_race_relative.csv")
     ap.add_argument("--date", default=None, help="基準日（当日）。既定=データ最新日")
     ap.add_argument("--days", type=int, default=3, help="さかのぼる日数（既定3=当日/前日/前々日）")
+    ap.add_argument("--stats-from", default="2026-01-01",
+                    help="場別成績の集計開始日（既定=2026-01-01。結果のある全レースを集計）")
     ap.add_argument("--out", default="today.html")
     args = ap.parse_args()
 
@@ -78,13 +157,17 @@ def main():
     for i, d in enumerate(reversed(keep)):       # 新しい順
         labels.append([rel_labels[i] if i < len(rel_labels) else d, d])
 
-    payload = {"labels": labels, "base": base, "races": out}
+    vstats = venue_stats(rel, pred, args.stats_from)
+
+    payload = {"labels": labels, "base": base, "races": out, "vstats": vstats}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"○ 当日予想アプリ: {args.out}")
     print(f"  対象日 {keep}（既定表示={base}）/ レース {len(out)}")
+    print(f"  場別成績: {args.stats_from}〜（{vstats['from']}〜{vstats['to']} "
+          f"/ {vstats['n']}レース）")
 
 
 HTML = r"""<!DOCTYPE html>
@@ -251,43 +334,26 @@ function nav(){
     +'<button class="tb'+(tab==='stats'?' on':'')+'" data-t="stats">場別成績</button></div>';
 }
 function statsView(){
-  // today.html が持つ日付範囲のうち、結果のあるレースから場別的中率を集計。
-  const done=D.races.filter(hasResult);
-  const ds=[...new Set(done.map(r=>r.d))].sort();
-  const agg={};
-  for(const r of done){
-    const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
-    let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
-    const ex=plTop(s,2,5).map(c=>c[0]),tri=plTop(s,3,10).map(c=>c[0]);
-    const aEx=ord.slice(0,2),aTri=ord.slice(0,3);
-    const a=agg[r.c]||(agg[r.c]={v:r.v,n:0,win:0,e1:0,e3:0,e5:0,t1:0,t3:0,t10:0});
-    a.n++; a.win+=(hm+1===ord[0]);
-    a.e1+=eqArr(ex[0],aEx); a.e3+=ex.slice(0,3).some(c=>eqArr(c,aEx)); a.e5+=ex.some(c=>eqArr(c,aEx));
-    a.t1+=eqArr(tri[0],aTri); a.t3+=tri.slice(0,3).some(c=>eqArr(c,aTri)); a.t10+=tri.some(c=>eqArr(c,aTri));
-  }
-  const rows=Object.entries(agg).map(([c,a])=>({c,...a})).sort((x,y)=>y.win/y.n-x.win/x.n);
-  const pc=(x,n)=>n?(x/n*100).toFixed(0)+'%':'-';
-  let h=nav();
-  if(!rows.length){return h+'<div class="meta">この期間はまだ結果がありません（前日・前々日のレース確定後に集計されます）。</div>';}
-  const T=rows.reduce((o,a)=>{for(const k of['n','win','e1','e3','e5','t1','t3','t10'])o[k]=(o[k]||0)+a[k];return o;},{});
-  h+='<div class="meta">対象 '+(ds[0]?ds[0].slice(5):'')+'〜'+(ds[ds.length-1]?ds[ds.length-1].slice(5):'')
-    +'（'+T.n+'レース）・ 直前情報なしモデル ・ 数字=予想上位K通り以内に決着が入った割合</div>';
+  // 場別成績は Python 側で全期間（2026年〜）集計済み。ここでは描画のみ。
+  const V=D.vstats; let h=nav();
+  if(!V||!V.n){return h+'<div class="meta">結果データがまだありません。</div>';}
+  const cell=(v,extra)=>'<td class="num'+(extra?' '+extra:'')+'">'+v+'%</td>';
+  const row=(a,all)=>'<tr'+(all?' class="all"':'')+'><td class="k">'+a[0]+'</td>'
+    +'<td class="num scol">'+a[1]+'</td><td class="num">'+a[2]+'%</td>'
+    +cell(a[3],all?'':'g2')+cell(a[4],all?'':'g2')+cell(a[5],all?'':'g2')
+    +cell(a[6],all?'':'g3')+cell(a[7],all?'':'g3')+cell(a[8],all?'':'g3')+'</tr>';
+  h+='<div class="meta">対象 '+V.from+'〜'+V.to+'（'+V.n+'レース・収集データ全体）・ '
+    +'数字=予想上位K通り以内に決着が入った割合</div>';
   h+='<div class="swrap"><table class="st"><thead><tr>'
     +'<th class="k">会場</th><th>R数</th><th>本命<br>1着</th>'
     +'<th class="g2">2連単<br>本命</th><th class="g2">top3</th><th class="g2">top5</th>'
     +'<th class="g3">3連単<br>本命</th><th class="g3">top3</th><th class="g3">top10</th></tr></thead><tbody>';
-  for(const a of rows){
-    h+='<tr><td class="k">'+a.v+'</td><td class="num scol">'+a.n+'</td>'
-      +'<td class="num">'+pc(a.win,a.n)+'</td>'
-      +'<td class="num g2">'+pc(a.e1,a.n)+'</td><td class="num g2">'+pc(a.e3,a.n)+'</td><td class="num g2">'+pc(a.e5,a.n)+'</td>'
-      +'<td class="num g3">'+pc(a.t1,a.n)+'</td><td class="num g3">'+pc(a.t3,a.n)+'</td><td class="num g3">'+pc(a.t10,a.n)+'</td></tr>';
-  }
-  h+='<tr class="all"><td class="k">全場</td><td class="num">'+T.n+'</td><td class="num">'+pc(T.win,T.n)+'</td>'
-    +'<td class="num">'+pc(T.e1,T.n)+'</td><td class="num">'+pc(T.e3,T.n)+'</td><td class="num">'+pc(T.e5,T.n)+'</td>'
-    +'<td class="num">'+pc(T.t1,T.n)+'</td><td class="num">'+pc(T.t3,T.n)+'</td><td class="num">'+pc(T.t10,T.n)+'</td></tr>';
+  for(const a of V.rows)h+=row(a,false);
+  h+=row(V.all,true);
   h+='</tbody></table></div>';
-  h+='<div class="legend">※ today.html が表示している日付範囲（当日/前日/前々日）の結果のみから集計。本命=1着確率最大の枠。'
-    +'top3/5/10=予想上位3/5/10通りの中に実際の決着が含まれた割合（その点数を買えば当たる割合）。サンプルが少ない日は変動します。</div>';
+  h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
+    +'top3/5/10=予想上位3/5/10通りに実際の決着が含まれた割合（その点数を買えば当たる割合）。'
+    +'※ 4月までは学習期間を含むため的中率はやや高めに出る（5月以降が純粋な検証）。</div>';
   return h;
 }
 function render(){
