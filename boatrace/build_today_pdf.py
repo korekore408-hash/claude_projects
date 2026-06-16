@@ -19,6 +19,7 @@ import csv
 import itertools
 
 from fpdf import FPDF
+from build_today import venue_stats
 
 FONT = "C:/Windows/Fonts/msgothic.ttc"
 LANE = {1: ((255, 255, 255), 0), 2: ((30, 30, 30), 1), 3: ((226, 59, 59), 1),
@@ -62,6 +63,8 @@ def main():
     ap.add_argument("--rel", default="features_race_relative.csv")
     ap.add_argument("--date", default=None)
     ap.add_argument("--days", type=int, default=3)
+    ap.add_argument("--stats-from", default="2026-01-01",
+                    help="場別成績ページの集計開始日（既定2026-01-01）")
     ap.add_argument("--out", default="today.pdf")
     args = ap.parse_args()
 
@@ -179,6 +182,51 @@ def main():
                     pdf.set_xy(X["mz"], y0); pdf.cell(10, 6, "警")
                     pdf.set_text_color(0, 0, 0)
                 pdf.set_xy(pdf.l_margin, y0 + 6)
+
+    # ── 場別成績ページ（収集データ全体） ──────────────────────────
+    vs = venue_stats(rel, pred, args.stats_from)
+    if vs["n"]:
+        pdf.add_page()
+        pdf.set_font("jp", "", 15)
+        pdf.cell(0, 8, f"場別成績  {vs['from']}〜{vs['to']}（{vs['n']}レース）",
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("jp", "", 8); pdf.set_text_color(110, 110, 110)
+        pdf.cell(0, 5, "本命=1着確率最大の枠 / 数字=予想上位K通り以内に決着が入った割合"
+                       " / 4月までは学習期間込みで的中やや高め",
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0); pdf.ln(2)
+        SX = [("v", 12, 22, "L"), ("n", 34, 13, "R"), ("win", 49, 15, "R"),
+              ("e1", 66, 15, "R"), ("e3", 83, 15, "R"), ("e5", 100, 15, "R"),
+              ("t1", 121, 15, "R"), ("t3", 138, 15, "R"), ("t10", 155, 17, "R")]
+        HEAD = {"v": "会場", "n": "R数", "win": "本命", "e1": "2単◎", "e3": "t3",
+                "e5": "t5", "t1": "3単◎", "t3": "t3", "t10": "t10"}
+        BLUE, AMB = (28, 99, 176), (168, 115, 10)
+
+        def srow(a, y, bold=False, head=False):
+            for i, (key, x, w, al) in enumerate(SX):
+                v = HEAD[key] if head else (a[i] if i < 2 else f"{a[i]}%")
+                if head:
+                    pdf.set_text_color(120, 120, 120)
+                elif key.startswith("e"):
+                    pdf.set_text_color(*BLUE)
+                elif key.startswith("t") and key != "n":
+                    pdf.set_text_color(*AMB)
+                else:
+                    pdf.set_text_color(0, 0, 0)
+                pdf.set_xy(x, y)
+                pdf.cell(w, 6, str(v), align=al)
+            pdf.set_text_color(0, 0, 0)
+
+        y = pdf.get_y()
+        srow(None, y, head=True)
+        pdf.line(12, y + 6, 172, y + 6)
+        y += 7
+        for a in vs["rows"]:
+            srow(a, y)
+            y += 6
+        pdf.line(12, y, 172, y)
+        pdf.set_font("jp", "", 10)
+        srow(vs["all"], y + 1)
 
     pdf.output(args.out)
     n = sum(len(v) for d in by_day for v in by_day[d].values())
