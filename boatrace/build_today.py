@@ -24,6 +24,45 @@ def load(path):
         return list(csv.DictReader(f))
 
 
+def to_float(s):
+    try:
+        return float(str(s).strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def make_comment(boats, field_std):
+    """viewer.html と同じロジックの予想コメント [line1, line2] を作る。
+    boats: [{枠,名,pwin(0-1),win_rank,motor_rank,st_rank,lane_win,lane_n,vown}]"""
+    bs = sorted(boats, key=lambda b: -(b["pwin"] or 0))
+    t1, t2 = bs[0], bs[1]
+
+    def reasons(b):
+        r = []
+        if b["枠"] <= 2:
+            r.append("イン最有利" if b["枠"] == 1 else "好枠")
+        if b["win_rank"] == 1:
+            r.append("全国勝率トップ")
+        if b["motor_rank"] == 1:
+            r.append("機力レース内1位")
+        if b["st_rank"] == 1:
+            r.append("平均ST最速")
+        if b["lane_win"] is not None and b["lane_win"] >= 0.5 and (b["lane_n"] or 0) >= 3:
+            r.append("枠成績良好")
+        if b["vown"] is not None and b["枠"] == 1 and b["vown"] >= 0.55:
+            r.append("当場イン強い")
+        if not r:
+            r.append("実力上位" if (b["win_rank"] and b["win_rank"] <= 2) else "総合力で上位")
+        return r[:2]
+
+    strong = (t1["pwin"] or 0) >= 0.5
+    tight = field_std is not None and field_std < 0.7
+    line1 = f"◎{t1['枠']}号艇 {t1['名']}：{'・'.join(reasons(t1))}で1着確率{round((t1['pwin'] or 0)*100)}%。"
+    line2 = (f"相手本線は{t2['枠']}号艇（{'・'.join(reasons(t2))}）。"
+             + ("本命濃厚の構成。" if strong else ("実力拮抗で波乱含み。" if tight else "中穴も一考。")))
+    return [line1, line2]
+
+
 def _pl_prob(s, combo):
     p, rem = 1.0, sum(s)
     for w in combo:
@@ -105,6 +144,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pred", default="predict_win.csv")
     ap.add_argument("--rel", default="features_race_relative.csv")
+    ap.add_argument("--hist", default="features_player_history.csv")
     ap.add_argument("--date", default=None, help="基準日（当日）。既定=データ最新日")
     ap.add_argument("--days", type=int, default=3, help="さかのぼる日数（既定3=当日/前日/前々日）")
     ap.add_argument("--stats-from", default="2026-01-01",
@@ -114,19 +154,22 @@ def main():
 
     rel = load(args.rel)
     pred = {(r["race_id"], r["枠番"]): r for r in load(args.pred)}
+    hist = {(r["race_id"], r["枠番"]): r for r in load(args.hist)}
 
     all_dates = sorted({r["日付"] for r in rel})
     base = args.date or all_dates[-1]
     keep = [d for d in all_dates if d <= base][-args.days:]
     keep_set = set(keep)
 
-    # race_id -> {d,c,v,no,mz, b{枠:(名,pm,fin)}}
+    # race_id -> {d,c,v,no,mz,fs, b{枠:(名,pm,fin)}, feat{枠:{...}}}
     races = {}
     for r in rel:
         if r["日付"] not in keep_set:
             continue
         rid = r["race_id"]
-        pr = pred.get((rid, r["枠番"]), {})
+        waku = r["枠番"]
+        pr = pred.get((rid, waku), {})
+        h = hist.get((rid, waku), {})
         try:
             pm = round(float(pr.get("p_win")) * 1000)
         except (TypeError, ValueError):
@@ -138,15 +181,29 @@ def main():
         rc = races.setdefault(rid, {"d": r["日付"], "c": r["場コード"], "v": r["会場"],
                                     "no": int(r["レース"]),
                                     "mz": int(r.get("field_maezuke_flag", 0) or 0),
-                                    "b": {}})
-        rc["b"][int(r["枠番"])] = (r["選手名"], pm, fin)
+                                    "fs": to_float(r.get("field_strength_std")),
+                                    "b": {}, "feat": {}})
+        w = int(waku)
+        rc["b"][w] = (r["選手名"], pm, fin)
+        rc["feat"][w] = {
+            "枠": w, "名": r["選手名"],
+            "pwin": (pm / 1000) if pm is not None else None,
+            "win_rank": to_float(r.get("winrate_rank_in_race")),
+            "motor_rank": to_float(r.get("motor_rank_in_race")),
+            "st_rank": to_float(r.get("st_rank_in_race")),
+            "lane_win": to_float(h.get("lane_win_rate")),
+            "lane_n": to_float(h.get("lane_n")),
+            "vown": to_float(h.get("venue_own_lane_winrate")),
+        }
 
     out = []
     for rid, rc in races.items():
         if len(rc["b"]) != 6 or any(rc["b"][w][1] is None for w in range(1, 7)):
             continue
-        out.append({"d": rc["d"], "c": rc["c"], "v": rc["v"], "no": rc["no"],
-                    "mz": rc["mz"],
+        cm = make_comment([rc["feat"][w] for w in range(1, 7)], rc["fs"])
+        out.append({"id": rid, "d": rc["d"], "c": rc["c"], "v": rc["v"],
+                    "no": rc["no"], "mz": rc["mz"],
+                    "fs": rc["fs"], "cm": cm,
                     "b": [[rc["b"][w][0], rc["b"][w][1], rc["b"][w][2]]
                           for w in range(1, 7)]})
     out.sort(key=lambda x: (x["d"], x["c"], x["no"]))
@@ -208,6 +265,8 @@ HTML = r"""<!DOCTYPE html>
   .back{display:inline-flex;align-items:center;gap:4px;font-size:14px;color:#6ea8fe;background:transparent;border:none;cursor:pointer;padding:8px 0}
   .dh{font-size:19px;font-weight:700;margin:2px 0}
   .warn{font-size:12px;color:#f0c674;background:#2a2015;border:1px solid #6b5a1a;border-radius:8px;padding:7px 10px;margin:6px 0;line-height:1.5}
+  .cmt{font-size:13px;color:#cdd6e2;background:#141a1f;border-left:3px solid #3b82f6;border-radius:0 6px 6px 0;padding:9px 12px;margin:8px 0;line-height:1.7}
+  .cmt .h{color:#8ea0ba;font-size:11px;margin-right:6px}
   .rbar{display:flex;align-items:center;gap:6px;margin:8px 0;flex-wrap:wrap}
   .rlab{font-size:12px;color:#9aa3b2}
   .arr{color:#5b6472;font-size:12px}
@@ -295,8 +354,10 @@ function detailView(r){
   const actEx=done?ord.slice(0,2):null, actTri=done?ord.slice(0,3):null;
   let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
   let h='<button class="back">&lsaquo; 一覧へ戻る</button>';
-  h+='<div class="dh">'+r.v+' '+r.no+'R</div><div class="meta">'+r.d+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
+  h+='<div class="dh">'+r.v+' '+r.no+'R</div>';
+  h+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
   if(r.mz)h+='<div class="warn">&#9888; 隊形警戒：前づけ常習者がいて枠なりが崩れやすく、本命の信頼度は割り引いて。</div>';
+  if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
   if(done){
     h+='<div class="rbar"><span class="rlab">結果</span>';
     ord.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
