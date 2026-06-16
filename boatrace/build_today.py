@@ -259,8 +259,10 @@ HTML = r"""<!DOCTYPE html>
   .wn{color:#f0c674;font-size:14px}
   .pw{font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap;color:#9aa3b2}
   .pw.s{color:#ffd54a;font-weight:700}
-  .res{font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:3px}
+  .res{font-size:12px;white-space:nowrap;display:flex;align-items:center;gap:4px}
+  .reslab{font-size:10px;color:#6b7280}
   .ok{color:#43c59e;font-weight:700}.ng{color:#e06b6b}
+  .hit2{color:#5dc7e0;font-weight:700}.hit3{color:#7fb2ff;font-weight:700}
   .chev{color:#5b6472;font-size:16px}
   .back{display:inline-flex;align-items:center;gap:4px;font-size:14px;color:#6ea8fe;background:transparent;border:none;cursor:pointer;padding:8px 0}
   .dh{font-size:19px;font-weight:700;margin:2px 0}
@@ -325,7 +327,7 @@ function listView(){
   for(const l of D.labels)h+='<button class="dbtn'+(selDate===l[1]?' on':'')+'" data-d="'+l[1]+'">'+l[0]+'<small>'+mmdd(l[1])+'</small></button>';
   h+='</div>';
   h+='<div class="meta">直前情報なしモデル（朝の出走表のみ）・ '+rs.length+'レース ・ タップで詳細'
-    +(hasResult(rs[0]||{b:[]})?' ・ 結果あり（◎的中=本命1着）':'')+'</div>';
+    +(hasResult(rs[0]||{b:[]})?' ・ 結果: 本命的中＞2連的中(2連単top5圏内)＞3連的中(3連単top10圏内)＞×':'')+'</div>';
   const venues=[];const seen={};for(const r of rs){if(!seen[r.c]){seen[r.c]=1;venues.push([r.c,r.v]);}}
   h+='<div class="vfilter"><button class="vbtn'+(cur==='ALL'?' on':'')+'" data-v="ALL">全場</button>';
   for(const a of venues)h+='<button class="vbtn'+(cur===a[0]?' on':'')+'" data-v="'+a[0]+'">'+a[1]+'</button>';
@@ -338,8 +340,14 @@ function listView(){
     h+='<div class="row" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'+chip(hm+1)
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
     if(hasResult(r)){
-      const ord=finishOrder(r);const win=ord[0];
-      h+='<span class="res">'+chip(win,'mc')+(win===hm+1?'<span class="ok">的中</span>':'<span class="ng">×</span>')+'</span>';
+      const s=r.b.map(x=>x[1]);const ord=finishOrder(r);const win=ord[0];
+      const aEx=ord.slice(0,2),aTri=ord.slice(0,3);
+      let badge;
+      if(win===hm+1) badge='<span class="ok">本命的中</span>';
+      else if(plTop(s,2,5).some(c=>eqArr(c[0],aEx))) badge='<span class="hit2">2連的中</span>';
+      else if(plTop(s,3,10).some(c=>eqArr(c[0],aTri))) badge='<span class="hit3">3連的中</span>';
+      else badge='<span class="ng">×</span>';
+      h+='<span class="res"><span class="reslab">結果</span>'+chip(win,'mc')+badge+'</span>';
     }else{
       h+='<span class="pw'+(pw>=50?' s':'')+'">'+pw+'%</span>';
     }
