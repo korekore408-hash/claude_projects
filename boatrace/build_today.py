@@ -144,12 +144,26 @@ HTML = r"""<!DOCTYPE html>
   .rk{font-size:11px;color:#5b6472;min-width:20px}
   .cp{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums;color:#9aa3b2}
   .legend{font-size:11px;color:#7e8796;margin:18px 0 0;line-height:1.6}
+  .tabs{display:flex;gap:6px;margin:6px 0 10px}
+  .tb{flex:1;font-size:14px;padding:8px 6px;border-radius:8px;border:0.5px solid #39404d;background:transparent;color:#cdd6e2;cursor:pointer;text-align:center}
+  .tb.on{background:#2b6cb0;color:#fff;border-color:#2b6cb0}
+  .swrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:4px}
+  table.st{border-collapse:collapse;width:100%;min-width:520px;font-size:13px}
+  table.st th,table.st td{border-bottom:0.5px solid #232a36;padding:7px 8px;text-align:right;white-space:nowrap}
+  table.st th{color:#8ea0ba;font-weight:600;position:sticky;top:0;background:#12161d}
+  table.st td.k,table.st th.k{text-align:left}
+  table.st .g2{color:#7fb2ff}.st .g3{color:#ffd082}
+  table.st tbody tr:nth-child(odd){background:#12161d}
+  table.st tr.all{font-weight:700}
+  table.st tr.all td{border-top:1px solid #39404d;color:#fff}
+  .num{font-variant-numeric:tabular-nums}
+  .scol{color:#9aa3b2}
 </style></head><body>
 <div id="app"></div>
 <script>
 const D=__DATA__;
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
-let selDate=D.labels[0][1], cur='ALL', sel=null;
+let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
 const root=document.getElementById('app');
 const mmdd=s=>s.slice(5);
 function chip(w,cls){const a=LC[w];return '<span class="'+(cls||'wk')+'" style="background:'+a[0]+';color:'+a[1]+'">'+w+'</span>';}
@@ -165,8 +179,7 @@ function plTop(s,kind,k){const idx=[0,1,2,3,4,5].filter(i=>s[i]>0);const tot=s.r
 function listView(){
   const rs=dayRaces();
   const lab=D.labels.find(l=>l[1]===selDate);
-  let h='<h1>競艇 予想</h1>';
-  h+='<div class="dsel">';
+  let h='<div class="dsel">';
   for(const l of D.labels)h+='<button class="dbtn'+(selDate===l[1]?' on':'')+'" data-d="'+l[1]+'">'+l[0]+'<small>'+mmdd(l[1])+'</small></button>';
   h+='</div>';
   h+='<div class="meta">直前情報なしモデル（朝の出走表のみ）・ '+rs.length+'レース ・ タップで詳細'
@@ -232,10 +245,61 @@ function detailView(r){
   return h;
 }
 
+function nav(){
+  return '<h1>競艇 予想</h1><div class="tabs">'
+    +'<button class="tb'+(tab==='pred'?' on':'')+'" data-t="pred">予想</button>'
+    +'<button class="tb'+(tab==='stats'?' on':'')+'" data-t="stats">場別成績</button></div>';
+}
+function statsView(){
+  // today.html が持つ日付範囲のうち、結果のあるレースから場別的中率を集計。
+  const done=D.races.filter(hasResult);
+  const ds=[...new Set(done.map(r=>r.d))].sort();
+  const agg={};
+  for(const r of done){
+    const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
+    let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
+    const ex=plTop(s,2,5).map(c=>c[0]),tri=plTop(s,3,10).map(c=>c[0]);
+    const aEx=ord.slice(0,2),aTri=ord.slice(0,3);
+    const a=agg[r.c]||(agg[r.c]={v:r.v,n:0,win:0,e1:0,e3:0,e5:0,t1:0,t3:0,t10:0});
+    a.n++; a.win+=(hm+1===ord[0]);
+    a.e1+=eqArr(ex[0],aEx); a.e3+=ex.slice(0,3).some(c=>eqArr(c,aEx)); a.e5+=ex.some(c=>eqArr(c,aEx));
+    a.t1+=eqArr(tri[0],aTri); a.t3+=tri.slice(0,3).some(c=>eqArr(c,aTri)); a.t10+=tri.some(c=>eqArr(c,aTri));
+  }
+  const rows=Object.entries(agg).map(([c,a])=>({c,...a})).sort((x,y)=>y.win/y.n-x.win/x.n);
+  const pc=(x,n)=>n?(x/n*100).toFixed(0)+'%':'-';
+  let h=nav();
+  if(!rows.length){return h+'<div class="meta">この期間はまだ結果がありません（前日・前々日のレース確定後に集計されます）。</div>';}
+  const T=rows.reduce((o,a)=>{for(const k of['n','win','e1','e3','e5','t1','t3','t10'])o[k]=(o[k]||0)+a[k];return o;},{});
+  h+='<div class="meta">対象 '+(ds[0]?ds[0].slice(5):'')+'〜'+(ds[ds.length-1]?ds[ds.length-1].slice(5):'')
+    +'（'+T.n+'レース）・ 直前情報なしモデル ・ 数字=予想上位K通り以内に決着が入った割合</div>';
+  h+='<div class="swrap"><table class="st"><thead><tr>'
+    +'<th class="k">会場</th><th>R数</th><th>本命<br>1着</th>'
+    +'<th class="g2">2連単<br>本命</th><th class="g2">top3</th><th class="g2">top5</th>'
+    +'<th class="g3">3連単<br>本命</th><th class="g3">top3</th><th class="g3">top10</th></tr></thead><tbody>';
+  for(const a of rows){
+    h+='<tr><td class="k">'+a.v+'</td><td class="num scol">'+a.n+'</td>'
+      +'<td class="num">'+pc(a.win,a.n)+'</td>'
+      +'<td class="num g2">'+pc(a.e1,a.n)+'</td><td class="num g2">'+pc(a.e3,a.n)+'</td><td class="num g2">'+pc(a.e5,a.n)+'</td>'
+      +'<td class="num g3">'+pc(a.t1,a.n)+'</td><td class="num g3">'+pc(a.t3,a.n)+'</td><td class="num g3">'+pc(a.t10,a.n)+'</td></tr>';
+  }
+  h+='<tr class="all"><td class="k">全場</td><td class="num">'+T.n+'</td><td class="num">'+pc(T.win,T.n)+'</td>'
+    +'<td class="num">'+pc(T.e1,T.n)+'</td><td class="num">'+pc(T.e3,T.n)+'</td><td class="num">'+pc(T.e5,T.n)+'</td>'
+    +'<td class="num">'+pc(T.t1,T.n)+'</td><td class="num">'+pc(T.t3,T.n)+'</td><td class="num">'+pc(T.t10,T.n)+'</td></tr>';
+  h+='</tbody></table></div>';
+  h+='<div class="legend">※ today.html が表示している日付範囲（当日/前日/前々日）の結果のみから集計。本命=1着確率最大の枠。'
+    +'top3/5/10=予想上位3/5/10通りの中に実際の決着が含まれた割合（その点数を買えば当たる割合）。サンプルが少ない日は変動します。</div>';
+  return h;
+}
 function render(){
-  root.innerHTML = sel===null ? listView() : detailView(dayRaces()[sel]);
+  if(tab==='stats'){
+    root.innerHTML=statsView();
+    document.querySelectorAll('.tb').forEach(b=>b.onclick=()=>{tab=b.dataset.t;sel=null;render();});
+    window.scrollTo(0,0);return;
+  }
+  root.innerHTML = sel===null ? nav()+listView() : detailView(dayRaces()[sel]);
   window.scrollTo(0,0);
   if(sel===null){
+    document.querySelectorAll('.tb').forEach(b=>b.onclick=()=>{tab=b.dataset.t;sel=null;render();});
     document.querySelectorAll('.dbtn').forEach(b=>b.onclick=()=>{selDate=b.dataset.d;cur='ALL';render();});
     document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{cur=b.dataset.v;render();});
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{sel=+rw.dataset.i;render();});
