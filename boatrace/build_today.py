@@ -170,28 +170,71 @@ def load_payouts(keep):
     return payout
 
 
-def calibration(pred, since_ymd="20260501"):
-    """OOS（since以降）で、各艇の予想1着確率を10%刻みにビンし、実際の1着率を返す。
-    返り値: [[予想%平均, 実測1着率%, 母数], ...]。点が対角線に乗るほど確率が正確。"""
-    bins = [[0, 0, 0.0] for _ in range(10)]
+def calibration(pred, since_ymd="20260101"):
+    """since以降の全レースで、1着/2連単/3連単の予想確率を実測発生率と照合（キャリブ）。
+    返り値: {c1,c2,c3}。各 [[予想%平均, 実測%, 母数], ...]。点が対角線に乗るほど確率が正確。
+    2連単/3連単は Plackett-Luce で全組合せの確率を出して集計する。"""
+    import itertools
+    from collections import defaultdict
+    races = defaultdict(dict)
     for r in pred.values():
         if r.get("race_id", "")[2:10] < since_ymd:
             continue
-        if (r.get("finish_rank") or "") == "":
+        races[r["race_id"]][int(r["枠番"])] = (r.get("p_win"), r.get("finish_rank"))
+
+    b1 = [[0, 0, 0.0] for _ in range(10)]
+    e2 = [0, .02, .05, .08, .12, .16, .20, .30, 1.01]
+    e3 = [0, .005, .01, .02, .03, .05, .07, .10, 1.01]
+    b2 = [[0, 0, 0.0] for _ in e2[:-1]]
+    b3 = [[0, 0, 0.0] for _ in e3[:-1]]
+
+    def addb(bins, edges, p, occ):
+        for i in range(len(edges) - 1):
+            if edges[i] <= p < edges[i + 1]:
+                bins[i][0] += 1
+                bins[i][1] += occ
+                bins[i][2] += p
+                return
+
+    def plprob(s, combo):
+        p, rem = 1.0, sum(s)
+        for w in combo:
+            p *= s[w - 1] / rem
+            rem -= s[w - 1]
+        return p
+
+    for b in races.values():
+        if len(b) != 6:
             continue
-        try:
-            p = float(r["p_win"])
-        except (TypeError, ValueError):
+        s, fin, ok = [], {}, True
+        for w in range(1, 7):
+            try:
+                s.append(float(b[w][0]))
+            except (TypeError, ValueError):
+                ok = False
+                break
+            fin[w] = b[w][1]
+        if not ok or not any(fin[w] == "1" for w in range(1, 7)):
             continue
-        b = min(int(p * 10), 9)
-        bins[b][0] += 1
-        bins[b][1] += 1 if r["finish_rank"] == "1" else 0
-        bins[b][2] += p
-    out = []
-    for n, w, sp in bins:
-        if n:
-            out.append([round(sp / n * 100, 1), round(w / n * 100, 1), n])
-    return out
+        for w in range(1, 7):                       # 1着 calib（全艇）
+            bi = min(int(s[w - 1] * 10), 9)
+            b1[bi][0] += 1
+            b1[bi][1] += 1 if fin[w] == "1" else 0
+            b1[bi][2] += s[w - 1]
+        order = sorted([w for w in range(1, 7) if fin[w] not in ("", "0", None)],
+                       key=lambda w: int(fin[w]))
+        if len(order) < 3:
+            continue
+        a2, a3 = tuple(order[:2]), tuple(order[:3])
+        for c in itertools.permutations(range(1, 7), 2):
+            addb(b2, e2, plprob(s, c), 1 if c == a2 else 0)
+        for c in itertools.permutations(range(1, 7), 3):
+            addb(b3, e3, plprob(s, c), 1 if c == a3 else 0)
+
+    def fmt(bins):
+        return [[round(sp / n * 100, 2), round(w / n * 100, 2), n]
+                for n, w, sp in bins if n]
+    return {"c1": fmt(b1), "c2": fmt(b2), "c3": fmt(b3)}
 
 
 def load_kresult(keep):
@@ -614,30 +657,39 @@ function statsView(){
     h+='</tbody></table></div>';
     h+='<div class="legend">※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。参考値。</div>';
   }
-  // キャリブレーション（予想確率の正確さ）
-  const C=D.calib;
-  if(C&&C.length){
-    const W=320,H=300,pad=34;
-    const sx=v=>pad+v/100*(W-pad-10), sy=v=>H-pad-v/100*(H-pad-12);
-    let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px">';
-    for(let t=0;t<=100;t+=20){
-      g+='<line x1="'+sx(t)+'" y1="'+sy(0)+'" x2="'+sx(t)+'" y2="'+sy(100)+'" stroke="#222a33"/>';
-      g+='<line x1="'+sx(0)+'" y1="'+sy(t)+'" x2="'+sx(100)+'" y2="'+sy(t)+'" stroke="#222a33"/>';
-      g+='<text x="'+sx(t)+'" y="'+(H-pad+12)+'" fill="#7e8796" font-size="9" text-anchor="middle">'+t+'</text>';
-      g+='<text x="'+(pad-6)+'" y="'+(sy(t)+3)+'" fill="#7e8796" font-size="9" text-anchor="end">'+t+'</text>';
-    }
-    g+='<line x1="'+sx(0)+'" y1="'+sy(0)+'" x2="'+sx(100)+'" y2="'+sy(100)+'" stroke="#9a948a" stroke-dasharray="5 4"/>';
-    g+='<polyline points="'+C.map(d=>sx(d[0])+','+sy(d[1])).join(' ')+'" fill="none" stroke="#1d9e75" stroke-width="2"/>';
-    for(const d of C)g+='<circle cx="'+sx(d[0])+'" cy="'+sy(d[1])+'" r="4" fill="#1d9e75"/>';
-    g+='<text x="'+(W/2+6)+'" y="'+(H-2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle">予想した1着確率(%)</text>';
-    g+='<text x="11" y="'+(H/2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle" transform="rotate(-90 11 '+(H/2)+')">実際の1着率(%)</text>';
-    g+='</svg>';
-    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">予想確率の正確さ（キャリブレーション）</div>';
-    h+='<div class="meta">5月以降OOSの各艇を予想1着確率10%刻みで集計。'
-      +'<span style="color:#1d9e75">緑</span>が点線（理想=予想どおり）に乗るほど確率が正確。</div>';
-    h+='<div style="display:flex;justify-content:center">'+g+'</div>';
-    h+='<div class="legend">※ ほぼ対角線上＝モデルの確率はそのまま信頼できる。例:「65%」と出た艇は実際に約65%が1着。'
-      +'高確率帯はサンプルが減るため端は振れやすい。</div>';
+  // キャリブレーション（予想確率の正確さ）1着/2連単/3連単
+  const CB=D.calib;
+  if(CB&&CB.c1){
+    const calSVG=(C,col)=>{
+      if(!C||!C.length)return '';
+      const mx=Math.max(...C.flatMap(d=>[d[0],d[1]]));
+      const M=Math.ceil(mx/ (mx>50?20:mx>20?10:5))*(mx>50?20:mx>20?10:5);
+      const W=300,H=270,pad=32;
+      const sx=v=>pad+v/M*(W-pad-8), sy=v=>H-pad-v/M*(H-pad-12);
+      const step=M/5;
+      let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:320px">';
+      for(let t=0;t<=M+0.001;t+=step){
+        g+='<line x1="'+sx(t)+'" y1="'+sy(0)+'" x2="'+sx(t)+'" y2="'+sy(M)+'" stroke="#222a33"/>';
+        g+='<line x1="'+sx(0)+'" y1="'+sy(t)+'" x2="'+sx(M)+'" y2="'+sy(t)+'" stroke="#222a33"/>';
+        g+='<text x="'+sx(t)+'" y="'+(H-pad+11)+'" fill="#7e8796" font-size="9" text-anchor="middle">'+(+t.toFixed(0))+'</text>';
+        g+='<text x="'+(pad-5)+'" y="'+(sy(t)+3)+'" fill="#7e8796" font-size="9" text-anchor="end">'+(+t.toFixed(0))+'</text>';
+      }
+      g+='<line x1="'+sx(0)+'" y1="'+sy(0)+'" x2="'+sx(M)+'" y2="'+sy(M)+'" stroke="#9a948a" stroke-dasharray="5 4"/>';
+      g+='<polyline points="'+C.map(d=>sx(d[0])+','+sy(d[1])).join(' ')+'" fill="none" stroke="'+col+'" stroke-width="2"/>';
+      for(const d of C)g+='<circle cx="'+sx(d[0])+'" cy="'+sy(d[1])+'" r="4" fill="'+col+'"/>';
+      g+='<text x="'+(W/2+4)+'" y="'+(H-2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle">予想確率(%)</text>';
+      g+='<text x="10" y="'+(H/2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle" transform="rotate(-90 10 '+(H/2)+')">実測(%)</text>';
+      g+='</svg>';
+      return g;
+    };
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">予想確率の正確さ（キャリブレーション・2026年〜）</div>';
+    h+='<div class="meta"><span style="color:#1d9e75">緑</span>(実測)が点線(理想=予想どおり)に乗るほど確率が正確。各艇/全組合せをPlackett-Luce確率で集計。</div>';
+    const panel=(t,svg)=>'<div style="text-align:center"><div style="font-size:13px;color:#cdd6e2;margin:8px 0 2px;font-weight:600">'+t+'</div>'+svg+'</div>';
+    h+=panel('① 1着',calSVG(CB.c1,'#1d9e75'));
+    h+=panel('② 2連単',calSVG(CB.c2,'#5dc7e0'));
+    h+=panel('③ 3連単',calSVG(CB.c3,'#ffd082'));
+    h+='<div class="legend">※ 1着はほぼ完全に一致。2連単・3連単は概ね一致するが高確率帯はやや強気（予想＞実測）'
+      +'＝本命寄りの買い目は配当妙味が出やすい。1〜4月は学習期間を含む参考値。</div>';
   }
   return h;
 }
