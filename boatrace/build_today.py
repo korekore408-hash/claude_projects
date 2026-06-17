@@ -16,7 +16,11 @@
 
 import argparse
 import csv
+import glob
 import json
+import re
+
+from features_player_history import VENUE_CODE
 
 
 def load(path):
@@ -145,6 +149,73 @@ def venue_stats(rel, pred, since):
     return {"from": dmin, "to": dmax, "n": n, "rows": rows, "all": allrow}
 
 
+def load_payouts(keep):
+    """keep の日付の K-file から race_id -> (2連単配当, 3連単配当)。"""
+    yy = {d[2:4] + d[5:7] + d[8:10] for d in keep}   # '2026-06-16' -> '260616'
+    payout = {}
+    for kp in glob.glob("data/k*.csv"):
+        m = re.search(r"k(\d{6})", kp)
+        if not m or m.group(1) not in yy:
+            continue
+        for r in load(kp):
+            code = VENUE_CODE.get(r["会場"], "00")
+            y, mo, dd = r["日付"].split("/")
+            rid = f"{code}{int(y):04d}{int(mo):02d}{int(dd):02d}{int(r['レース']):02d}"
+            if rid in payout:
+                continue
+            try:
+                payout[rid] = (int(r["2連単_配当"]), int(r["3連単_配当"]))
+            except (ValueError, KeyError):
+                pass
+    return payout
+
+
+def recent_stats(out, payout):
+    """前日・前々日（結果のある日）の場別 2連単/3連単 的中率・回収率。
+    前提ベット: 2連単=モデル上位5を5点買い / 3連単=上位10を10点買い（各100円）。"""
+    ag = {}
+    dmin = dmax = None
+    for r in out:
+        fins = [b[2] for b in r["b"]]
+        if not any(f == 1 for f in fins):     # 結果のあるレースのみ
+            continue
+        sv = [b[1] for b in r["b"]]
+        order = sorted([w for w in range(1, 7)
+                        if fins[w - 1] is not None and fins[w - 1] >= 1],
+                       key=lambda w: fins[w - 1])
+        if fins[order[0] - 1] != 1:
+            continue
+        po = payout.get(r["id"], (0, 0))
+        a = ag.setdefault(r["c"], {"v": r["v"], "n2": 0, "h2": 0, "p2": 0,
+                                   "n3": 0, "h3": 0, "p3": 0})
+        dmin = r["d"] if dmin is None or r["d"] < dmin else dmin
+        dmax = r["d"] if dmax is None or r["d"] > dmax else dmax
+        if len(order) >= 2:
+            a["n2"] += 1
+            if _pl_rank(sv, 2, tuple(order[:2])) <= 5:
+                a["h2"] += 1
+                a["p2"] += po[0]
+        if len(order) >= 3:
+            a["n3"] += 1
+            if _pl_rank(sv, 3, tuple(order[:3])) <= 10:
+                a["h3"] += 1
+                a["p3"] += po[1]
+
+    def stat(a):
+        return [a["v"], a["n2"],
+                round(a["h2"] / a["n2"] * 100) if a["n2"] else 0,
+                round(a["p2"] / (a["n2"] * 500) * 100) if a["n2"] else 0,
+                round(a["h3"] / a["n3"] * 100) if a["n3"] else 0,
+                round(a["p3"] / (a["n3"] * 1000) * 100) if a["n3"] else 0]
+
+    rows = [stat(a) for a in ag.values()]
+    rows.sort(key=lambda x: x[3], reverse=True)     # 2連単回収率の降順
+    T = {k: sum(a[k] for a in ag.values()) for k in
+         ["n2", "h2", "p2", "n3", "h3", "p3"]}
+    T["v"] = "全場"
+    return {"from": dmin, "to": dmax, "rows": rows, "all": stat(T)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pred", default="predict_win.csv")
@@ -220,8 +291,10 @@ def main():
         labels.append([rel_labels[i] if i < len(rel_labels) else d, d])
 
     vstats = venue_stats(rel, pred, args.stats_from)
+    recent = recent_stats(out, load_payouts(keep))
 
-    payload = {"labels": labels, "base": base, "races": out, "vstats": vstats}
+    payload = {"labels": labels, "base": base, "races": out,
+               "vstats": vstats, "recent": recent}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
@@ -425,6 +498,24 @@ function statsView(){
   h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
     +'top3/5/10=予想上位3/5/10通りに実際の決着が含まれた割合（その点数を買えば当たる割合）。'
     +'※ 4月までは学習期間を含むため的中率はやや高めに出る（5月以降が純粋な検証）。</div>';
+  // 前日・前々日の場別 的中率＋回収率
+  const RC=D.recent;
+  if(RC&&RC.rows&&RC.rows.length){
+    const rrow=(a,all)=>'<tr'+(all?' class="all"':'')+'><td class="k">'+a[0]+'</td>'
+      +'<td class="num scol">'+a[1]+'</td>'
+      +'<td class="num g2">'+a[2]+'%</td><td class="num g2">'+a[3]+'%</td>'
+      +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
+    h+='<div class="meta">回収率の前提: 2連単=上位5を5点買い / 3連単=上位10を10点買い（各100円）。100%超で利益。</div>';
+    h+='<div class="swrap"><table class="st"><thead><tr>'
+      +'<th class="k">会場</th><th>R数</th>'
+      +'<th class="g2">2連単<br>的中</th><th class="g2">回収率</th>'
+      +'<th class="g3">3連単<br>的中</th><th class="g3">回収率</th></tr></thead><tbody>';
+    for(const a of RC.rows)h+=rrow(a,false);
+    h+=rrow(RC.all,true);
+    h+='</tbody></table></div>';
+    h+='<div class="legend">※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。参考値。</div>';
+  }
   return h;
 }
 function render(){
