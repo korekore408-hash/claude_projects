@@ -170,6 +170,30 @@ def load_payouts(keep):
     return payout
 
 
+def calibration(pred, since_ymd="20260501"):
+    """OOS（since以降）で、各艇の予想1着確率を10%刻みにビンし、実際の1着率を返す。
+    返り値: [[予想%平均, 実測1着率%, 母数], ...]。点が対角線に乗るほど確率が正確。"""
+    bins = [[0, 0, 0.0] for _ in range(10)]
+    for r in pred.values():
+        if r.get("race_id", "")[2:10] < since_ymd:
+            continue
+        if (r.get("finish_rank") or "") == "":
+            continue
+        try:
+            p = float(r["p_win"])
+        except (TypeError, ValueError):
+            continue
+        b = min(int(p * 10), 9)
+        bins[b][0] += 1
+        bins[b][1] += 1 if r["finish_rank"] == "1" else 0
+        bins[b][2] += p
+    out = []
+    for n, w, sp in bins:
+        if n:
+            out.append([round(sp / n * 100, 1), round(w / n * 100, 1), n])
+    return out
+
+
 def load_kresult(keep):
     """keep の K-file から race_id -> {km:決まり手, shin:{枠:進入}, st:{枠:ST}}。"""
     yy = {d[2:4] + d[5:7] + d[8:10] for d in keep}
@@ -360,9 +384,10 @@ def main():
 
     vstats = venue_stats(rel, pred, args.stats_from)
     recent = recent_stats(out, load_payouts(keep))
+    calib = calibration(pred)
 
     payload = {"labels": labels, "base": base, "races": out,
-               "vstats": vstats, "recent": recent}
+               "vstats": vstats, "recent": recent, "calib": calib}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
@@ -588,6 +613,31 @@ function statsView(){
     h+=rrow(RC.all,true);
     h+='</tbody></table></div>';
     h+='<div class="legend">※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。参考値。</div>';
+  }
+  // キャリブレーション（予想確率の正確さ）
+  const C=D.calib;
+  if(C&&C.length){
+    const W=320,H=300,pad=34;
+    const sx=v=>pad+v/100*(W-pad-10), sy=v=>H-pad-v/100*(H-pad-12);
+    let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px">';
+    for(let t=0;t<=100;t+=20){
+      g+='<line x1="'+sx(t)+'" y1="'+sy(0)+'" x2="'+sx(t)+'" y2="'+sy(100)+'" stroke="#222a33"/>';
+      g+='<line x1="'+sx(0)+'" y1="'+sy(t)+'" x2="'+sx(100)+'" y2="'+sy(t)+'" stroke="#222a33"/>';
+      g+='<text x="'+sx(t)+'" y="'+(H-pad+12)+'" fill="#7e8796" font-size="9" text-anchor="middle">'+t+'</text>';
+      g+='<text x="'+(pad-6)+'" y="'+(sy(t)+3)+'" fill="#7e8796" font-size="9" text-anchor="end">'+t+'</text>';
+    }
+    g+='<line x1="'+sx(0)+'" y1="'+sy(0)+'" x2="'+sx(100)+'" y2="'+sy(100)+'" stroke="#9a948a" stroke-dasharray="5 4"/>';
+    g+='<polyline points="'+C.map(d=>sx(d[0])+','+sy(d[1])).join(' ')+'" fill="none" stroke="#1d9e75" stroke-width="2"/>';
+    for(const d of C)g+='<circle cx="'+sx(d[0])+'" cy="'+sy(d[1])+'" r="4" fill="#1d9e75"/>';
+    g+='<text x="'+(W/2+6)+'" y="'+(H-2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle">予想した1着確率(%)</text>';
+    g+='<text x="11" y="'+(H/2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle" transform="rotate(-90 11 '+(H/2)+')">実際の1着率(%)</text>';
+    g+='</svg>';
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">予想確率の正確さ（キャリブレーション）</div>';
+    h+='<div class="meta">5月以降OOSの各艇を予想1着確率10%刻みで集計。'
+      +'<span style="color:#1d9e75">緑</span>が点線（理想=予想どおり）に乗るほど確率が正確。</div>';
+    h+='<div style="display:flex;justify-content:center">'+g+'</div>';
+    h+='<div class="legend">※ ほぼ対角線上＝モデルの確率はそのまま信頼できる。例:「65%」と出た艇は実際に約65%が1着。'
+      +'高確率帯はサンプルが減るため端は振れやすい。</div>';
   }
   return h;
 }
