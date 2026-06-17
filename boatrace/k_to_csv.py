@@ -45,6 +45,9 @@ NONFIN_RE = re.compile(
 # レースヘッダ行: "   1R       予選Ａ組..." (先頭スペース1〜5個で払戻金サマリ行と区別)
 RACE_HDR_RE = re.compile(r'^\s{1,5}(\d{1,2})R\s+\D')
 
+# 決まり手: 列見出し行 "  着 艇 登番 …ﾚｰｽﾀｲﾑ 逃げ" の末尾に1着艇の決まり手が入る。
+KIMARITE_RE = re.compile(r'ﾚｰｽﾀｲﾑ\s+(\S+)\s*$')
+
 # 払戻金サマリ行: "           1R  1-6-2   37940    1-2-6    6330    1-6    7930    1-6    3810"
 PAYOUT_RE = re.compile(
     r'^\s+(\d{1,2})R[ \t]+'
@@ -108,6 +111,7 @@ def main():
     date = None
     current_race = None
     payouts = {}   # race_no(int) → dict (会場ごとにリセット)
+    kimarite = {}  # race_no(int) → 決まり手（会場ごとにリセット）
     rows = []
 
     for line in lines:
@@ -118,6 +122,7 @@ def main():
             date = None         # 日付は次の行で再取得
             current_race = None
             payouts = {}        # 払戻金は会場ごとにリセット
+            kimarite = {}       # 決まり手も会場ごとにリセット
             continue
 
         # ── 日付（yyyy/ m/ d 形式） ────────────────────────────────────────
@@ -144,6 +149,13 @@ def main():
             current_race = int(m.group(1))
             continue
 
+        # ── 列見出し行から決まり手を取得（"…ﾚｰｽﾀｲﾑ 逃げ"） ──────────────────
+        if current_race is not None and 'ﾚｰｽﾀｲﾑ' in line:
+            mk = KIMARITE_RE.search(line)
+            if mk:
+                kimarite[current_race] = mk.group(1)
+            continue
+
         # ── 選手結果行 ────────────────────────────────────────────────────
         if current_race is not None:
             m = RACER_RE.match(line)
@@ -164,6 +176,7 @@ def main():
                     '進入コース':         int(m.group(8)),
                     'スタートタイミング': m.group(9),
                     'レースタイム':       clean_racetime(m.group(10)),
+                    '決まり手':           kimarite.get(current_race, ''),
                     **p,
                 })
                 continue

@@ -170,6 +170,67 @@ def load_payouts(keep):
     return payout
 
 
+def load_kresult(keep):
+    """keep の K-file から race_id -> {km:決まり手, shin:{枠:進入}, st:{枠:ST}}。"""
+    yy = {d[2:4] + d[5:7] + d[8:10] for d in keep}
+    kres = {}
+    for kp in glob.glob("data/k*.csv"):
+        m = re.search(r"k(\d{6})", kp)
+        if not m or m.group(1) not in yy:
+            continue
+        for r in load(kp):
+            if (r.get("status") or "") != "finish":
+                continue
+            code = VENUE_CODE.get(r["会場"], "00")
+            y, mo, dd = r["日付"].split("/")
+            rid = f"{code}{int(y):04d}{int(mo):02d}{int(dd):02d}{int(r['レース']):02d}"
+            d = kres.setdefault(rid, {"km": r.get("決まり手", ""), "shin": {}, "st": {}})
+            try:
+                d["shin"][int(r["艇番"])] = int(r["進入コース"])
+            except (ValueError, KeyError):
+                pass
+            d["st"][int(r["艇番"])] = to_float(r.get("スタートタイミング"))
+    return kres
+
+
+def cause_comment(pm, fin, kr):
+    """予想と結果のズレの原因を1文で説明。kr=load_kresult の1レース分。的中時は順当コメント。"""
+    hm = max(range(6), key=lambda i: pm[i]) + 1            # 本命枠
+    order = sorted([w for w in range(1, 7)
+                    if fin[w - 1] is not None and fin[w - 1] >= 1],
+                   key=lambda w: fin[w - 1])
+    if not order:
+        return None
+    win = order[0]
+    km = kr.get("km", "") if kr else ""
+    shin = kr.get("shin", {}) if kr else {}
+    st = kr.get("st", {}) if kr else {}
+    if win == hm:
+        return f"順当：本命{hm}号艇が{km or '1着'}で的中。"
+    r = []
+    # 進入が枠なりから崩れたか
+    if any(shin.get(w) and shin[w] != w for w in range(1, 7)):
+        r.append("進入が枠なりから変化（前づけ等）")
+    # 決まり手ベースの要因
+    if km in ("まくり", "まくり差し") and win >= 3:
+        r.append(f"{win}号艇の{km}が決まり波乱")
+    elif km == "差し":
+        r.append(f"{win}号艇の差しで逆転")
+    elif km == "抜き":
+        r.append("抜きで展開一変")
+    elif km == "逃げ" and win == 1:
+        r.append("1号艇が逃げ切り（本命評価が届かず）")
+    # 本命のスタート遅れ
+    if st.get(hm) is not None and st[hm] >= 0.20:
+        r.append(f"本命{hm}号艇のスタート遅れ(ST{st[hm]:.2f})")
+    # 人気薄の激走
+    if pm[win - 1] < 0.12:
+        r.append(f"人気薄{win}号艇({round(pm[win-1]*100)}%)の激走")
+    if not r:
+        r.append(f"{win}号艇の{km or '決着'}で着")
+    return "ズレ要因：" + "・".join(r[:2]) + "。"
+
+
 def recent_stats(out, payout):
     """前日・前々日（結果のある日）の場別 2連単/3連単 的中率・回収率。
     前提ベット: 2連単=モデル上位5を5点買い / 3連単=上位10を10点買い（各100円）。"""
@@ -272,14 +333,21 @@ def main():
             "vown": to_float(h.get("venue_own_lane_winrate")),
         }
 
+    kres = load_kresult(keep)
     out = []
     for rid, rc in races.items():
         if len(rc["b"]) != 6 or any(rc["b"][w][1] is None for w in range(1, 7)):
             continue
         cm = make_comment([rc["feat"][w] for w in range(1, 7)], rc["fs"])
+        pm = [rc["b"][w][1] for w in range(1, 7)]
+        fin = [rc["b"][w][2] for w in range(1, 7)]
+        kr = kres.get(rid)
+        km = kr["km"] if kr else ""
+        cause = cause_comment([p / 1000 for p in pm], fin, kr) \
+            if any(f == 1 for f in fin) else None
         out.append({"id": rid, "d": rc["d"], "c": rc["c"], "v": rc["v"],
                     "no": rc["no"], "mz": rc["mz"],
-                    "fs": rc["fs"], "cm": cm,
+                    "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "b": [[rc["b"][w][0], rc["b"][w][1], rc["b"][w][2]]
                           for w in range(1, 7)]})
     out.sort(key=lambda x: (x["d"], x["c"], x["no"]))
@@ -346,6 +414,9 @@ HTML = r"""<!DOCTYPE html>
   .warn{font-size:12px;color:#f0c674;background:#2a2015;border:1px solid #6b5a1a;border-radius:8px;padding:7px 10px;margin:6px 0;line-height:1.5}
   .cmt{font-size:13px;color:#cdd6e2;background:#141a1f;border-left:3px solid #3b82f6;border-radius:0 6px 6px 0;padding:9px 12px;margin:8px 0;line-height:1.7}
   .cmt .h{color:#8ea0ba;font-size:11px;margin-right:6px}
+  .kmlab{font-size:12px;color:#cdd6e2;background:#2a2f3a;border-radius:6px;padding:1px 8px;margin-left:6px}
+  .cause{font-size:12px;color:#e0c896;background:#241f15;border-left:3px solid #a8730a;border-radius:0 6px 6px 0;padding:7px 10px;margin:6px 0;line-height:1.6}
+  .cause .h{color:#b89a5a;font-size:11px;margin-right:6px}
   .rbar{display:flex;align-items:center;gap:6px;margin:8px 0;flex-wrap:wrap}
   .rlab{font-size:12px;color:#9aa3b2}
   .arr{color:#5b6472;font-size:12px}
@@ -444,7 +515,9 @@ function detailView(r){
   if(done){
     h+='<div class="rbar"><span class="rlab">結果</span>';
     ord.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
+    if(r.km)h+='<span class="kmlab">'+r.km+'</span>';
     h+='<span style="margin-left:6px">'+(ord[0]===hm+1?'<span class="ok">◎的中</span>':'<span class="ng">◎不的中</span>')+'</span></div>';
+    if(r.cause)h+='<div class="cause"><span class="h">結果分析</span>'+r.cause+'</div>';
   }
   h+='<div class="sec">1着確率（モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];
