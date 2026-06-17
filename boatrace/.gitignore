@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+predict_win_latest.csv

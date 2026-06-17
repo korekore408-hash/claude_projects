@@ -7,9 +7,16 @@
   1. fetch_range : 指定日のB（出走表）＋前日のK（結果）を取得
   2. convert_all : 追加分を CSV 化
   3. features_player_history / features_race_relative / race_flags : 全期間 as-of 再計算
-  4. predict_combos --mode split : 当日を含む全レースの1着確率/strength を出力
+  4. 予測:
+     4a. train<=260430 固定で全レース予測（直近=OOSのまま honest な的中率/回収率）
+     4b. 前日まで全データで再学習した最新モデルで予測（学習を毎日追加）
+     4c. 当日のレース行だけ最新モデルに差し替え（過去はそのまま＝評価は honest）
   5. build_today : 当日予想メインページ（携帯向け）
   6. build_viewer --last-days 14 : 直近14日の詳細ビューア（当日が既定表示）
+
+注: 全期間ウォークフォワード（毎日全データ再学習）は約97分かかり非現実的なため、
+    上記の「当日のみ最新モデル差し替え」で学習追加を実現。検証では再学習しても
+    1着的中率は約0.567で頭打ち（直前情報なしモデルの構造的上限）。
 
 使い方:
   py -3 daily.py                 # 今日（システム日付）
@@ -17,6 +24,7 @@
 """
 
 import argparse
+import csv
 import datetime
 import subprocess
 import sys
@@ -28,6 +36,29 @@ def run(args, **kw):
     if r.returncode != 0:
         print(f"× 失敗 (exit {r.returncode}): {args}")
         sys.exit(r.returncode)
+
+
+def merge_today(today, base="predict_win.csv", latest="predict_win_latest.csv"):
+    """当日のレース行だけ、最新モデル(前日まで学習)の予測に差し替える。
+    過去レースは base（固定split）のまま＝直近の評価は honest OOS を維持。"""
+    ymd = today.strftime("%Y%m%d")
+    with open(latest, encoding="cp932") as f:
+        lat = {(r["race_id"], r["枠番"]): r for r in csv.DictReader(f)}
+    with open(base, encoding="cp932") as f:
+        rows = list(csv.DictReader(f))
+        fn = list(rows[0].keys())
+    nrep = 0
+    for i, r in enumerate(rows):
+        if r["race_id"][2:10] == ymd:
+            k = (r["race_id"], r["枠番"])
+            if k in lat:
+                rows[i] = lat[k]
+                nrep += 1
+    with open(base, "w", encoding="cp932", newline="", errors="replace") as f:
+        w = csv.DictWriter(f, fieldnames=fn)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"  当日 {nrep} 行を最新モデル予測に差し替え")
 
 
 def main():
@@ -49,8 +80,14 @@ def main():
     run(["features_player_history.py"])
     run(["features_race_relative.py"])
     run(["race_flags.py"])
-    # 4. 予測（train<=260430 で学習し全レース出力。当日は finish 無し＝予想のみ）
+    # 4a. 評価用予測（train<=260430 固定。直近=OOSのまま honest な的中率/回収率）。
     run(["predict_combos.py", "--mode", "split", "--train-end", "260430"])
+    # 4b. 当日用に「前日まで全データ」で再学習した最新モデルで予測（学習を毎日追加）。
+    prev_key = prev.strftime("%y%m%d")
+    run(["predict_combos.py", "--mode", "split", "--train-end", prev_key,
+         "--out", "predict_win_latest.csv"])
+    # 4c. 当日のレース行だけ最新モデルの予測に差し替え（過去はそのまま）。
+    merge_today(today)
     # 5-7. ページ生成（HTMLアプリ ＋ 携帯どこでも用PDF ＋ 詳細ビューア）
     run(["build_today.py", "--date", today.isoformat()])
     run(["build_today_pdf.py", "--date", today.isoformat()])
