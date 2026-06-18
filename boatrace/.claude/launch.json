@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8765", "--directory", "C:/Users/kore4/OneDrive/デスクトップ/boatrace"],
       "port": 8765
+    },
+    {
+      "name": "boatrace-odds",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-3.13", "serve_odds.py", "--port", "8788"],
+      "port": 8788
     }
   ]
 }

@@ -503,6 +503,13 @@ HTML = r"""<!DOCTYPE html>
   .tag.h{background:#10362c;color:#43c59e}.tag.m{background:#3a1f1f;color:#e06b6b}
   .crow{display:flex;align-items:center;gap:6px;padding:6px 2px;border-bottom:0.5px solid #2a2f3a}
   .crow.hit{background:#10362c;border-radius:5px}
+  .crow.evplus{background:#173a1f;border-radius:5px;box-shadow:inset 3px 0 0 #43c59e}
+  .ev{font-size:11px;color:#9aa3b2;font-variant-numeric:tabular-nums;white-space:nowrap;min-width:96px;text-align:right}
+  .ev b{color:#cdd6e2}.crow.evplus .ev b{color:#7ee0a4}
+  .oddsupd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 2px}
+  .oddsbtn{font-size:13px;font-weight:700;color:#0b0e14;background:#5dc7e0;border:none;border-radius:8px;padding:8px 14px;cursor:pointer}
+  .oddsbtn:disabled{opacity:.5}
+  .oddsstat{font-size:11px;color:#9aa3b2}
   .mc{font-size:13px;border-radius:4px;padding:1px 7px;border:0.5px solid #2a2f3a;font-weight:700;display:inline-block}
   .rk{font-size:11px;color:#5b6472;min-width:20px}
   .cp{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums;color:#9aa3b2;text-align:right}
@@ -610,19 +617,21 @@ function detailView(r){
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
   h+='<div class="sec">2連単 上位5'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   ex.forEach((c,i)=>{const hit=actEx&&eqArr(c[0],actEx);
-    h+='<div class="crow'+(hit?' hit':'')+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')
+    h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
-     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
+     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
   // 3連単 上位10
   const tri=plTop(s,3,10);
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
   h+='<div class="sec">3連単 上位10'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);
-    h+='<div class="crow'+(hit?' hit':'')+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
+    h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
-     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
+     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
+  // 実オッズ更新（押した時だけ boatrace 公式から取得＝自動取得しない）
+  h+='<div class="oddsupd"><button class="oddsbtn" data-id="'+r.id+'">実オッズを取得してEV判定</button><span class="oddsstat">押すと発走前オッズを取得し EV=確率×実オッズ を表示（+EVを緑★）</span></div>';
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
     +'発走前の実オッズがこれを超えていれば長期的に勝てる買い目（モデル確率は実測とほぼ一致＝信頼できる）。</div>';
@@ -713,6 +722,26 @@ function statsView(){
   }
   return h;
 }
+// 実オッズ取得→EV判定（ボタン押下時のみ。serve_odds.py の /odds 経由）
+function updateOdds(btn){
+  const id=btn.dataset.id, stat=document.querySelector('.oddsstat');
+  btn.disabled=true; stat.textContent=' 取得中…';
+  fetch('odds?id='+id).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
+    const map=Object.assign({},o['2t']||{},o['3t']||{});
+    let n=0,best=null;
+    document.querySelectorAll('.crow[data-combo]').forEach(row=>{
+      const cb=row.dataset.combo, p=parseFloat(row.dataset.p), od=map[cb], ev=row.querySelector('.ev');
+      row.classList.remove('evplus'); if(!ev)return;
+      if(od==null){ev.textContent='実 –';return;}
+      const e=p*od; n++; const plus=e>=1;
+      ev.innerHTML='実<b>'+od.toFixed(1)+'</b>倍 EV<b>'+e.toFixed(2)+'</b>'+(plus?' ★':'');
+      if(plus)row.classList.add('evplus');
+      if(best===null||e>best)best=e;
+    });
+    stat.innerHTML='取得 '+(o.fetched_at||'')+' ／ '+n+'点照合・最大EV '+(best!=null?best.toFixed(2):'–')+'（★=+EV）';
+    btn.disabled=false;
+  }).catch(()=>{stat.innerHTML='<span style="color:#e06b6b">取得失敗：serve_odds.py 経由で開く（発売前は空のことあり）</span>';btn.disabled=false;});
+}
 function render(){
   if(tab==='stats'){
     root.innerHTML=statsView();
@@ -728,6 +757,7 @@ function render(){
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{sel=+rw.dataset.i;render();});
   }else{
     document.querySelector('.back').onclick=()=>{sel=null;render();};
+    const ob=document.querySelector('.oddsbtn'); if(ob)ob.onclick=()=>updateOdds(ob);
   }
 }
 render();
