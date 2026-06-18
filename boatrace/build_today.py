@@ -401,6 +401,7 @@ def main():
         }
 
     kres = load_kresult(keep)
+    payout = load_payouts(keep)
     out = []
     for rid, rc in races.items():
         if len(rc["b"]) != 6 or any(rc["b"][w][1] is None for w in range(1, 7)):
@@ -412,9 +413,11 @@ def main():
         km = kr["km"] if kr else ""
         cause = cause_comment([p / 1000 for p in pm], fin, kr) \
             if any(f == 1 for f in fin) else None
+        po = payout.get(rid)                          # (2連単配当, 3連単配当)
         out.append({"id": rid, "d": rc["d"], "c": rc["c"], "v": rc["v"],
                     "no": rc["no"], "mz": rc["mz"],
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
+                    "po": list(po) if po else None,
                     "b": [[rc["b"][w][0], rc["b"][w][1], rc["b"][w][2]]
                           for w in range(1, 7)]})
     out.sort(key=lambda x: (x["d"], x["c"], x["no"]))
@@ -426,7 +429,7 @@ def main():
         labels.append([rel_labels[i] if i < len(rel_labels) else d, d])
 
     vstats = venue_stats(rel, pred, args.stats_from)
-    recent = recent_stats(out, load_payouts(keep))
+    recent = recent_stats(out, payout)
     calib = calibration(pred)
 
     payload = {"labels": labels, "base": base, "races": out,
@@ -587,6 +590,14 @@ function detailView(r){
     if(r.km)h+='<span class="kmlab">'+r.km+'</span>';
     h+='<span style="margin-left:6px">'+(ord[0]===hm+1?'<span class="ok">◎的中</span>':'<span class="ng">◎不的中</span>')+'</span></div>';
     if(r.cause)h+='<div class="cause"><span class="h">結果分析</span>'+r.cause+'</div>';
+    if(r.po){
+      const plOf=c=>{let p=1,rem=s.reduce((a,b)=>a+b,0);for(const w of c){p*=s[w-1]/rem;rem-=s[w-1];}return p;};
+      const evrow=(lab,combo,po)=>{if(!combo||po==null)return '';const need=1/plOf(combo),bai=po/100,ok=bai>=need;
+        return lab+' '+combo.join('-')+'：配当<b>'+bai.toFixed(1)+'倍</b> / 必要'+need.toFixed(1)+'倍 → '
+          +(ok?'<span class="ok">妙味◎(+EV)</span>':'<span style="color:#9aa3b2">届かず(-EV)</span>');};
+      h+='<div class="cause" style="border-left-color:#5dc7e0;color:#cdd6e2"><span class="h" style="color:#7fb2ff">買えてた場合の妙味</span>'
+        +evrow('2連単',actEx,r.po[0])+'<br>'+evrow('3連単',actTri,r.po[1])+'</div>';
+    }
   }
   h+='<div class="sec">1着確率（モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];
@@ -654,15 +665,17 @@ function statsView(){
       +'<td class="num g2">'+a[2]+'%</td><td class="num g2">'+a[3]+'%</td>'
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
-    h+='<div class="meta">回収率の前提: 2連単=上位5を5点買い / 3連単=上位10を10点買い（各100円）。100%超で利益。</div>';
+    h+='<div class="meta">実践的中＝上位K点を実際に買った場合の的中率（2連単=上位5/3連単=上位10, 各100円）。回収率100%超で利益。</div>';
     h+='<div class="swrap"><table class="st"><thead><tr>'
       +'<th class="k">会場</th><th>R数</th>'
-      +'<th class="g2">2連単<br>的中</th><th class="g2">回収率</th>'
-      +'<th class="g3">3連単<br>的中</th><th class="g3">回収率</th></tr></thead><tbody>';
+      +'<th class="g2">2連単<br>実践的中</th><th class="g2">回収率</th>'
+      +'<th class="g3">3連単<br>実践的中</th><th class="g3">回収率</th></tr></thead><tbody>';
     for(const a of RC.rows)h+=rrow(a,false);
     h+=rrow(RC.all,true);
     h+='</tbody></table></div>';
-    h+='<div class="legend">※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。参考値。</div>';
+    h+='<div class="legend">※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。'
+      +'確率帯別バックテスト(2026全体)ではどの帯も回収率100%未満（控除率約25%の壁）＝確率だけで機械的に買うと負ける。'
+      +'各レース詳細の「買えてた場合の妙味」で、実配当が必要オッズを超えたか（＝買えてたら+EVか）を確認できる。</div>';
   }
   // キャリブレーション（予想確率の正確さ）1着/2連単/3連単
   const CB=D.calib;
