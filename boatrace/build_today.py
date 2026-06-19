@@ -35,6 +35,17 @@ def to_float(s):
         return None
 
 
+# 予想確率（本命確率 hon=top1 p_win）に応じた買目点数。堅い→少点 / 荒れ→多点。
+# 検証(2026年): 鉄板ほど少点で回収率が高く、大混戦は点数を広げる方が良い。上限は 2連単5 / 3連単20。
+def k_ex(hon):     # 2連単（上限5）
+    return 2 if hon >= 0.65 else 3 if hon >= 0.50 else 4 if hon >= 0.40 else 5
+
+
+def k_tri(hon):    # 3連単（上限20）
+    return (4 if hon >= 0.65 else 7 if hon >= 0.50 else 10 if hon >= 0.40
+            else 14 if hon >= 0.30 else 20)
+
+
 def make_comment(boats, field_std):
     """viewer.html と同じロジックの予想コメント [line1, line2] を作る。
     boats: [{枠,名,pwin(0-1),win_rank,motor_rank,st_rank,lane_win,lane_n,vown}]"""
@@ -108,7 +119,7 @@ def venue_stats(rel, pred, since):
         rc = races.setdefault(rid, {"c": r["場コード"], "v": r["会場"],
                                     "d": r["日付"], "b": {}})
         rc["b"][int(r["枠番"])] = (pm, fin)
-    agg = defaultdict(lambda: [0, 0, 0, 0, 0, 0, 0, 0])   # n,win,e1,e3,e5,t1,t3,t10
+    agg = defaultdict(lambda: [0, 0, 0, 0, 0, 0, 0, 0])   # n,win,e1,e3,eK(2連単変動),t1,t3,tK(3連単変動)
     name = {}
     dmin = dmax = None
     for rc in races.values():
@@ -125,6 +136,8 @@ def venue_stats(rel, pred, since):
         if len(order) < 3 or fins[order[0] - 1] != 1:
             continue
         hm = max(range(6), key=lambda i: s[i]) + 1
+        hon = max(s)
+        kx, kt = k_ex(hon), k_tri(hon)
         er = _pl_rank(s, 2, tuple(order[:2]))
         tr = _pl_rank(s, 3, tuple(order[:3]))
         a = agg[rc["c"]]
@@ -133,8 +146,8 @@ def venue_stats(rel, pred, since):
         dmax = rc["d"] if dmax is None or rc["d"] > dmax else dmax
         a[0] += 1
         a[1] += (hm == order[0])
-        a[2] += er <= 1; a[3] += er <= 3; a[4] += er <= 5
-        a[5] += tr <= 1; a[6] += tr <= 3; a[7] += tr <= 10
+        a[2] += er <= 1; a[3] += er <= 3; a[4] += er <= kx     # 2連単 変動K
+        a[5] += tr <= 1; a[6] += tr <= 3; a[7] += tr <= kt     # 3連単 変動K
     pct = lambda x, n: round(x / n * 100) if n else 0
     rows = []
     for c, a in agg.items():
@@ -170,11 +183,11 @@ def load_payouts(keep):
     return payout
 
 
-def calibration(pred, since_ymd="20260101"):
-    """since以降の全レースで、1着/2連単/3連単の予想確率を実測発生率と照合（キャリブ）。
-    返り値: {c1,c2,c3}。各 [[予想%平均, 実測%, 母数], ...]。点が対角線に乗るほど確率が正確。
-    2連単/3連単は Plackett-Luce で全組合せの確率を出して集計する。"""
-    import itertools
+def hon_ana_result(pred, since_ymd="20260101"):
+    """本命確率/穴確率の帯ごとに、実際の結果（的中率）を集計＝購入判断の材料。
+    本命確率=モデル1番手(p_win最大)。穴確率=モデル順位4-6のp_win合計。
+    本命的中=1着がモデル1番手。穴的中=1着がモデル順位4-6（軽視艇）。
+    返り値 {hon, ana}: 各 [[帯ラベル, 予測中央%, 実測%, レース数], ...]。"""
     from collections import defaultdict
     races = defaultdict(dict)
     for r in pred.values():
@@ -182,26 +195,18 @@ def calibration(pred, since_ymd="20260101"):
             continue
         races[r["race_id"]][int(r["枠番"])] = (r.get("p_win"), r.get("finish_rank"))
 
-    b1 = [[0, 0, 0.0] for _ in range(10)]
-    e2 = [0, .02, .05, .08, .12, .16, .20, .30, 1.01]
-    e3 = [0, .005, .01, .02, .03, .05, .07, .10, 1.01]
-    b2 = [[0, 0, 0.0] for _ in e2[:-1]]
-    b3 = [[0, 0, 0.0] for _ in e3[:-1]]
+    hon_edges = [0, .40, .50, .60, .70, .80, 1.01]
+    ana_edges = [0, .08, .12, .16, .20, .25, .30, 1.01]
+    honb = [[0, 0, 0.0] for _ in hon_edges[:-1]]      # n, hit, sum_pred
+    anab = [[0, 0, 0.0] for _ in ana_edges[:-1]]
 
-    def addb(bins, edges, p, occ):
+    def add(bins, edges, p, hit):
         for i in range(len(edges) - 1):
             if edges[i] <= p < edges[i + 1]:
                 bins[i][0] += 1
-                bins[i][1] += occ
+                bins[i][1] += hit
                 bins[i][2] += p
                 return
-
-    def plprob(s, combo):
-        p, rem = 1.0, sum(s)
-        for w in combo:
-            p *= s[w - 1] / rem
-            rem -= s[w - 1]
-        return p
 
     for b in races.values():
         if len(b) != 6:
@@ -216,25 +221,24 @@ def calibration(pred, since_ymd="20260101"):
             fin[w] = b[w][1]
         if not ok or not any(fin[w] == "1" for w in range(1, 7)):
             continue
-        for w in range(1, 7):                       # 1着 calib（全艇）
-            bi = min(int(s[w - 1] * 10), 9)
-            b1[bi][0] += 1
-            b1[bi][1] += 1 if fin[w] == "1" else 0
-            b1[bi][2] += s[w - 1]
-        order = sorted([w for w in range(1, 7) if fin[w] not in ("", "0", None)],
-                       key=lambda w: int(fin[w]))
-        if len(order) < 3:
-            continue
-        a2, a3 = tuple(order[:2]), tuple(order[:3])
-        for c in itertools.permutations(range(1, 7), 2):
-            addb(b2, e2, plprob(s, c), 1 if c == a2 else 0)
-        for c in itertools.permutations(range(1, 7), 3):
-            addb(b3, e3, plprob(s, c), 1 if c == a3 else 0)
+        order = sorted(range(6), key=lambda i: -s[i])     # モデル順位（0始まり艇index）
+        win = next(i for i in range(6) if fin[i + 1] == "1")
+        rank = order.index(win) + 1                       # 1=本命
+        hon = s[order[0]]
+        ana = s[order[3]] + s[order[4]] + s[order[5]]
+        add(honb, hon_edges, hon, 1 if rank == 1 else 0)
+        add(anab, ana_edges, ana, 1 if rank >= 4 else 0)
 
-    def fmt(bins):
-        return [[round(sp / n * 100, 2), round(w / n * 100, 2), n]
-                for n, w, sp in bins if n]
-    return {"c1": fmt(b1), "c2": fmt(b2), "c3": fmt(b3)}
+    def lab(edges, i):
+        lo = int(round(edges[i] * 100))
+        if edges[i + 1] > 1:
+            return f"{lo}%+"
+        return f"{lo}-{int(round(edges[i + 1] * 100))}"
+
+    def fmt(bins, edges):
+        return [[lab(edges, i), round(sp / n * 100, 1), round(hit / n * 100, 1), n]
+                for i, (n, hit, sp) in enumerate(bins) if n]
+    return {"hon": fmt(honb, hon_edges), "ana": fmt(anab, ana_edges)}
 
 
 def load_kresult(keep):
@@ -300,7 +304,8 @@ def cause_comment(pm, fin, kr):
 
 def recent_stats(out, payout):
     """前日・前々日（結果のある日）の場別 2連単/3連単 的中率・回収率。
-    前提ベット: 2連単=モデル上位5を5点買い / 3連単=上位10を10点買い（各100円）。"""
+    前提ベット: 予想確率で点数変動（2連単=上位 k_ex≦5 / 3連単=上位 k_tri≦20, 各100円）。
+    回収率 = Σ配当 / (Σ点数 × 100)。"""
     ag = {}
     dmin = dmax = None
     for r in out:
@@ -313,33 +318,37 @@ def recent_stats(out, payout):
                        key=lambda w: fins[w - 1])
         if fins[order[0] - 1] != 1:
             continue
+        hon = max(sv) / 1000.0
+        kx, kt = k_ex(hon), k_tri(hon)
         po = payout.get(r["id"], (0, 0))
-        a = ag.setdefault(r["c"], {"v": r["v"], "n2": 0, "h2": 0, "p2": 0,
-                                   "n3": 0, "h3": 0, "p3": 0})
+        a = ag.setdefault(r["c"], {"v": r["v"], "n2": 0, "h2": 0, "p2": 0, "pts2": 0,
+                                   "n3": 0, "h3": 0, "p3": 0, "pts3": 0})
         dmin = r["d"] if dmin is None or r["d"] < dmin else dmin
         dmax = r["d"] if dmax is None or r["d"] > dmax else dmax
         if len(order) >= 2:
             a["n2"] += 1
-            if _pl_rank(sv, 2, tuple(order[:2])) <= 5:
+            a["pts2"] += kx
+            if _pl_rank(sv, 2, tuple(order[:2])) <= kx:
                 a["h2"] += 1
                 a["p2"] += po[0]
         if len(order) >= 3:
             a["n3"] += 1
-            if _pl_rank(sv, 3, tuple(order[:3])) <= 10:
+            a["pts3"] += kt
+            if _pl_rank(sv, 3, tuple(order[:3])) <= kt:
                 a["h3"] += 1
                 a["p3"] += po[1]
 
     def stat(a):
         return [a["v"], a["n2"],
                 round(a["h2"] / a["n2"] * 100) if a["n2"] else 0,
-                round(a["p2"] / (a["n2"] * 500) * 100) if a["n2"] else 0,
+                round(a["p2"] / (a["pts2"] * 100) * 100) if a["pts2"] else 0,
                 round(a["h3"] / a["n3"] * 100) if a["n3"] else 0,
-                round(a["p3"] / (a["n3"] * 1000) * 100) if a["n3"] else 0]
+                round(a["p3"] / (a["pts3"] * 100) * 100) if a["pts3"] else 0]
 
     rows = [stat(a) for a in ag.values()]
     rows.sort(key=lambda x: x[3], reverse=True)     # 2連単回収率の降順
     T = {k: sum(a[k] for a in ag.values()) for k in
-         ["n2", "h2", "p2", "n3", "h3", "p3"]}
+         ["n2", "h2", "p2", "pts2", "n3", "h3", "p3", "pts3"]}
     T["v"] = "全場"
     return {"from": dmin, "to": dmax, "rows": rows, "all": stat(T)}
 
@@ -394,6 +403,8 @@ def main():
             "pwin": (pm / 1000) if pm is not None else None,
             "win_rank": to_float(r.get("winrate_rank_in_race")),
             "motor_rank": to_float(r.get("motor_rank_in_race")),
+            "motor_rate": to_float(r.get("motor_top2_rate")),
+            "recent": to_float(h.get("recent30_winrate")),
             "st_rank": to_float(r.get("st_rank_in_race")),
             "lane_win": to_float(h.get("lane_win_rate")),
             "lane_n": to_float(h.get("lane_n")),
@@ -419,7 +430,12 @@ def main():
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
                     "b": [[rc["b"][w][0], rc["b"][w][1], rc["b"][w][2]]
-                          for w in range(1, 7)]})
+                          for w in range(1, 7)],
+                    # 穴候補の判断材料: 枠ごと [モーターレース内順位, 直近30走勝率, ST順位]
+                    "ft": [[rc["feat"][w].get("motor_rank"),
+                            rc["feat"][w].get("recent"),
+                            rc["feat"][w].get("st_rank")]
+                           for w in range(1, 7)]})
     out.sort(key=lambda x: (x["d"], x["c"], x["no"]))
 
     # 日付ラベル（当日/前日/前々日）
@@ -430,10 +446,10 @@ def main():
 
     vstats = venue_stats(rel, pred, args.stats_from)
     recent = recent_stats(out, payout)
-    calib = calibration(pred)
+    hra = hon_ana_result(pred)
 
     payload = {"labels": labels, "base": base, "races": out,
-               "vstats": vstats, "recent": recent, "calib": calib}
+               "vstats": vstats, "recent": recent, "hra": hra}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
@@ -448,7 +464,7 @@ HTML = r"""<!DOCTYPE html>
 <html lang="ja"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>競艇 予想</title>
+<title>競艇当日予想</title>
 <style>
   :root{color-scheme:dark}
   *{box-sizing:border-box}
@@ -501,6 +517,7 @@ HTML = r"""<!DOCTYPE html>
   .sec{font-size:13px;font-weight:600;color:#9aa3b2;margin:16px 0 6px;display:flex;align-items:center;gap:8px}
   .tag{font-size:11px;border-radius:8px;padding:1px 7px}
   .tag.h{background:#10362c;color:#43c59e}.tag.m{background:#3a1f1f;color:#e06b6b}
+  .kbadge{font-size:10px;color:#7fb2ff;background:#14233a;border:0.5px solid #2b4a6f;border-radius:7px;padding:1px 7px;margin-left:8px;font-weight:600}
   .crow{display:flex;align-items:center;gap:6px;padding:6px 2px;border-bottom:0.5px solid #2a2f3a}
   .crow.hit{background:#10362c;border-radius:5px}
   .crow.evplus{background:#173a1f;border-radius:5px;box-shadow:inset 3px 0 0 #43c59e}
@@ -529,6 +546,28 @@ HTML = r"""<!DOCTYPE html>
   table.st tr.all td{border-top:1px solid #39404d;color:#fff}
   .num{font-variant-numeric:tabular-nums}
   .scol{color:#9aa3b2}
+  .ha2{display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .ha2 .hp{font-size:12px;color:#9aa3b2;font-variant-numeric:tabular-nums}
+  .ha2 .hp b{color:#ffd54a;font-size:13px}
+  .ha2 .hp b.a{color:#e0a93b}
+  .ha{display:flex;gap:10px;margin:8px 0}
+  .hacell{flex:1;background:#141a1f;border:0.5px solid #2a2f3a;border-radius:8px;padding:8px 10px;text-align:center}
+  .hak{font-size:11px;color:#9aa3b2}
+  .hav{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;margin:2px 0;line-height:1.1}
+  .hav.hon{color:#ffd54a}.hav.ana{color:#e0a93b}
+  .hsub{font-size:12px;color:#cdd6e2}
+  .lvl{font-size:11px;font-weight:700;border-radius:8px;padding:2px 9px;display:inline-block}
+  .lvl.tetsu{background:#10362c;color:#43c59e}
+  .lvl.std{background:#2a2f3a;color:#cdd6e2}
+  .lvl.haran{background:#3a1f1f;color:#e06b6b}
+  .lvl.honhit{background:#10362c;color:#43c59e}
+  .lvl.anahit{background:#3a2f15;color:#e0a93b}
+  .lvl.midhit{background:#2a2f3a;color:#cdd6e2}
+  .row.done{flex-wrap:wrap;row-gap:5px}
+  .resline{flex-basis:100%;display:flex;align-items:center;gap:4px;padding-left:38px;font-size:12px;color:#9aa3b2}
+  .resline .rll{color:#6b7280;font-size:11px;margin-right:2px}
+  .resline .yen{margin-left:auto;font-variant-numeric:tabular-nums;color:#cdd6e2;font-weight:600}
+  .resline .yen.hit{color:#43c59e}
 </style></head><body>
 <div id="app"></div>
 <script>
@@ -547,6 +586,33 @@ function plTop(s,kind,k){const idx=[0,1,2,3,4,5].filter(i=>s[i]>0);const tot=s.r
   else{for(const i of idx)for(const j of idx){if(j===i)continue;for(const l of idx){if(l===i||l===j)continue;out.push([[i+1,j+1,l+1],s[i]/tot*s[j]/(tot-s[i])*s[l]/(tot-s[i]-s[j])]);}}}
   out.sort((a,b)=>b[1]-a[1]);return out.slice(0,k);}
 
+// 予想確率（本命確率hon=0-1）に応じた買目点数。堅い→少点/荒れ→多点。上限 2連単5/3連単20。
+function kEx(hon){return hon>=0.65?2:hon>=0.50?3:hon>=0.40?4:5;}
+function kTri(hon){return hon>=0.65?4:hon>=0.50?7:hon>=0.40?10:hon>=0.30?14:20;}
+// 本命確率/穴確率/荒れ度/穴筆頭。s=per-mille p_win 配列。
+// 本命=モデル1番手(p_win最大)。穴=モデル順位4-6(=軽視された艇)の1着。
+// 検証(29,233R OOS): 本命確率はキャリブ良好、穴率はΣp_win(4-6)とほぼ一致(平均13%)。
+// モーター/直近はp_winに織り込み済み＝確率を超える穴シグナルは無い→材料は脅威の目安として表示。
+function honAna(r){
+  const s=r.b.map(x=>x[1]);
+  const idx=[0,1,2,3,4,5].sort((a,b)=>s[b]-s[a]);   // モデル順位降順
+  const hon=s[idx[0]]/1000;
+  const ana=(s[idx[3]]+s[idx[4]]+s[idx[5]])/1000;    // 順位4-6の合計
+  const lvl = hon>=0.65?['鉄板','tetsu'] : hon<0.45?['波乱含み','haran'] : ['標準','std'];
+  return {hon,ana,lvl:lvl[0],lvlcls:lvl[1],hmLane:idx[0]+1,anaLane:idx[3]+1};
+}
+
+// 結果（過去日）の1着が、モデルで本命/中位/穴のどれだったか。
+// 本命=モデル1番手が1着 / 中位=2-3番手 / 穴=4-6番手（軽視艇）が1着。
+function winKind(r){
+  const s=r.b.map(x=>x[1]);
+  const win=finishOrder(r)[0];
+  const rank=[0,1,2,3,4,5].sort((a,b)=>s[b]-s[a]).indexOf(win-1)+1;   // 1=本命
+  if(rank===1)return {lab:'本命',cls:'honhit',rank};
+  if(rank>=4)return {lab:'穴',cls:'anahit',rank};
+  return {lab:'中位',cls:'midhit',rank};
+}
+
 function listView(){
   const rs=dayRaces();
   const lab=D.labels.find(l=>l[1]===selDate);
@@ -554,7 +620,7 @@ function listView(){
   for(const l of D.labels)h+='<button class="dbtn'+(selDate===l[1]?' on':'')+'" data-d="'+l[1]+'">'+l[0]+'<small>'+mmdd(l[1])+'</small></button>';
   h+='</div>';
   h+='<div class="meta">直前情報なしモデル（朝の出走表のみ）・ '+rs.length+'レース ・ タップで詳細'
-    +(hasResult(rs[0]||{b:[]})?' ・ 結果あり（的中=本命1着 / 2連単top5 / 3連単top10 のいずれか圏内）':'')+'</div>';
+    +(hasResult(rs[0]||{b:[]})?' ・ 結果あり（的中=2連単/3連単の変動上位に決着 / 下段に3連単の決着と配当）':'')+'</div>';
   const venues=[];const seen={};for(const r of rs){if(!seen[r.c]){seen[r.c]=1;venues.push([r.c,r.v]);}}
   h+='<div class="vfilter"><button class="vbtn'+(cur==='ALL'?' on':'')+'" data-v="ALL">全場</button>';
   for(const a of venues)h+='<button class="vbtn'+(cur===a[0]?' on':'')+'" data-v="'+a[0]+'">'+a[1]+'</button>';
@@ -563,20 +629,29 @@ function listView(){
     if(cur!=='ALL'&&cur!==r.c)return;
     if(rs.findIndex(x=>x.c===r.c)===gi)h+='<h3>'+r.v+'</h3>';
     let hm=0;for(let w=1;w<6;w++)if(r.b[w][1]>r.b[hm][1])hm=w;
-    const pw=Math.round(r.b[hm][1]/10);
-    h+='<div class="row" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'+chip(hm+1)
+    const ha=honAna(r);const done=hasResult(r);
+    h+='<div class="row'+(done?' done':'')+'" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'+chip(hm+1)
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
-    if(hasResult(r)){
-      const s=r.b.map(x=>x[1]);const ord=finishOrder(r);const win=ord[0];
-      const hit=(win===hm+1)
-        ||(ord.length>=2&&plTop(s,2,5).some(c=>eqArr(c[0],ord.slice(0,2))))
-        ||(ord.length>=3&&plTop(s,3,10).some(c=>eqArr(c[0],ord.slice(0,3))));
-      h+='<span class="res"><span class="reslab">結果</span>'+chip(win,'mc')
-        +(hit?'<span class="ok">的中</span>':'<span class="ng">×</span>')+'</span>';
+    h+='<span class="ha2">'+(done?'':'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>')
+      +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
+    if(done){
+      const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
+      const hon=Math.max(...s)/1000;const nEx=kEx(hon),nTri=kTri(hon);
+      const ex=ord.slice(0,2);const tri=ord.slice(0,3);
+      const exHit=ex.length>=2&&plTop(s,2,nEx).some(c=>eqArr(c[0],ex));
+      const triHit=tri.length>=3&&plTop(s,3,nTri).some(c=>eqArr(c[0],tri));
+      const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中
+      const pay=r.po?r.po[1]:null;
+      h+='<span class="res">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
+        +'<span class="chev">&rsaquo;</span>';
+      h+='<div class="resline"><span class="rll">3連単</span>';
+      tri.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
+      if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>';
+      h+='<span class="yen'+(triHit?' hit':'')+'">'+(pay!=null?'¥'+pay.toLocaleString():'配当 –')+'</span></div>';
     }else{
-      h+='<span class="pw'+(pw>=50?' s':'')+'">'+pw+'%</span>';
+      h+='<span class="chev">&rsaquo;</span>';
     }
-    h+='<span class="chev">&rsaquo;</span></div>';
+    h+='</div>';
   });
   return h;
 }
@@ -591,11 +666,29 @@ function detailView(r){
   h+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
   if(r.mz)h+='<div class="warn">&#9888; 隊形警戒：前づけ常習者がいて枠なりが崩れやすく、本命の信頼度は割り引いて。</div>';
   if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
+  // 本命確率 / 穴確率
+  const ha=honAna(r);
+  h+='<div class="sec">本命確率 / 穴確率</div>';
+  h+='<div class="ha"><div class="hacell"><div class="hak">本命確率</div><div class="hav hon">'
+    +Math.round(ha.hon*100)+'%</div><div class="hsub">'+chip(ha.hmLane,'mc')+' '+r.b[ha.hmLane-1][0]+'</div></div>'
+    +'<div class="hacell"><div class="hak">穴確率（4-6番手）</div><div class="hav ana">'
+    +Math.round(ha.ana*100)+'%</div><div class="hsub"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span></div></div></div>';
+  {const al=ha.anaLane, af=r.ft?r.ft[al-1]:null, afin=done?r.b[al-1][2]:null;
+   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896"><span class="h" style="color:#b89a5a">穴候補</span>'
+     +chip(al,'mc')+' '+r.b[al-1][0]+' … '
+     +'モーター'+(af&&af[0]!=null?'レース内'+Math.round(af[0])+'位':'–')
+     +' / 直近勝率'+(af&&af[1]!=null?Math.round(af[1]*100)+'%':'–')
+     +' / ST'+(af&&af[2]!=null?'レース内'+Math.round(af[2])+'位':'–')
+     +'（1着確率'+(r.b[al-1][1]/10).toFixed(1)+'%）'
+     +(done?' <b style="color:'+(afin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(afin===1?'1着！（穴的中）':(afin?afin+'着':'－'))+'</b>':'')
+     +'<br><span style="font-size:11px;color:#9aa3b2">※モデルはモーター・直近を織り込み済み（検証で確率を超える穴シグナルは無し）。材料が揃う穴ほど展開次第で1着の目。本命が弱いレースほど荒れやすい（本命&lt;40%で穴率約20%／≥70%で約8%）。</span></div>';}
   if(done){
     h+='<div class="rbar"><span class="rlab">結果</span>';
     ord.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
     if(r.km)h+='<span class="kmlab">'+r.km+'</span>';
-    h+='<span style="margin-left:6px">'+(ord[0]===hm+1?'<span class="ok">◎的中</span>':'<span class="ng">◎不的中</span>')+'</span></div>';
+    {const wk=winKind(r);
+     h+='<span class="lvl '+wk.cls+'" style="margin-left:6px">'+wk.lab+(wk.rank>1?'（モデル'+wk.rank+'番手）':'的中')+'</span>';}
+    h+='</div>';
     if(r.cause)h+='<div class="cause"><span class="h">結果分析</span>'+r.cause+'</div>';
     if(r.po){
       const plOf=c=>{let p=1,rem=s.reduce((a,b)=>a+b,0);for(const w of c){p*=s[w-1]/rem;rem-=s[w-1];}return p;};
@@ -612,38 +705,70 @@ function detailView(r){
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +'<div class="barw"><div class="bar" style="width:'+Math.max(b[1]/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(b[1]/10).toFixed(1)+'%</span></div>';});
-  // 2連単 上位5
-  const ex=plTop(s,2,5);
+  // 2連単 上位（予想確率で点数変動・上限5）
+  const honD=Math.max(...s)/1000;const nEx=kEx(honD),nTri=kTri(honD);
+  const ex=plTop(s,2,nEx);
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
-  h+='<div class="sec">2連単 上位5'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   ex.forEach((c,i)=>{const hit=actEx&&eqArr(c[0],actEx);
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
-  // 3連単 上位10
-  const tri=plTop(s,3,10);
+  // 3連単 上位（予想確率で点数変動・上限20）
+  const tri=plTop(s,3,nTri);
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
-  h+='<div class="sec">3連単 上位10'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+  h+='<div class="sec">3連単 上位'+nTri+'<span class="kbadge">確率連動</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
-  // 実オッズ更新（押した時だけ boatrace 公式から取得＝自動取得しない）
-  h+='<div class="oddsupd"><button class="oddsbtn" data-id="'+r.id+'">実オッズを取得してEV判定</button><span class="oddsstat">押すと発走前オッズを取得し EV=確率×実オッズ を表示（+EVを緑★）</span></div>';
+  // 実オッズ取得ボタンは一旦非表示（必要オッズ表示のみ残す）
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
     +'発走前の実オッズがこれを超えていれば長期的に勝てる買い目（モデル確率は実測とほぼ一致＝信頼できる）。</div>';
   h+='<div class="legend">※ 確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
+    +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連単≦5・3連単≦20）＝本命確率'+Math.round(honD*100)+'%で2連単'+nEx+'点/3連単'+nTri+'点。'
     +'実オッズはモデル外なので各自で確認し「必要◯倍」と比較してください。</div>';
   return h;
 }
 
 function nav(){
-  return '<h1>競艇 予想</h1><div class="tabs">'
+  return '<h1>競艇当日予想</h1><div class="tabs">'
     +'<button class="tb'+(tab==='pred'?' on':'')+'" data-t="pred">予想</button>'
     +'<button class="tb'+(tab==='stats'?' on':'')+'" data-t="stats">場別成績</button></div>';
+}
+// 棒グラフ（自己完結SVG）。data=[[帯ラベル, 予想中央%, 実測%, レース数], ...]。
+// 棒=実測、◇=予想中央。opts.odds で各帯に必要オッズ目安(=100/実測%)を表示。
+function barSVG(data,col,opts){
+  opts=opts||{};
+  if(!data||!data.length)return '';
+  const W=330,padL=30,padR=8,padT=16,padB=opts.odds?58:42,H=padT+150+padB;
+  let mx=Math.max(...data.flatMap(d=>[d[1],d[2]]),1);
+  const M=Math.ceil(mx/(mx>50?20:mx>20?10:5))*(mx>50?20:mx>20?10:5);
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const n=data.length, gap=plotW/n, bw=Math.min(gap*0.56,38);
+  const y=v=>padT+plotH-(v/M)*plotH;
+  let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px">';
+  for(let t=0;t<=M+0.01;t+=M/5){
+    g+='<line x1="'+padL+'" y1="'+y(t)+'" x2="'+(W-padR)+'" y2="'+y(t)+'" stroke="#222a33"/>';
+    g+='<text x="'+(padL-4)+'" y="'+(y(t)+3)+'" fill="#7e8796" font-size="9" text-anchor="end">'+Math.round(t)+'</text>';
+  }
+  data.forEach((d,i)=>{
+    const cx=padL+gap*i+gap/2, x=cx-bw/2, yt=y(d[2]);
+    g+='<rect x="'+x+'" y="'+yt+'" width="'+bw+'" height="'+Math.max((d[2]/M)*plotH,1)+'" rx="2" fill="'+col+'"/>';
+    g+='<text x="'+cx+'" y="'+(yt-4)+'" fill="#e6e6e6" font-size="10" text-anchor="middle" font-weight="700">'+d[2]+'</text>';
+    const yp=y(d[1]);
+    g+='<path d="M'+(cx-4)+' '+yp+' L'+cx+' '+(yp-4)+' L'+(cx+4)+' '+yp+' L'+cx+' '+(yp+4)+' Z" fill="none" stroke="#9aa3b2" stroke-width="1.4"/>';
+    g+='<text x="'+cx+'" y="'+(H-padB+13)+'" fill="#9aa3b2" font-size="9" text-anchor="middle">'+d[0]+'</text>';
+    g+='<text x="'+cx+'" y="'+(H-padB+24)+'" fill="#6b7280" font-size="8" text-anchor="middle">'+d[3]+'R</text>';
+    if(opts.odds){const need=d[2]>0?100/d[2]:0;
+      g+='<text x="'+cx+'" y="'+(H-padB+37)+'" fill="#e0a93b" font-size="9" text-anchor="middle" font-weight="700">'+need.toFixed(1)+'倍</text>';}
+  });
+  g+='<text x="'+(padL+plotW/2)+'" y="'+(H-3)+'" fill="#9aa3b2" font-size="9.5" text-anchor="middle">'+(opts.xlab||'')+'</text>';
+  g+='</svg>';
+  return g;
 }
 function statsView(){
   // 場別成績は Python 側で全期間（2026年〜）集計済み。ここでは描画のみ。
@@ -655,16 +780,16 @@ function statsView(){
     +cell(a[3],all?'':'g2')+cell(a[4],all?'':'g2')+cell(a[5],all?'':'g2')
     +cell(a[6],all?'':'g3')+cell(a[7],all?'':'g3')+cell(a[8],all?'':'g3')+'</tr>';
   h+='<div class="meta">対象 '+V.from+'〜'+V.to+'（'+V.n+'レース・収集データ全体）・ '
-    +'数字=予想上位K通り以内に決着が入った割合</div>';
+    +'数字=予想上位K通り以内に決着が入った割合。「変動」=予想確率連動の点数（堅い→少点／荒れ→多点）</div>';
   h+='<div class="swrap"><table class="st"><thead><tr>'
     +'<th class="k">会場</th><th>R数</th><th>本命<br>1着</th>'
-    +'<th class="g2">2連単<br>本命</th><th class="g2">top3</th><th class="g2">top5</th>'
-    +'<th class="g3">3連単<br>本命</th><th class="g3">top3</th><th class="g3">top10</th></tr></thead><tbody>';
+    +'<th class="g2">2連単<br>本命</th><th class="g2">top3</th><th class="g2">変動<br>≤5</th>'
+    +'<th class="g3">3連単<br>本命</th><th class="g3">top3</th><th class="g3">変動<br>≤20</th></tr></thead><tbody>';
   for(const a of V.rows)h+=row(a,false);
   h+=row(V.all,true);
   h+='</tbody></table></div>';
   h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
-    +'top3/5/10=予想上位3/5/10通りに実際の決着が含まれた割合（その点数を買えば当たる割合）。'
+    +'「変動」=予想確率に応じた点数（2連単≤5/3連単≤20）以内に実際の決着が含まれた割合（その点数を買えば当たる割合）。'
     +'※ 4月までは学習期間を含むため的中率はやや高めに出る（5月以降が純粋な検証）。</div>';
   // 前日・前々日の場別 的中率＋回収率
   const RC=D.recent;
@@ -674,7 +799,7 @@ function statsView(){
       +'<td class="num g2">'+a[2]+'%</td><td class="num g2">'+a[3]+'%</td>'
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
-    h+='<div class="meta">実践的中＝上位K点を実際に買った場合の的中率（2連単=上位5/3連単=上位10, 各100円）。回収率100%超で利益。</div>';
+    h+='<div class="meta">実践的中＝予想確率連動の点数を実際に買った場合の的中率（2連単≤5/3連単≤20点, 各100円）。回収率100%超で利益。</div>';
     h+='<div class="swrap"><table class="st"><thead><tr>'
       +'<th class="k">会場</th><th>R数</th>'
       +'<th class="g2">2連単<br>実践的中</th><th class="g2">回収率</th>'
@@ -686,39 +811,21 @@ function statsView(){
       +'確率帯別バックテスト(2026全体)ではどの帯も回収率100%未満（控除率約25%の壁）＝確率だけで機械的に買うと負ける。'
       +'各レース詳細の「買えてた場合の妙味」で、実配当が必要オッズを超えたか（＝買えてたら+EVか）を確認できる。</div>';
   }
-  // キャリブレーション（予想確率の正確さ）1着/2連単/3連単
-  const CB=D.calib;
-  if(CB&&CB.c1){
-    const calSVG=(C,col)=>{
-      if(!C||!C.length)return '';
-      const mx=Math.max(...C.flatMap(d=>[d[0],d[1]]));
-      const M=Math.ceil(mx/ (mx>50?20:mx>20?10:5))*(mx>50?20:mx>20?10:5);
-      const W=300,H=270,pad=32;
-      const sx=v=>pad+v/M*(W-pad-8), sy=v=>H-pad-v/M*(H-pad-12);
-      const step=M/5;
-      let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:320px">';
-      for(let t=0;t<=M+0.001;t+=step){
-        g+='<line x1="'+sx(t)+'" y1="'+sy(0)+'" x2="'+sx(t)+'" y2="'+sy(M)+'" stroke="#222a33"/>';
-        g+='<line x1="'+sx(0)+'" y1="'+sy(t)+'" x2="'+sx(M)+'" y2="'+sy(t)+'" stroke="#222a33"/>';
-        g+='<text x="'+sx(t)+'" y="'+(H-pad+11)+'" fill="#7e8796" font-size="9" text-anchor="middle">'+(+t.toFixed(0))+'</text>';
-        g+='<text x="'+(pad-5)+'" y="'+(sy(t)+3)+'" fill="#7e8796" font-size="9" text-anchor="end">'+(+t.toFixed(0))+'</text>';
-      }
-      g+='<line x1="'+sx(0)+'" y1="'+sy(0)+'" x2="'+sx(M)+'" y2="'+sy(M)+'" stroke="#9a948a" stroke-dasharray="5 4"/>';
-      g+='<polyline points="'+C.map(d=>sx(d[0])+','+sy(d[1])).join(' ')+'" fill="none" stroke="'+col+'" stroke-width="2"/>';
-      for(const d of C)g+='<circle cx="'+sx(d[0])+'" cy="'+sy(d[1])+'" r="4" fill="'+col+'"/>';
-      g+='<text x="'+(W/2+4)+'" y="'+(H-2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle">予想確率(%)</text>';
-      g+='<text x="10" y="'+(H/2)+'" fill="#9aa3b2" font-size="10" text-anchor="middle" transform="rotate(-90 10 '+(H/2)+')">実測(%)</text>';
-      g+='</svg>';
-      return g;
-    };
-    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">予想確率の正確さ（キャリブレーション・2026年〜）</div>';
-    h+='<div class="meta"><span style="color:#1d9e75">緑</span>(実測)が点線(理想=予想どおり)に乗るほど確率が正確。各艇/全組合せをPlackett-Luce確率で集計。</div>';
-    const panel=(t,svg)=>'<div style="text-align:center"><div style="font-size:13px;color:#cdd6e2;margin:8px 0 2px;font-weight:600">'+t+'</div>'+svg+'</div>';
-    h+=panel('① 1着',calSVG(CB.c1,'#1d9e75'));
-    h+=panel('② 2連単',calSVG(CB.c2,'#5dc7e0'));
-    h+=panel('③ 3連単',calSVG(CB.c3,'#ffd082'));
-    h+='<div class="legend">※ 1着はほぼ完全に一致。2連単・3連単は概ね一致するが高確率帯はやや強気（予想＞実測）'
-      +'＝本命寄りの買い目は配当妙味が出やすい。1〜4月は学習期間を含む参考値。</div>';
+  // 本命確率・穴確率 と 実際の結果（購入判断の材料）
+  const HA=D.hra;
+  if(HA&&HA.hon&&HA.hon.length){
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">本命確率・穴確率と実際の結果（2026年〜）</div>';
+    h+='<div class="meta">棒=実測（実際にそうなった割合）／<span style="color:#9aa3b2">◇</span>=モデル予想（帯の中央値）。棒が右ほど伸びれば「確率が高い予想ほど当たる」。各帯のレース数（R）も表示。</div>';
+    h+='<div style="text-align:center"><div style="font-size:13px;color:#43c59e;margin:8px 0 2px;font-weight:600">① 本命的中率（本命確率の帯別）</div>'
+      +barSVG(HA.hon,'#43c59e',{xlab:'本命確率＝モデル1番手の1着確率'})+'</div>';
+    h+='<div class="legend">本命確率が高い帯ほど、実際に本命（モデル1番手）が1着になった割合も高い＝高確率の本命ほど信頼できる。'
+      +'棒（実測）と◇（予想）がほぼ重なる＝確率は正確。鉄板狙いは本命確率の高い帯のレースを選ぶのが目安。</div>';
+    h+='<div style="text-align:center"><div style="font-size:13px;color:#e0a93b;margin:16px 0 2px;font-weight:600">② 穴的中率＋必要オッズ目安（穴確率の帯別）</div>'
+      +barSVG(HA.ana,'#e0a93b',{xlab:'穴確率＝モデル4-6番手の1着確率合計',odds:true})+'</div>';
+    h+='<div class="legend">穴的中＝モデルが軽視した4-6番手の艇が1着。穴確率が高い帯ほど実際に穴が出やすい。'
+      +'<b style="color:#e0a93b">必要オッズ目安＝100÷穴的中率</b>＝その帯の穴を買って長期で勝つのに最低限ほしい配当倍率。'
+      +'実オッズがこの倍率を超える穴だけ買うのが目安（穴確率が高い帯ほど必要倍率が下がる＝買いやすい）。'
+      +'※モデルはモーター・直近を織込済みで、確率を超える妙味は無い＝勝負所はオッズが必要倍率を上回るかどうか。</div>';
   }
   return h;
 }
@@ -757,7 +864,6 @@ function render(){
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{sel=+rw.dataset.i;render();});
   }else{
     document.querySelector('.back').onclick=()=>{sel=null;render();};
-    const ob=document.querySelector('.oddsbtn'); if(ob)ob.onclick=()=>updateOdds(ob);
   }
 }
 render();
