@@ -46,6 +46,20 @@ def k_tri(hon):    # 3連単（上限20）
             else 14 if hon >= 0.30 else 20)
 
 
+def bet_exclude(cls_by_w, lane_win1, hon):
+    """買い目から除外する枠 [[枠,理由], ...]（検証済ガイドライン）。
+    B2(class_ord==1)は常時除外 / 荒れ帯(本命確率<0.45)で1号艇が成績不振
+    (lane_win_rate<0.40)なら1号艇も除外 / 除外後3艇未満になるなら除外しない。"""
+    xb, excl = [], set()
+    for w in range(1, 7):
+        cl = cls_by_w.get(w)
+        if cl is not None and int(cl) == 1:
+            xb.append([w, "B2"]); excl.add(w)
+    if hon < 0.45 and 1 not in excl and lane_win1 is not None and lane_win1 < 0.40:
+        xb.append([1, "1号艇不振"]); excl.add(1)
+    return [] if 6 - len(excl) < 3 else xb
+
+
 def make_comment(boats, field_std):
     """viewer.html と同じロジックの予想コメント [line1, line2] を作る。
     boats: [{枠,名,pwin(0-1),win_rank,motor_rank,st_rank,lane_win,lane_n,vown}]"""
@@ -86,10 +100,14 @@ def _pl_prob(s, combo):
     return p
 
 
-def _pl_rank(s, kind, actual):
-    """actual（枠tuple）の PL 確率順位（1=最尤）。"""
+def _pl_rank(s, kind, actual, excl=None):
+    """actual（枠tuple）の PL 確率順位（1=最尤）。excl=除外枠の集合を渡すと、
+    除外枠を含む買い目は数えず（actual が除外枠を含めば的中不能=∞扱い）。"""
     import itertools
-    idx = [i for i in range(6) if s[i] > 0]
+    excl = excl or set()
+    if any(w in excl for w in actual):
+        return 10 ** 9
+    idx = [i for i in range(6) if s[i] > 0 and (i + 1) not in excl]
     pa = _pl_prob(s, actual)
     g = 0
     for c in itertools.permutations(idx, kind):
@@ -98,9 +116,10 @@ def _pl_rank(s, kind, actual):
     return g + 1
 
 
-def venue_stats(rel, pred, since):
+def venue_stats(rel, pred, hist, since):
     """since 以降の結果がある全レースから、場別の的中率を集計。
-    各場: 本命1着 / 2連単(本命=top1,top3,top5) / 3連単(本命,top3,top10)。"""
+    各場: 本命1着 / 2連単(本命=top1,top3,変動K) / 3連単(本命,top3,変動K)。
+    変動K列は当日の買い目と同じ除外（B2/不振1号艇 bet_exclude）を適用。"""
     from collections import defaultdict
     races = {}
     for r in rel:
@@ -108,6 +127,7 @@ def venue_stats(rel, pred, since):
             continue
         rid = r["race_id"]
         pr = pred.get((rid, r["枠番"]), {})
+        h = hist.get((rid, r["枠番"]), {})
         try:
             pm = float(pr.get("p_win"))
         except (TypeError, ValueError):
@@ -117,8 +137,11 @@ def venue_stats(rel, pred, since):
         except (TypeError, ValueError):
             fin = None
         rc = races.setdefault(rid, {"c": r["場コード"], "v": r["会場"],
-                                    "d": r["日付"], "b": {}})
-        rc["b"][int(r["枠番"])] = (pm, fin)
+                                    "d": r["日付"], "b": {}, "cl": {}, "lw": {}})
+        w = int(r["枠番"])
+        rc["b"][w] = (pm, fin)
+        rc["cl"][w] = to_float(r.get("class_ord"))
+        rc["lw"][w] = to_float(h.get("lane_win_rate"))
     agg = defaultdict(lambda: [0, 0, 0, 0, 0, 0, 0, 0])   # n,win,e1,e3,eK(2連単変動),t1,t3,tK(3連単変動)
     name = {}
     dmin = dmax = None
@@ -138,16 +161,19 @@ def venue_stats(rel, pred, since):
         hm = max(range(6), key=lambda i: s[i]) + 1
         hon = max(s)
         kx, kt = k_ex(hon), k_tri(hon)
-        er = _pl_rank(s, 2, tuple(order[:2]))
+        excl = {e[0] for e in bet_exclude(rc["cl"], rc["lw"].get(1), hon)}
+        er = _pl_rank(s, 2, tuple(order[:2]))                  # 本命/top3=モデル診断(除外なし)
         tr = _pl_rank(s, 3, tuple(order[:3]))
+        erk = _pl_rank(s, 2, tuple(order[:2]), excl)           # 変動K=実買い目(除外あり)
+        trk = _pl_rank(s, 3, tuple(order[:3]), excl)
         a = agg[rc["c"]]
         name[rc["c"]] = rc["v"]
         dmin = rc["d"] if dmin is None or rc["d"] < dmin else dmin
         dmax = rc["d"] if dmax is None or rc["d"] > dmax else dmax
         a[0] += 1
         a[1] += (hm == order[0])
-        a[2] += er <= 1; a[3] += er <= 3; a[4] += er <= kx     # 2連単 変動K
-        a[5] += tr <= 1; a[6] += tr <= 3; a[7] += tr <= kt     # 3連単 変動K
+        a[2] += er <= 1; a[3] += er <= 3; a[4] += erk <= kx    # 2連単 変動K(除外後)
+        a[5] += tr <= 1; a[6] += tr <= 3; a[7] += trk <= kt    # 3連単 変動K(除外後)
     pct = lambda x, n: round(x / n * 100) if n else 0
     rows = []
     for c, a in agg.items():
@@ -320,21 +346,26 @@ def recent_stats(out, payout):
             continue
         hon = max(sv) / 1000.0
         kx, kt = k_ex(hon), k_tri(hon)
+        # 当日の買い目と同じ除外（B2/不振1号艇）。点数は除外後に実際に買える数。
+        excl = {e[0] for e in r.get("xb", [])}
+        m = sum(1 for w in range(1, 7) if sv[w - 1] > 0 and w not in excl)
+        bet2 = min(kx, m * (m - 1))
+        bet3 = min(kt, m * (m - 1) * (m - 2))
         po = payout.get(r["id"], (0, 0))
         a = ag.setdefault(r["c"], {"v": r["v"], "n2": 0, "h2": 0, "p2": 0, "pts2": 0,
                                    "n3": 0, "h3": 0, "p3": 0, "pts3": 0})
         dmin = r["d"] if dmin is None or r["d"] < dmin else dmin
         dmax = r["d"] if dmax is None or r["d"] > dmax else dmax
-        if len(order) >= 2:
+        if len(order) >= 2 and bet2 > 0:
             a["n2"] += 1
-            a["pts2"] += kx
-            if _pl_rank(sv, 2, tuple(order[:2])) <= kx:
+            a["pts2"] += bet2
+            if _pl_rank(sv, 2, tuple(order[:2]), excl) <= bet2:
                 a["h2"] += 1
                 a["p2"] += po[0]
-        if len(order) >= 3:
+        if len(order) >= 3 and bet3 > 0:
             a["n3"] += 1
-            a["pts3"] += kt
-            if _pl_rank(sv, 3, tuple(order[:3])) <= kt:
+            a["pts3"] += bet3
+            if _pl_rank(sv, 3, tuple(order[:3]), excl) <= bet3:
                 a["h3"] += 1
                 a["p3"] += po[1]
 
@@ -406,6 +437,7 @@ def main():
             "motor_rate": to_float(r.get("motor_top2_rate")),
             "recent": to_float(h.get("recent30_winrate")),
             "st_rank": to_float(r.get("st_rank_in_race")),
+            "cl": to_float(r.get("class_ord")),       # 級別 A1=4/A2=3/B1=2/B2=1
             "lane_win": to_float(h.get("lane_win_rate")),
             "lane_n": to_float(h.get("lane_n")),
             "vown": to_float(h.get("venue_own_lane_winrate")),
@@ -425,8 +457,11 @@ def main():
         cause = cause_comment([p / 1000 for p in pm], fin, kr) \
             if any(f == 1 for f in fin) else None
         po = payout.get(rid)                          # (2連単配当, 3連単配当)
+        # 買い目から除外する枠（検証済ガイドライン: 回収率を保ち賭け金を絞る）。
+        xb = bet_exclude({w: rc["feat"][w].get("cl") for w in range(1, 7)},
+                         rc["feat"][1].get("lane_win"), max(pm) / 1000)
         out.append({"id": rid, "d": rc["d"], "c": rc["c"], "v": rc["v"],
-                    "no": rc["no"], "mz": rc["mz"],
+                    "no": rc["no"], "mz": rc["mz"], "xb": xb,
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
                     "b": [[rc["b"][w][0], rc["b"][w][1], rc["b"][w][2]]
@@ -444,7 +479,7 @@ def main():
     for i, d in enumerate(reversed(keep)):       # 新しい順
         labels.append([rel_labels[i] if i < len(rel_labels) else d, d])
 
-    vstats = venue_stats(rel, pred, args.stats_from)
+    vstats = venue_stats(rel, pred, hist, args.stats_from)
     recent = recent_stats(out, payout)
     hra = hon_ana_result(pred)
 
@@ -581,7 +616,8 @@ function dayRaces(){return D.races.filter(r=>r.d===selDate);}
 function hasResult(r){return r.b.some(x=>x[2]===1);}  // 1着が決まっていれば結果あり（F/失格混在でも可）
 function finishOrder(r){return r.b.map((b,i)=>[i+1,b[2]]).filter(x=>x[1]).sort((a,b)=>a[1]-b[1]).map(x=>x[0]);}
 function eqArr(a,b){return a&&b&&a.length===b.length&&a.every((v,i)=>v===b[i]);}
-function plTop(s,kind,k){const idx=[0,1,2,3,4,5].filter(i=>s[i]>0);const tot=s.reduce((a,b)=>a+b,0);const out=[];
+// excl={枠:1} を渡すとその枠を含む買い目を除外（確率の分母totは全艇のまま＝必要倍は正しい）。
+function plTop(s,kind,k,excl){excl=excl||{};const idx=[0,1,2,3,4,5].filter(i=>s[i]>0&&!excl[i+1]);const tot=s.reduce((a,b)=>a+b,0);const out=[];
   if(kind===2){for(const i of idx)for(const j of idx){if(j===i)continue;out.push([[i+1,j+1],s[i]/tot*s[j]/(tot-s[i])]);}}
   else{for(const i of idx)for(const j of idx){if(j===i)continue;for(const l of idx){if(l===i||l===j)continue;out.push([[i+1,j+1,l+1],s[i]/tot*s[j]/(tot-s[i])*s[l]/(tot-s[i]-s[j])]);}}}
   out.sort((a,b)=>b[1]-a[1]);return out.slice(0,k);}
@@ -637,9 +673,10 @@ function listView(){
     if(done){
       const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
       const hon=Math.max(...s)/1000;const nEx=kEx(hon),nTri=kTri(hon);
+      const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
       const ex=ord.slice(0,2);const tri=ord.slice(0,3);
-      const exHit=ex.length>=2&&plTop(s,2,nEx).some(c=>eqArr(c[0],ex));
-      const triHit=tri.length>=3&&plTop(s,3,nTri).some(c=>eqArr(c[0],tri));
+      const exHit=ex.length>=2&&plTop(s,2,nEx,xset).some(c=>eqArr(c[0],ex));
+      const triHit=tri.length>=3&&plTop(s,3,nTri,xset).some(c=>eqArr(c[0],tri));
       const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中
       const pay=r.po?r.po[1]:null;
       h+='<span class="res">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
@@ -705,9 +742,16 @@ function detailView(r){
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +'<div class="barw"><div class="bar" style="width:'+Math.max(b[1]/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(b[1]/10).toFixed(1)+'%</span></div>';});
+  // 買い目除外（B2 / 荒れ帯の不振1号艇）。確率は全艇ベース＝必要倍は不変。
+  const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
+  if(r.xb&&r.xb.length){
+    h+='<div class="cause" style="border-left-color:#7f8896;color:#aab2bf"><span class="h" style="color:#9aa3b2">買い目から除外</span>'
+      +r.xb.map(e=>chip(e[0],'mc')+' '+r.b[e[0]-1][0]+'（'+(e[1]==='B2'?'B2級':'1号艇 成績不振')+'）').join(' ')
+      +'<br><span style="font-size:11px;color:#7e8796">※検証で「回収率を保ったまま賭け金を絞れる」と確認した枠を2連単/3連単の買い目から除外（確率・本命/穴の表示はそのまま）。</span></div>';
+  }
   // 2連単 上位（予想確率で点数変動・上限5）
   const honD=Math.max(...s)/1000;const nEx=kEx(honD),nTri=kTri(honD);
-  const ex=plTop(s,2,nEx);
+  const ex=plTop(s,2,nEx,xset);
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
   h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   ex.forEach((c,i)=>{const hit=actEx&&eqArr(c[0],actEx);
@@ -716,7 +760,7 @@ function detailView(r){
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
   // 3連単 上位（予想確率で点数変動・上限20）
-  const tri=plTop(s,3,nTri);
+  const tri=plTop(s,3,nTri,xset);
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
   h+='<div class="sec">3連単 上位'+nTri+'<span class="kbadge">確率連動</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);
@@ -790,6 +834,7 @@ function statsView(){
   h+='</tbody></table></div>';
   h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
     +'「変動」=予想確率に応じた点数（2連単≤5/3連単≤20）以内に実際の決着が含まれた割合（その点数を買えば当たる割合）。'
+    +'※「変動」列のみB2・不振1号艇を除外（本命/top3はモデル診断＝除外なし）。'
     +'※ 4月までは学習期間を含むため的中率はやや高めに出る（5月以降が純粋な検証）。</div>';
   // 前日・前々日の場別 的中率＋回収率
   const RC=D.recent;
@@ -799,7 +844,8 @@ function statsView(){
       +'<td class="num g2">'+a[2]+'%</td><td class="num g2">'+a[3]+'%</td>'
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
-    h+='<div class="meta">実践的中＝予想確率連動の点数を実際に買った場合の的中率（2連単≤5/3連単≤20点, 各100円）。回収率100%超で利益。</div>';
+    h+='<div class="meta">実践的中＝予想確率連動の点数を実際に買った場合の的中率（2連単≤5/3連単≤20点, 各100円）。回収率100%超で利益。'
+      +'B2・荒れ帯の不振1号艇を買い目から除外したベース（点数=除外後の実点数）。</div>';
     h+='<div class="swrap"><table class="st"><thead><tr>'
       +'<th class="k">会場</th><th>R数</th>'
       +'<th class="g2">2連単<br>実践的中</th><th class="g2">回収率</th>'
