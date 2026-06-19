@@ -64,7 +64,7 @@ def convert_results(txt_path, csv_path):
     """k_to_csv.py のロジックで競走成績 txt → 行リスト。"""
     lines = k_to_csv.open_txt(txt_path)
     venue = date = current_race = None
-    payouts, kimarite, rows = {}, {}, []
+    payouts, kimarite, weather, rows = {}, {}, {}, []
     for line in lines:
         m = k_to_csv.SECTION_RE.match(line)
         if m:
@@ -72,6 +72,7 @@ def convert_results(txt_path, csv_path):
             date = current_race = None
             payouts = {}
             kimarite = {}
+            weather = {}
             continue
         if date is None:
             m = k_to_csv.DATE_RE.search(line)
@@ -90,6 +91,9 @@ def convert_results(txt_path, csv_path):
         m = k_to_csv.RACE_HDR_RE.match(line)
         if m:
             current_race = int(m.group(1))
+            wx = k_to_csv.parse_weather(line)
+            if wx:
+                weather[current_race] = wx
             continue
         if current_race is not None and 'ﾚｰｽﾀｲﾑ' in line:
             mk = k_to_csv.KIMARITE_RE.search(line)
@@ -109,7 +113,8 @@ def convert_results(txt_path, csv_path):
                     '展示タイム': m.group(7), '進入コース': int(m.group(8)),
                     'スタートタイミング': m.group(9),
                     'レースタイム': k_to_csv.clean_racetime(m.group(10)),
-                    '決まり手': kimarite.get(current_race, ''), **p,
+                    '決まり手': kimarite.get(current_race, ''),
+                    **weather.get(current_race, {}), **p,
                 })
                 continue
             m = k_to_csv.NONFIN_RE.match(line)

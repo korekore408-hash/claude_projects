@@ -30,6 +30,7 @@
 import argparse
 import csv
 import glob
+import re
 import statistics
 from collections import defaultdict
 
@@ -59,19 +60,52 @@ def rank_asc(values, x):
     return 1 + sum(1 for v in values if v is not None and v < x)
 
 
+def load_weather(k_glob):
+    """K-file CSV から race_id -> {天候, 風速, 波高} を集める（as-of 不要＝当日の実況）。
+    当日のレースは結果 K が無いので欠損のまま＝天候は中立(未反映)になる。"""
+    wx = {}
+    for path in glob.glob(k_glob):
+        try:
+            with open(path, encoding="cp932") as f:
+                for r in csv.DictReader(f):
+                    if "天候" not in r or not r.get("天候"):
+                        continue
+                    code = VENUE_CODE.get(r["会場"], "00")
+                    md = re.match(r"(\d{4})/\s*(\d{1,2})/\s*(\d{1,2})", str(r["日付"]))
+                    if not md:
+                        continue
+                    ymd = f"{int(md.group(1)):04d}{int(md.group(2)):02d}{int(md.group(3)):02d}"
+                    race_id = f"{code}{ymd}{int(r['レース']):02d}"
+                    if race_id not in wx:
+                        wx[race_id] = {
+                            "天候": r.get("天候", ""),
+                            "風速": to_float(r.get("風速")),
+                            "波高": to_float(r.get("波高")),
+                        }
+        except (FileNotFoundError, UnicodeDecodeError, KeyError):
+            continue
+    return wx
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--b-glob", default="data/b*.csv", help="B-file CSV のグロブ")
+    ap.add_argument("--k-glob", default="data/k*.csv", help="K-file CSV のグロブ（気象）")
     ap.add_argument("--hist", default="features_player_history.csv",
                     help="履歴特徴 CSV（st_avg を持つ）")
     ap.add_argument("--start", default=None, help="開始 YYMMDD（含む）")
     ap.add_argument("--end", default=None, help="終了 YYMMDD（含む）")
+    ap.add_argument("--neutral-weather-date", default=None,
+                    help="この日付(YYYY-MM-DD, カンマ区切り可)の気象を中立化＝未反映にする。"
+                         "当日予想は天候を後で反映する方針のため daily.py が当日を指定する。"
+                         "場の荒れ度(venue_rough_x_gap)は構造的なので中立化しない。")
     ap.add_argument("--out", default="features_race_relative.csv", help="出力 CSV パス")
     args = ap.parse_args()
 
-    # ── st_avg / 進入挙動 を (race_id, 枠) で引けるようにする ──────────
+    # ── st_avg / 進入挙動 / 場の荒れ度 を (race_id, 枠) で引けるようにする ──
     st_avg_by = {}
-    maezuke_by = {}   # (race_id,枠) -> (maezuke_rate, course_n)
+    maezuke_by = {}     # (race_id,枠) -> (maezuke_rate, course_n)
+    v1win_by = {}       # race_id -> venue_lane1_winrate（場の1コース1着率＝レース共通）
     try:
         with open(args.hist, encoding="cp932") as f:
             for r in csv.DictReader(f):
@@ -79,8 +113,18 @@ def main():
                 st_avg_by[key] = to_float(r["st_avg"])
                 maezuke_by[key] = (to_float(r.get("maezuke_rate")),
                                    to_float(r.get("course_n")))
+                v1 = to_float(r.get("venue_lane1_winrate"))
+                if v1 is not None:
+                    v1win_by[r["race_id"]] = v1
     except FileNotFoundError:
         print(f"! 履歴 CSV が無いので st_rank_in_race 等は空になります: {args.hist}")
+
+    # ── 気象（K-file 由来）を race_id で引けるようにする ───────────────
+    # 天候/風速/波高はレース内で全艇共通＝生値は条件付きロジットで打ち消されるため、
+    # 出力時に「枠との交互作用」(wind_x_lane / wave_x_lane) にして効かせる。
+    # 当日（結果 K がまだ無い）は欠損のまま → predict 側で平均補完＝天候は中立(未反映)。
+    wx_by = load_weather(args.k_glob)
+    neutral_dates = set(d.strip() for d in (args.neutral_weather_date or "").split(",") if d.strip())
 
     # ── B-file を読み、レースごとに 6 艇をまとめる ───────────────────
     bpaths = sorted(glob.glob(args.b_glob), key=file_date_key)
@@ -149,10 +193,30 @@ def main():
         maezuke_max = max(mz_cands) if mz_cands else None
         field_maezuke_flag = 1 if (maezuke_max is not None and maezuke_max >= MZ_TH) else 0
 
+        # 場の荒れ度（race 共通）: 1コース1着率が低い場ほど荒れる → roughness = 1 - v1。
+        v1 = v1win_by.get(race_id)
+        venue_rough = (1.0 - v1) if v1 is not None else None
+        # 気象（race 共通）: 当日は欠損 → 交互作用も空 → predict で平均補完＝中立。
+        wx = wx_by.get(race_id, {})
+        wind = wx.get("風速")
+        wave = wx.get("波高")
+        tenki = wx.get("天候", "")
+
         date_str, code, venue, race_no = race_meta[race_id]
+        # 当日は天候を後で反映する方針 → 指定日の気象を中立化（荒れ度は残す）。
+        if date_str in neutral_dates:
+            wind = wave = None
+            tenki = ""
         for e in ents:
             cg = (e["class_ord"] - max_class) if (e["class_ord"] is not None and max_class is not None) else None
             wdt = (max_win - e["win_rate_national"]) if (max_win is not None and e["win_rate_national"] is not None) else None
+            # 枠を中心化（1..6 → -2.5..+2.5）。生の気象/荒れ度はレース共通で
+            # 条件付きロジットでは打ち消されるため、必ず枠との積（交互作用）で持たせる。
+            lane_c = int(e["枠番"]) - 3.5
+            wind_x_lane = (wind * lane_c) if wind is not None else None
+            wave_x_lane = (wave * lane_c) if wave is not None else None
+            # 荒れる場ほど「最上位との勝率差」の効きが変わる（本命の優位が縮む等）を学習。
+            venue_rough_x_gap = (venue_rough * wdt) if (venue_rough is not None and wdt is not None) else None
             out_rows.append({
                 "race_id": race_id,
                 "枠番": e["枠番"],
@@ -181,6 +245,15 @@ def main():
                 "maezuke_rate": e["maezuke_rate"],
                 "field_maezuke_flag": field_maezuke_flag,
                 "maezuke_max": maezuke_max,
+                # 場の荒れ度 × 実力差（交互作用）。荒れる場ほど本命優位が縮む等を学習。
+                "venue_rough": venue_rough,
+                "venue_rough_x_gap": venue_rough_x_gap,
+                # 気象（K-file 実況）。raw は表示用、交互作用が学習対象。当日は空＝未反映。
+                "天候": tenki,
+                "風速": wind,
+                "波高": wave,
+                "wind_x_lane": wind_x_lane,
+                "wave_x_lane": wave_x_lane,
             })
 
     if not out_rows:

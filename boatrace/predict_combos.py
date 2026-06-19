@@ -55,6 +55,8 @@ FEATURE_SOURCE = {
     "class_gap": "rel", "winrate_rank_in_race": "rel",
     "winrate_diff_top": "rel", "motor_rank_in_race": "rel",
     "st_rank_in_race": "rel",
+    # 場の荒れ度・気象の交互作用（生値はレース内共通で softmax で消えるため積で持つ）。
+    "venue_rough_x_gap": "rel", "wind_x_lane": "rel", "wave_x_lane": "rel",
     # B-file 印字値（公式の長期集計＝母数大）
     "top2_rate_national": "rel", "win_rate_local": "rel", "top2_rate_local": "rel",
     "boat_top2_rate": "rel", "weight": "rel", "age": "rel",
@@ -71,6 +73,10 @@ CONT_FEATURES = [
     "venue_own_lane_winrate", "motor_intrinsic_win", "motor_intrinsic_top2",
     "age", "top2_rate_local", "motor_rank_in_race", "weight",
     "local_win_rate", "st_std", "winrate_rank_in_race", "winrate_diff_top",
+    # 場の荒れ度 × 実力差 / 風速 × 枠 / 波高 × 枠 の交互作用。
+    # time-split 検証では重み ±0.03 以下・OOS 的中ほぼ不変（構造的上限）だが、
+    # 「場ごとの荒れ・気象を反映」する方針として配線（当日の気象は中立化＝未反映）。
+    "venue_rough_x_gap", "wind_x_lane", "wave_x_lane",
 ]
 
 

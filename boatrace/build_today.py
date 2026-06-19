@@ -426,6 +426,10 @@ def main():
                                     "no": int(r["レース"]),
                                     "mz": int(r.get("field_maezuke_flag", 0) or 0),
                                     "fs": to_float(r.get("field_strength_std")),
+                                    # 気象（K-file 実況）。当日は中立化済み＝空＝未反映。
+                                    "wx_tenki": r.get("天候", "") or "",
+                                    "wx_wind": to_float(r.get("風速")),
+                                    "wx_wave": to_float(r.get("波高")),
                                     "b": {}, "feat": {}})
         w = int(waku)
         rc["b"][w] = (r["選手名"], pm, fin)
@@ -464,6 +468,8 @@ def main():
                     "no": rc["no"], "mz": rc["mz"], "xb": xb,
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
+                    # 気象（当日は空＝未反映）。表示用。tenki/wind(m)/wave(cm)
+                    "wx": [rc.get("wx_tenki", ""), rc.get("wx_wind"), rc.get("wx_wave")],
                     "b": [[rc["b"][w][0], rc["b"][w][1], rc["b"][w][2]]
                           for w in range(1, 7)],
                     # 穴候補の判断材料: 枠ごと [モーターレース内順位, 直近30走勝率, ST順位]
@@ -701,6 +707,15 @@ function detailView(r){
   let h='<button class="back">&lsaquo; 一覧へ戻る</button>';
   h+='<div class="dh">'+r.v+' '+r.no+'R</div>';
   h+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
+  // 気象（K-file実況）。当日は中立化＝空なので「天候は当日未反映」と表示。
+  if(r.wx){
+    const tk=r.wx[0], wd=r.wx[1], wv=r.wx[2];
+    if(tk||wd!=null||wv!=null){
+      h+='<div class="meta">🌤 '+(tk||'–')+(wd!=null?' ・ 風'+wd+'m':'')+(wv!=null?' ・ 波'+wv+'cm':'')+'<span style="color:#6b7280"> （荒れ度・気象を予想に反映）</span></div>';
+    }else{
+      h+='<div class="meta" style="color:#6b7280">🌤 天候は当日予想に未反映（場の荒れ度のみ反映・気象は後日反映予定）</div>';
+    }
+  }
   if(r.mz)h+='<div class="warn">&#9888; 隊形警戒：前づけ常習者がいて枠なりが崩れやすく、本命の信頼度は割り引いて。</div>';
   if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
   // 本命確率 / 穴確率

@@ -78,7 +78,8 @@ def main():
     run(["convert_all.py"])
     # 3. 特徴量（全期間 as-of 再計算）
     run(["features_player_history.py"])
-    run(["features_race_relative.py"])
+    # 当日の気象は「後で反映する」方針＝中立化（未反映）。場の荒れ度は構造的なので残す。
+    run(["features_race_relative.py", "--neutral-weather-date", today.isoformat()])
     run(["race_flags.py"])
     # 4a. 評価用予測（train<=260430 固定。直近=OOSのまま honest な的中率/回収率）。
     run(["predict_combos.py", "--mode", "split", "--train-end", "260430"])

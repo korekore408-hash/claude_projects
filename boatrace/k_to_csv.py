@@ -48,6 +48,27 @@ RACE_HDR_RE = re.compile(r'^\s{1,5}(\d{1,2})R\s+\D')
 # 決まり手: 列見出し行 "  着 艇 登番 …ﾚｰｽﾀｲﾑ 逃げ" の末尾に1着艇の決まり手が入る。
 KIMARITE_RE = re.compile(r'ﾚｰｽﾀｲﾑ\s+(\S+)\s*$')
 
+# 気象: レースヘッダ行 "  1R  予選…  H1800m  晴　  風  北西　 1m  波　  1cm" 末尾。
+#   天候=晴/曇り/雨/雪、風向=9方位(北/南/東/西/北東/…/無風)、風速=Nm、波高=Ncm。
+#   生値はレース内で全艇共通＝条件付きロジットで打ち消されるため、特徴量側で
+#   枠との交互作用にして使う。ここでは raw 値だけ CSV に残す。全件100%パース確認済。
+WEATHER_RE = re.compile(
+    r'(\d+)m\s+(\S+?)\s+風\s+(\S+?)[　\s]+(\d+)m\s+波[　\s]+(\d+)cm')
+
+
+def parse_weather(line):
+    """レースヘッダ行から気象 dict を返す。該当しなければ空 dict。"""
+    m = WEATHER_RE.search(line)
+    if not m:
+        return {}
+    return {
+        '距離':   int(m.group(1)),
+        '天候':   m.group(2),
+        '風向':   m.group(3),
+        '風速':   int(m.group(4)),
+        '波高':   int(m.group(5)),
+    }
+
 # 払戻金サマリ行: "           1R  1-6-2   37940    1-2-6    6330    1-6    7930    1-6    3810"
 PAYOUT_RE = re.compile(
     r'^\s+(\d{1,2})R[ \t]+'
@@ -112,6 +133,7 @@ def main():
     current_race = None
     payouts = {}   # race_no(int) → dict (会場ごとにリセット)
     kimarite = {}  # race_no(int) → 決まり手（会場ごとにリセット）
+    weather = {}   # race_no(int) → 気象 dict（会場ごとにリセット）
     rows = []
 
     for line in lines:
@@ -123,6 +145,7 @@ def main():
             current_race = None
             payouts = {}        # 払戻金は会場ごとにリセット
             kimarite = {}       # 決まり手も会場ごとにリセット
+            weather = {}        # 気象も会場ごとにリセット
             continue
 
         # ── 日付（yyyy/ m/ d 形式） ────────────────────────────────────────
@@ -143,10 +166,13 @@ def main():
             }
             continue
 
-        # ── レースヘッダ行 ────────────────────────────────────────────────
+        # ── レースヘッダ行（気象もこの行に入る） ──────────────────────────
         m = RACE_HDR_RE.match(line)
         if m:
             current_race = int(m.group(1))
+            wx = parse_weather(line)
+            if wx:
+                weather[current_race] = wx
             continue
 
         # ── 列見出し行から決まり手を取得（"…ﾚｰｽﾀｲﾑ 逃げ"） ──────────────────
@@ -177,6 +203,7 @@ def main():
                     'スタートタイミング': m.group(9),
                     'レースタイム':       clean_racetime(m.group(10)),
                     '決まり手':           kimarite.get(current_race, ''),
+                    **weather.get(current_race, {}),
                     **p,
                 })
                 continue
