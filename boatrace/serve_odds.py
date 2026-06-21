@@ -25,7 +25,8 @@ import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-import fetch_odds   # 同フォルダの取得・パース関数を再利用
+import fetch_odds      # 同フォルダの取得・パース関数を再利用
+import fetch_before    # 展示（直前情報）・結果の取得
 
 
 def parse_race_id(rid: str):
@@ -35,11 +36,77 @@ def parse_race_id(rid: str):
     return int(rid[:2]), rid[2:10], int(rid[10:12])
 
 
+# 展示・結果のディスクキャッシュ（確定済みレースは再取得しない）
+BEFORE_DIR = os.path.join("data", "before")
+
+
+def _cache_path(hd):
+    return os.path.join(BEFORE_DIR, f"before_{hd}.json")
+
+
+def _load_cache(hd):
+    try:
+        with open(_cache_path(hd), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cache(hd, cache):
+    os.makedirs(BEFORE_DIR, exist_ok=True)
+    with open(_cache_path(hd), "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False)
+
+
+def collect_update(hd):
+    """当日の全場・全レースの展示+結果を集める。確定済み(status==result)は
+    キャッシュを使い再取得しない。各場 R1 が空なら未開催として打ち切り。"""
+    cache = _load_cache(hd)
+    out = {}
+    for jcd in range(1, 25):
+        got = False
+        for rno in range(1, 13):
+            rid = f"{jcd:02d}{hd}{rno:02d}"
+            c = cache.get(rid)
+            if c and c.get("status") == "result":      # 確定済み＝不変→キャッシュ流用
+                out[rid] = c
+                got = True
+                continue
+            d = fetch_before.fetch_race(jcd, rno, hd)
+            if d["status"] == "none":
+                if rno == 1 and not got:                # 未開催場→以降スキップ
+                    break
+                continue
+            got = True
+            rec = {"ex": d["ex"], "result": d["result"], "status": d["status"]}
+            out[rid] = rec
+            cache[rid] = rec
+    _save_cache(hd, cache)
+    return out
+
+
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        if urlparse(self.path).path.rstrip("/") == "/odds":
+        p = urlparse(self.path).path.rstrip("/")
+        if p == "/odds":
             return self._odds()
+        if p == "/update":
+            return self._update()
         return super().do_GET()
+
+    def _update(self):
+        qs = parse_qs(urlparse(self.path).query)
+        date = (qs.get("date") or [""])[0]             # YYYYMMDD or YYYY-MM-DD
+        hd = date.replace("-", "")
+        if not (len(hd) == 8 and hd.isdigit()):
+            hd = datetime.date.today().strftime("%Y%m%d")
+        races = collect_update(hd)
+        body = {"date": hd,
+                "fetched_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "races": races}
+        n_res = sum(1 for r in races.values() if r["status"] == "result")
+        self.log_message("update hd=%s races=%d result=%d", hd, len(races), n_res)
+        return self._json(body)
 
     def _odds(self):
         qs = parse_qs(urlparse(self.path).query)
@@ -79,6 +146,7 @@ def main():
     host = "localhost" if args.bind in ("127.0.0.1", "localhost") else args.bind
     print(f"配信中: http://{host}:{args.port}/today.html")
     print("  オッズ更新ボタン → GET /odds?id=race_id（押した時だけ取得）")
+    print("  更新ボタン       → GET /update?date=YYYYMMDD（当日の展示+結果を一括／確定分はキャッシュ）")
     print("  Ctrl+C で停止")
     try:
         srv.serve_forever()

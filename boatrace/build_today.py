@@ -116,10 +116,11 @@ def _pl_rank(s, kind, actual, excl=None):
     return g + 1
 
 
-def venue_stats(rel, pred, hist, since):
-    """since 以降の結果がある全レースから、場別の的中率を集計。
-    各場: 本命1着 / 2連単(本命=top1,top3,変動K) / 3連単(本命,top3,変動K)。
-    変動K列は当日の買い目と同じ除外（B2/不振1号艇 bet_exclude）を適用。"""
+def venue_stats(rel, pred, hist, payout, since):
+    """since 以降の結果がある全レースから、場別の的中率＋変動回収率を集計。
+    各場: 本命1着 / 2連単(本命=top1,top3,変動K,変動回収) / 3連単(本命,top3,変動K,変動回収)。
+    変動K列・回収率は当日の買い目と同じ除外（B2/不振1号艇 bet_exclude）を適用。
+    回収率 = Σ配当 /(Σ点数×100)×100（変動点数を各100円で実際に買った前提・実配当payout）。"""
     from collections import defaultdict
     races = {}
     for r in rel:
@@ -142,10 +143,11 @@ def venue_stats(rel, pred, hist, since):
         rc["b"][w] = (pm, fin)
         rc["cl"][w] = to_float(r.get("class_ord"))
         rc["lw"][w] = to_float(h.get("lane_win_rate"))
-    agg = defaultdict(lambda: [0, 0, 0, 0, 0, 0, 0, 0])   # n,win,e1,e3,eK(2連単変動),t1,t3,tK(3連単変動)
+    # n,win,e1,e3,eK(2連単変動),t1,t3,tK(3連単変動),pts2,pay2,pts3,pay3
+    agg = defaultdict(lambda: [0] * 12)
     name = {}
     dmin = dmax = None
-    for rc in races.values():
+    for rid, rc in races.items():
         if len(rc["b"]) != 6:
             continue
         s = [rc["b"][w][0] for w in range(1, 7)]
@@ -170,22 +172,36 @@ def venue_stats(rel, pred, hist, since):
         name[rc["c"]] = rc["v"]
         dmin = rc["d"] if dmin is None or rc["d"] < dmin else dmin
         dmax = rc["d"] if dmax is None or rc["d"] > dmax else dmax
+        # 変動点数（除外後に実際に買える点数）と実配当で回収率を集計。
+        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0 and w not in excl)
+        bet2 = min(kx, m * (m - 1))
+        bet3 = min(kt, m * (m - 1) * (m - 2))
+        po = payout.get(rid, (0, 0))
         a[0] += 1
         a[1] += (hm == order[0])
-        a[2] += er <= 1; a[3] += er <= 3; a[4] += erk <= kx    # 2連単 変動K(除外後)
-        a[5] += tr <= 1; a[6] += tr <= 3; a[7] += trk <= kt    # 3連単 変動K(除外後)
+        a[2] += er <= 1; a[3] += er <= 3
+        a[5] += tr <= 1; a[6] += tr <= 3
+        if bet2 > 0:
+            a[8] += bet2
+            if erk <= bet2:                                   # 2連単 変動K(除外後)
+                a[4] += 1; a[9] += po[0]
+        if bet3 > 0:
+            a[10] += bet3
+            if trk <= bet3:                                   # 3連単 変動K(除外後)
+                a[7] += 1; a[11] += po[1]
     pct = lambda x, n: round(x / n * 100) if n else 0
-    rows = []
-    for c, a in agg.items():
+    ret = lambda pay, pts: round(pay / (pts * 100) * 100) if pts else 0
+
+    def fmt(name_, a):
         n = a[0]
-        rows.append([name[c], n, pct(a[1], n), pct(a[2], n), pct(a[3], n),
-                     pct(a[4], n), pct(a[5], n), pct(a[6], n), pct(a[7], n)])
+        return [name_, n, pct(a[1], n), pct(a[2], n), pct(a[3], n),
+                pct(a[4], n), ret(a[9], a[8]),
+                pct(a[5], n), pct(a[6], n), pct(a[7], n), ret(a[11], a[10])]
+    rows = [fmt(name[c], a) for c, a in agg.items()]
     rows.sort(key=lambda r: r[2], reverse=True)
-    T = [sum(agg[c][i] for c in agg) for i in range(8)]
-    n = T[0]
-    allrow = ["全場", n, pct(T[1], n), pct(T[2], n), pct(T[3], n), pct(T[4], n),
-              pct(T[5], n), pct(T[6], n), pct(T[7], n)]
-    return {"from": dmin, "to": dmax, "n": n, "rows": rows, "all": allrow}
+    T = [sum(agg[c][i] for c in agg) for i in range(12)]
+    return {"from": dmin, "to": dmax, "n": T[0],
+            "rows": rows, "all": fmt("全場", T)}
 
 
 def load_payouts(keep):
@@ -209,62 +225,78 @@ def load_payouts(keep):
     return payout
 
 
-def hon_ana_result(pred, since_ymd="20260101"):
-    """本命確率/穴確率の帯ごとに、実際の結果（的中率）を集計＝購入判断の材料。
-    本命確率=モデル1番手(p_win最大)。穴確率=モデル順位4-6のp_win合計。
-    本命的中=1着がモデル1番手。穴的中=1着がモデル順位4-6（軽視艇）。
-    返り値 {hon, ana}: 各 [[帯ラベル, 予測中央%, 実測%, レース数], ...]。"""
-    from collections import defaultdict
-    races = defaultdict(dict)
-    for r in pred.values():
-        if r.get("race_id", "")[2:10] < since_ymd:
+def regime_result(rel, pred, hist, payout, since):
+    """予想の荒れ度（鉄板/標準/穴）ごとに、実際の的中率と回収率を集計。
+    荒れ度＝本命確率(top1 p_win): ≥0.65 鉄板 / 0.45-0.65 標準 / <0.45 穴(波乱含み)。
+    買い目＝当日と同じ変動点数（2連単 k_ex≤5 / 3連単 k_tri≤20）＋除外（B2・不振1号艇）。
+    回収率 = Σ配当 /(Σ点数×100)×100。各100円・実配当(K-file)。
+    返り値 [{lab,n,h2,r2,h3,r3}, ...]（鉄板/標準/穴）。"""
+    races = {}
+    for r in rel:
+        if r["日付"] < since:
             continue
-        races[r["race_id"]][int(r["枠番"])] = (r.get("p_win"), r.get("finish_rank"))
+        rid = r["race_id"]
+        pr = pred.get((rid, r["枠番"]), {})
+        h = hist.get((rid, r["枠番"]), {})
+        try:
+            pm = float(pr.get("p_win"))
+        except (TypeError, ValueError):
+            pm = None
+        try:
+            fin = int(pr.get("finish_rank"))
+        except (TypeError, ValueError):
+            fin = None
+        rc = races.setdefault(rid, {"b": {}, "cl": {}, "lw": {}})
+        w = int(r["枠番"])
+        rc["b"][w] = (pm, fin)
+        rc["cl"][w] = to_float(r.get("class_ord"))
+        rc["lw"][w] = to_float(h.get("lane_win_rate"))
 
-    hon_edges = [0, .40, .50, .60, .70, .80, 1.01]
-    ana_edges = [0, .08, .12, .16, .20, .25, .30, 1.01]
-    honb = [[0, 0, 0.0] for _ in hon_edges[:-1]]      # n, hit, sum_pred
-    anab = [[0, 0, 0.0] for _ in ana_edges[:-1]]
-
-    def add(bins, edges, p, hit):
-        for i in range(len(edges) - 1):
-            if edges[i] <= p < edges[i + 1]:
-                bins[i][0] += 1
-                bins[i][1] += hit
-                bins[i][2] += p
-                return
-
-    for b in races.values():
-        if len(b) != 6:
+    labs = ["鉄板", "標準", "穴"]
+    agg = [{"n": 0, "win": 0, "n2": 0, "h2": 0, "pts2": 0, "p2": 0,
+            "n3": 0, "h3": 0, "pts3": 0, "p3": 0} for _ in range(3)]
+    for rid, rc in races.items():
+        if len(rc["b"]) != 6:
             continue
-        s, fin, ok = [], {}, True
-        for w in range(1, 7):
-            try:
-                s.append(float(b[w][0]))
-            except (TypeError, ValueError):
-                ok = False
-                break
-            fin[w] = b[w][1]
-        if not ok or not any(fin[w] == "1" for w in range(1, 7)):
+        s = [rc["b"][w][0] for w in range(1, 7)]
+        fins = [rc["b"][w][1] for w in range(1, 7)]
+        if any(x is None for x in s):
             continue
-        order = sorted(range(6), key=lambda i: -s[i])     # モデル順位（0始まり艇index）
-        win = next(i for i in range(6) if fin[i + 1] == "1")
-        rank = order.index(win) + 1                       # 1=本命
-        hon = s[order[0]]
-        ana = s[order[3]] + s[order[4]] + s[order[5]]
-        add(honb, hon_edges, hon, 1 if rank == 1 else 0)
-        add(anab, ana_edges, ana, 1 if rank >= 4 else 0)
+        order = sorted([w for w in range(1, 7)
+                        if fins[w - 1] is not None and fins[w - 1] >= 1],
+                       key=lambda w: fins[w - 1])
+        if len(order) < 2 or fins[order[0] - 1] != 1:
+            continue
+        hon = max(s)
+        gi = 0 if hon >= 0.65 else (2 if hon < 0.45 else 1)
+        kx, kt = k_ex(hon), k_tri(hon)
+        excl = {e[0] for e in bet_exclude(rc["cl"], rc["lw"].get(1), hon)}
+        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0 and w not in excl)
+        bet2 = min(kx, m * (m - 1))
+        bet3 = min(kt, m * (m - 1) * (m - 2))
+        po = payout.get(rid, (0, 0))
+        hm = max(range(6), key=lambda i: s[i]) + 1     # モデル1番手（本命）の枠
+        a = agg[gi]
+        a["n"] += 1
+        a["win"] += (hm == order[0])                   # 本命艇が1着
+        if bet2 > 0:
+            a["n2"] += 1
+            a["pts2"] += bet2
+            if _pl_rank(s, 2, tuple(order[:2]), excl) <= bet2:
+                a["h2"] += 1
+                a["p2"] += po[0]
+        if len(order) >= 3 and bet3 > 0:
+            a["n3"] += 1
+            a["pts3"] += bet3
+            if _pl_rank(s, 3, tuple(order[:3]), excl) <= bet3:
+                a["h3"] += 1
+                a["p3"] += po[1]
 
-    def lab(edges, i):
-        lo = int(round(edges[i] * 100))
-        if edges[i + 1] > 1:
-            return f"{lo}%+"
-        return f"{lo}-{int(round(edges[i + 1] * 100))}"
-
-    def fmt(bins, edges):
-        return [[lab(edges, i), round(sp / n * 100, 1), round(hit / n * 100, 1), n]
-                for i, (n, hit, sp) in enumerate(bins) if n]
-    return {"hon": fmt(honb, hon_edges), "ana": fmt(anab, ana_edges)}
+    pct = lambda x, n: round(x / n * 100, 1) if n else 0
+    return [{"lab": labs[i], "n": a["n"], "win": pct(a["win"], a["n"]),
+             "h2": pct(a["h2"], a["n2"]), "r2": pct(a["p2"], a["pts2"] * 100),
+             "h3": pct(a["h3"], a["n3"]), "r3": pct(a["p3"], a["pts3"] * 100)}
+            for i, a in enumerate(agg)]
 
 
 def load_kresult(keep):
@@ -485,12 +517,14 @@ def main():
     for i, d in enumerate(reversed(keep)):       # 新しい順
         labels.append([rel_labels[i] if i < len(rel_labels) else d, d])
 
-    vstats = venue_stats(rel, pred, hist, args.stats_from)
+    payout_all = load_payouts(sorted({r["日付"] for r in rel
+                                      if r["日付"] >= args.stats_from}))
+    vstats = venue_stats(rel, pred, hist, payout_all, args.stats_from)
     recent = recent_stats(out, payout)
-    hra = hon_ana_result(pred)
+    regime = regime_result(rel, pred, hist, payout_all, args.stats_from)
 
     payload = {"labels": labels, "base": base, "races": out,
-               "vstats": vstats, "recent": recent, "hra": hra}
+               "vstats": vstats, "recent": recent, "regime": regime}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
@@ -524,6 +558,9 @@ HTML = r"""<!DOCTYPE html>
   .vbtn{font-size:14px;padding:6px 12px;border-radius:8px;border:0.5px solid #39404d;
         background:transparent;color:#cdd6e2;cursor:pointer}
   .vbtn.on{background:#374151;color:#fff;border-color:#4b5563}
+  .sortbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0 2px;font-size:12px;color:#8ea0ba}
+  .sortb{font-size:12px;padding:4px 11px;border-radius:7px;border:0.5px solid #39404d;background:transparent;color:#cdd6e2;cursor:pointer}
+  .sortb.on{background:#374151;color:#fff;border-color:#4b5563}
   h3{font-size:15px;font-weight:600;margin:14px 0 4px;color:#b9c2d0}
   .row{display:flex;align-items:center;gap:8px;padding:10px 4px;border-bottom:0.5px solid #2a2f3a;cursor:pointer}
   .row:active{background:#12161d}
@@ -577,8 +614,8 @@ HTML = r"""<!DOCTYPE html>
   .tb{flex:1;font-size:14px;padding:8px 6px;border-radius:8px;border:0.5px solid #39404d;background:transparent;color:#cdd6e2;cursor:pointer;text-align:center}
   .tb.on{background:#2b6cb0;color:#fff;border-color:#2b6cb0}
   .swrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:4px}
-  table.st{border-collapse:collapse;width:100%;min-width:520px;font-size:13px}
-  table.st th,table.st td{border-bottom:0.5px solid #232a36;padding:7px 8px;text-align:right;white-space:nowrap}
+  table.st{border-collapse:collapse;width:100%;font-size:11px}
+  table.st th,table.st td{border-bottom:0.5px solid #232a36;padding:5px 3px;text-align:right;white-space:nowrap}
   table.st th{color:#8ea0ba;font-weight:600;position:sticky;top:0;background:#12161d}
   table.st td.k,table.st th.k{text-align:left}
   table.st .g2{color:#7fb2ff}.st .g3{color:#ffd082}
@@ -609,12 +646,29 @@ HTML = r"""<!DOCTYPE html>
   .resline .rll{color:#6b7280;font-size:11px;margin-right:2px}
   .resline .yen{margin-left:auto;font-variant-numeric:tabular-nums;color:#cdd6e2;font-weight:600}
   .resline .yen.hit{color:#43c59e}
+  .upbtn{font-size:14px;padding:8px 6px;border-radius:8px;border:0.5px solid #2f7a52;
+        background:transparent;color:#7ee0a4;cursor:pointer;text-align:center;flex:1}
+  .upbtn:active{background:#10362c}
+  .upbtn:disabled{opacity:.5}
+  .upstat{font-size:11px;color:#9aa3b2;margin:0 0 8px;line-height:1.5;min-height:0}
+  .upstat.err{color:#e06b6b}
+  .exwx{font-size:12px;color:#cdd6e2;background:#141a1f;border-left:3px solid #5dc7e0;border-radius:0 6px 6px 0;padding:7px 10px;margin:6px 0;line-height:1.6}
+  table.ex{border-collapse:collapse;width:100%;font-size:12px;margin:6px 0 2px}
+  table.ex th,table.ex td{border-bottom:0.5px solid #232a36;padding:5px 4px;text-align:center;white-space:nowrap}
+  table.ex th{color:#8ea0ba;font-weight:600;font-size:11px}
+  table.ex td.parts{text-align:left;font-size:10px;color:#9aa3b2;white-space:normal}
+  table.ex .extbest{color:#43c59e;font-weight:800}
+  table.ex .exin{color:#e0a93b;font-weight:700}
 </style></head><body>
 <div id="app"></div>
 <script>
 const D=__DATA__;
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
 let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
+// 「更新」ボタンの状態（当日の展示+結果取得）。upMsg=ステータス表示文字列。
+let upMsg='', upErr=false, upBusy=false;
+// 場別テーブルの並び替え状態（c='e'(2連単)/'t'(3連単), d=1昇順/-1降順, null=既定）。
+let vsort={c:null,d:-1}, rsort={c:null,d:-1};
 const root=document.getElementById('app');
 const mmdd=s=>s.slice(5);
 function chip(w,cls){const a=LC[w];return '<span class="'+(cls||'wk')+'" style="background:'+a[0]+';color:'+a[1]+'">'+w+'</span>';}
@@ -708,7 +762,8 @@ function detailView(r){
   h+='<div class="dh">'+r.v+' '+r.no+'R</div>';
   h+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
   // 気象（K-file実況）。当日は中立化＝空なので「天候は当日未反映」と表示。
-  if(r.wx){
+  // 展示(r.ex)取得済みなら気象は exView で実値表示するのでこの行は出さない。
+  if(r.wx&&!r.ex){
     const tk=r.wx[0], wd=r.wx[1], wv=r.wx[2];
     if(tk||wd!=null||wv!=null){
       h+='<div class="meta">🌤 '+(tk||'–')+(wd!=null?' ・ 風'+wd+'m':'')+(wv!=null?' ・ 波'+wv+'cm':'')+'<span style="color:#6b7280"> （荒れ度・気象を予想に反映）</span></div>';
@@ -716,6 +771,7 @@ function detailView(r){
       h+='<div class="meta" style="color:#6b7280">🌤 天候は当日予想に未反映（場の荒れ度のみ反映・気象は後日反映予定）</div>';
     }
   }
+  h+=exView(r);   // 直前情報（展示）。更新で取得済みのときだけ表示。
   if(r.mz)h+='<div class="warn">&#9888; 隊形警戒：前づけ常習者がいて枠なりが崩れやすく、本命の信頼度は割り引いて。</div>';
   if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
   // 本命確率 / 穴確率
@@ -796,38 +852,53 @@ function detailView(r){
 function nav(){
   return '<h1>競艇当日予想</h1><div class="tabs">'
     +'<button class="tb'+(tab==='pred'?' on':'')+'" data-t="pred">予想</button>'
-    +'<button class="tb'+(tab==='stats'?' on':'')+'" data-t="stats">場別成績</button></div>';
+    +'<button class="tb'+(tab==='stats'?' on':'')+'" data-t="stats">場別成績</button>'
+    +'<button class="upbtn"'+(upBusy?' disabled':'')+' data-act="update">更新</button></div>'
+    +'<div class="upstat'+(upErr?' err':'')+'" id="upstat">'+(upMsg||'')+'</div>';
 }
 // 棒グラフ（自己完結SVG）。data=[[帯ラベル, 予想中央%, 実測%, レース数], ...]。
 // 棒=実測、◇=予想中央。opts.odds で各帯に必要オッズ目安(=100/実測%)を表示。
-function barSVG(data,col,opts){
+// 荒れ度3区分（鉄板/標準/穴）のグループ棒グラフ。series=[{k,col},...]（2連単/3連単）。
+function grpBars(rows,series,opts){
   opts=opts||{};
-  if(!data||!data.length)return '';
-  const W=330,padL=30,padR=8,padT=16,padB=opts.odds?58:42,H=padT+150+padB;
-  let mx=Math.max(...data.flatMap(d=>[d[1],d[2]]),1);
-  const M=Math.ceil(mx/(mx>50?20:mx>20?10:5))*(mx>50?20:mx>20?10:5);
+  if(!rows||!rows.length)return '';
+  const W=330,padL=30,padR=8,padT=16,padB=32,H=padT+150+padB;
+  let mx=Math.max(...rows.flatMap(r=>series.map(s=>r[s.k]||0)),opts.ref||0,1);
+  const step=mx>100?40:mx>50?20:mx>20?10:5;
+  const M=Math.ceil(mx/step)*step;
   const plotW=W-padL-padR, plotH=H-padT-padB;
-  const n=data.length, gap=plotW/n, bw=Math.min(gap*0.56,38);
+  const n=rows.length, gap=plotW/n;
   const y=v=>padT+plotH-(v/M)*plotH;
   let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px">';
   for(let t=0;t<=M+0.01;t+=M/5){
     g+='<line x1="'+padL+'" y1="'+y(t)+'" x2="'+(W-padR)+'" y2="'+y(t)+'" stroke="#222a33"/>';
     g+='<text x="'+(padL-4)+'" y="'+(y(t)+3)+'" fill="#7e8796" font-size="9" text-anchor="end">'+Math.round(t)+'</text>';
   }
-  data.forEach((d,i)=>{
-    const cx=padL+gap*i+gap/2, x=cx-bw/2, yt=y(d[2]);
-    g+='<rect x="'+x+'" y="'+yt+'" width="'+bw+'" height="'+Math.max((d[2]/M)*plotH,1)+'" rx="2" fill="'+col+'"/>';
-    g+='<text x="'+cx+'" y="'+(yt-4)+'" fill="#e6e6e6" font-size="10" text-anchor="middle" font-weight="700">'+d[2]+'</text>';
-    const yp=y(d[1]);
-    g+='<path d="M'+(cx-4)+' '+yp+' L'+cx+' '+(yp-4)+' L'+(cx+4)+' '+yp+' L'+cx+' '+(yp+4)+' Z" fill="none" stroke="#9aa3b2" stroke-width="1.4"/>';
-    g+='<text x="'+cx+'" y="'+(H-padB+13)+'" fill="#9aa3b2" font-size="9" text-anchor="middle">'+d[0]+'</text>';
-    g+='<text x="'+cx+'" y="'+(H-padB+24)+'" fill="#6b7280" font-size="8" text-anchor="middle">'+d[3]+'R</text>';
-    if(opts.odds){const need=d[2]>0?100/d[2]:0;
-      g+='<text x="'+cx+'" y="'+(H-padB+37)+'" fill="#e0a93b" font-size="9" text-anchor="middle" font-weight="700">'+need.toFixed(1)+'倍</text>';}
+  if(opts.ref){
+    g+='<line x1="'+padL+'" y1="'+y(opts.ref)+'" x2="'+(W-padR)+'" y2="'+y(opts.ref)+'" stroke="#c0563c" stroke-dasharray="4 3" stroke-width="1.2"/>';
+    g+='<text x="'+(W-padR)+'" y="'+(y(opts.ref)-3)+'" fill="#d9745c" font-size="8.5" text-anchor="end">'+opts.ref+'%</text>';
+  }
+  const bw=Math.min((gap*0.62)/series.length,26);
+  rows.forEach((r,i)=>{
+    const c0=padL+gap*i+gap/2, tot=series.length*bw+(series.length-1)*3;
+    series.forEach((s,j)=>{
+      const x=c0-tot/2+j*(bw+3), v=r[s.k]||0, yt=y(v);
+      g+='<rect x="'+x+'" y="'+yt+'" width="'+bw+'" height="'+Math.max((v/M)*plotH,1)+'" rx="2" fill="'+s.col+'"/>';
+      g+='<text x="'+(x+bw/2)+'" y="'+(yt-3)+'" fill="#e6e6e6" font-size="9" text-anchor="middle" font-weight="700">'+v+'</text>';
+    });
+    g+='<text x="'+c0+'" y="'+(H-padB+15)+'" fill="#cdd6e2" font-size="11" text-anchor="middle" font-weight="600">'+r.lab+'</text>';
+    g+='<text x="'+c0+'" y="'+(H-padB+26)+'" fill="#6b7280" font-size="8" text-anchor="middle">'+r.n+'R</text>';
   });
-  g+='<text x="'+(padL+plotW/2)+'" y="'+(H-3)+'" fill="#9aa3b2" font-size="9.5" text-anchor="middle">'+(opts.xlab||'')+'</text>';
   g+='</svg>';
   return g;
+}
+// 場別テーブルを指定列(idx)・方向(dir)でソート（コピーを返す。全場行は呼び出し側で末尾固定）。
+function sortRows(rows,idx,dir){return rows.slice().sort((a,b)=>(a[idx]-b[idx])*dir);}
+// 並び替えボタン列。tbl='v'(的中率表)/'r'(回収率表), st=その状態。
+function sortbar(tbl,st){
+  const mk=(c,lab)=>{const on=st.c===c;const ar=on?(st.d>0?' ▲':' ▼'):' ⇅';
+    return '<button class="sortb'+(on?' on':'')+'" data-st="'+tbl+'" data-col="'+c+'">'+lab+ar+'</button>';};
+  return '<div class="sortbar">並び替え:'+mk('e','2連単')+mk('t','3連単')+'</div>';
 }
 function statsView(){
   // 場別成績は Python 側で全期間（2026年〜）集計済み。ここでは描画のみ。
@@ -836,21 +907,26 @@ function statsView(){
   const cell=(v,extra)=>'<td class="num'+(extra?' '+extra:'')+'">'+v+'%</td>';
   const row=(a,all)=>'<tr'+(all?' class="all"':'')+'><td class="k">'+a[0]+'</td>'
     +'<td class="num scol">'+a[1]+'</td><td class="num">'+a[2]+'%</td>'
-    +cell(a[3],all?'':'g2')+cell(a[4],all?'':'g2')+cell(a[5],all?'':'g2')
-    +cell(a[6],all?'':'g3')+cell(a[7],all?'':'g3')+cell(a[8],all?'':'g3')+'</tr>';
+    +cell(a[3],all?'':'g2')+cell(a[5],all?'':'g2')+cell(a[6],all?'':'g2')
+    +cell(a[7],all?'':'g3')+cell(a[9],all?'':'g3')+cell(a[10],all?'':'g3')+'</tr>';
   h+='<div class="meta">対象 '+V.from+'〜'+V.to+'（'+V.n+'レース・収集データ全体）・ '
-    +'数字=予想上位K通り以内に決着が入った割合。「変動」=予想確率連動の点数（堅い→少点／荒れ→多点）</div>';
+    +'数字=予想上位K通り以内に決着が入った割合。「変動」=予想確率連動の点数（堅い→少点／荒れ→多点）。'
+    +'並び替えは「変動」的中率（2連単≤5／3連単≤20）基準。</div>';
+  h+=sortbar('v',vsort);
+  const vrows=vsort.c?sortRows(V.rows,vsort.c==='e'?5:9,vsort.d):V.rows;
   h+='<div class="swrap"><table class="st"><thead><tr>'
     +'<th class="k">会場</th><th>R数</th><th>本命<br>1着</th>'
-    +'<th class="g2">2連単<br>本命</th><th class="g2">top3</th><th class="g2">変動<br>≤5</th>'
-    +'<th class="g3">3連単<br>本命</th><th class="g3">top3</th><th class="g3">変動<br>≤20</th></tr></thead><tbody>';
-  for(const a of V.rows)h+=row(a,false);
+    +'<th class="g2">2連単<br>本命</th><th class="g2">変動<br>≤5</th><th class="g2">変動<br>回収</th>'
+    +'<th class="g3">3連単<br>本命</th><th class="g3">変動<br>≤20</th><th class="g3">変動<br>回収</th></tr></thead><tbody>';
+  for(const a of vrows)h+=row(a,false);
   h+=row(V.all,true);
   h+='</tbody></table></div>';
   h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
     +'「変動」=予想確率に応じた点数（2連単≤5/3連単≤20）以内に実際の決着が含まれた割合（その点数を買えば当たる割合）。'
-    +'※「変動」列のみB2・不振1号艇を除外（本命/top3はモデル診断＝除外なし）。'
-    +'※ 4月までは学習期間を含むため的中率はやや高めに出る（5月以降が純粋な検証）。</div>';
+    +'<b>「変動回収」=その変動点数を各100円で実際に買った場合の回収率（Σ配当÷賭け金）。100%超で利益。</b>'
+    +'※「変動」「変動回収」列はB2・不振1号艇を除外（本命列はモデル診断＝除外なし）。'
+    +'※ 4月までは学習期間を含むため的中率・回収率はやや高めに出る（5月以降が純粋な検証）。'
+    +'※ 全期間でも回収率は100%未満が基本（控除率約25%の壁）。</div>';
   // 前日・前々日の場別 的中率＋回収率
   const RC=D.recent;
   if(RC&&RC.rows&&RC.rows.length){
@@ -860,33 +936,38 @@ function statsView(){
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
     h+='<div class="meta">実践的中＝予想確率連動の点数を実際に買った場合の的中率（2連単≤5/3連単≤20点, 各100円）。回収率100%超で利益。'
-      +'B2・荒れ帯の不振1号艇を買い目から除外したベース（点数=除外後の実点数）。</div>';
+      +'B2・荒れ帯の不振1号艇を買い目から除外したベース（点数=除外後の実点数）。並び替えは回収率基準。</div>';
+    h+=sortbar('r',rsort);
+    const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
     h+='<div class="swrap"><table class="st"><thead><tr>'
       +'<th class="k">会場</th><th>R数</th>'
       +'<th class="g2">2連単<br>実践的中</th><th class="g2">回収率</th>'
       +'<th class="g3">3連単<br>実践的中</th><th class="g3">回収率</th></tr></thead><tbody>';
-    for(const a of RC.rows)h+=rrow(a,false);
+    for(const a of rrows)h+=rrow(a,false);
     h+=rrow(RC.all,true);
     h+='</tbody></table></div>';
     h+='<div class="legend">※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。'
       +'確率帯別バックテスト(2026全体)ではどの帯も回収率100%未満（控除率約25%の壁）＝確率だけで機械的に買うと負ける。'
       +'各レース詳細の「買えてた場合の妙味」で、実配当が必要オッズを超えたか（＝買えてたら+EVか）を確認できる。</div>';
   }
-  // 本命確率・穴確率 と 実際の結果（購入判断の材料）
-  const HA=D.hra;
-  if(HA&&HA.hon&&HA.hon.length){
-    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">本命確率・穴確率と実際の結果（2026年〜）</div>';
-    h+='<div class="meta">棒=実測（実際にそうなった割合）／<span style="color:#9aa3b2">◇</span>=モデル予想（帯の中央値）。棒が右ほど伸びれば「確率が高い予想ほど当たる」。各帯のレース数（R）も表示。</div>';
-    h+='<div style="text-align:center"><div style="font-size:13px;color:#43c59e;margin:8px 0 2px;font-weight:600">① 本命的中率（本命確率の帯別）</div>'
-      +barSVG(HA.hon,'#43c59e',{xlab:'本命確率＝モデル1番手の1着確率'})+'</div>';
-    h+='<div class="legend">本命確率が高い帯ほど、実際に本命（モデル1番手）が1着になった割合も高い＝高確率の本命ほど信頼できる。'
-      +'棒（実測）と◇（予想）がほぼ重なる＝確率は正確。鉄板狙いは本命確率の高い帯のレースを選ぶのが目安。</div>';
-    h+='<div style="text-align:center"><div style="font-size:13px;color:#e0a93b;margin:16px 0 2px;font-weight:600">② 穴的中率＋必要オッズ目安（穴確率の帯別）</div>'
-      +barSVG(HA.ana,'#e0a93b',{xlab:'穴確率＝モデル4-6番手の1着確率合計',odds:true})+'</div>';
-    h+='<div class="legend">穴的中＝モデルが軽視した4-6番手の艇が1着。穴確率が高い帯ほど実際に穴が出やすい。'
-      +'<b style="color:#e0a93b">必要オッズ目安＝100÷穴的中率</b>＝その帯の穴を買って長期で勝つのに最低限ほしい配当倍率。'
-      +'実オッズがこの倍率を超える穴だけ買うのが目安（穴確率が高い帯ほど必要倍率が下がる＝買いやすい）。'
-      +'※モデルはモーター・直近を織込済みで、確率を超える妙味は無い＝勝負所はオッズが必要倍率を上回るかどうか。</div>';
+  // 鉄板・標準・穴 と予想した場合の 的中率／回収率（2026年〜）
+  const RG=D.regime;
+  if(RG&&RG.length&&RG.some(r=>r.n)){
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・標準・穴 別の的中率と回収率（2026年〜）</div>';
+    h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本命確率≥65％ ／ <b>標準</b>＝45–65％ ／ <b>穴</b>＝本命確率&lt;45％（波乱含み）。'
+      +'買い目＝確率連動の変動点数（2連単≤5／3連単≤20点・各100円, B2・不振1号艇は除外）。</div>';
+    h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命1着　'
+      +'<span style="color:#43c59e">■</span> 2連単（≤5点）　'
+      +'<span style="color:#e0a93b">■</span> 3連単（≤20点）</div>';
+    h+='<div style="text-align:center"><div style="font-size:13px;color:#cdd6e2;margin:8px 0 2px;font-weight:600">① 的中率（％）</div>'
+      +grpBars(RG,[{k:'win',col:'#5b9bd5'},{k:'h2',col:'#43c59e'},{k:'h3',col:'#e0a93b'}])+'</div>';
+    h+='<div style="text-align:center"><div style="font-size:13px;color:#cdd6e2;margin:14px 0 2px;font-weight:600">② 回収率（％・<span style="color:#d9745c">赤破線=100％損益分岐</span>）</div>'
+      +grpBars(RG,[{k:'r2',col:'#43c59e'},{k:'r3',col:'#e0a93b'}],{ref:100})+'</div>';
+    h+='<div class="legend"><b style="color:#5b9bd5">本命1着</b>＝本命（モデル1番手）が1着に来た割合（着順1つだけ）。鉄板ほど高い。'
+      +'2連単（1着+2着）・3連単（1-2-3着）は着順まで当てるぶん下がる。'
+      +'回収率は払戻÷賭け金で、本命1着は単勝オッズが無いため対象外＝2連単・3連単のみ。'
+      +'いずれの分類も回収率は100％（赤破線）未満が基本＝控除率約25％の壁で、確率だけで機械的に買うと長期では負ける。'
+      +'「変動点数」は堅い予想ほど少点／荒れ予想ほど多点に自動調整。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
   }
   return h;
 }
@@ -910,16 +991,89 @@ function updateOdds(btn){
     btn.disabled=false;
   }).catch(()=>{stat.innerHTML='<span style="color:#e06b6b">取得失敗：serve_odds.py 経由で開く（発売前は空のことあり）</span>';btn.disabled=false;});
 }
+// 風向番号(1..16)→簡易矢印（公式の風向アイコン番号に対応・北基準時計回り）。
+const WINDDIR={1:'↑',2:'↗',3:'↗',4:'→',5:'→',6:'↘',7:'↘',8:'↓',9:'↓',10:'↙',11:'↙',12:'←',13:'←',14:'↖',15:'↖',16:'↑'};
+
+// 展示（直前情報）セクション。r.ex（更新で取得）を表で表示。
+function exView(r){
+  const e=r.ex; if(!e)return '';
+  let h='<div class="sec">直前情報（展示）<span class="kbadge">取得済</span></div>';
+  const w=e.weather||{};
+  if(w.tenki||w.wind!=null||w.wave!=null){
+    h+='<div class="exwx">🌤 '+(w.tenki||'–')
+      +(w.wind!=null?' ・ 風'+w.wind+'m'+(w.winddir?(WINDDIR[w.winddir]||''):''):'')
+      +(w.wave!=null?' ・ 波'+w.wave+'cm':'')
+      +(w.temp!=null?' ・ 気温'+w.temp+'℃':'')+'</div>';
+  }
+  const ts=e.time||[];
+  const valid=ts.map((t,i)=>[t,i]).filter(x=>x[0]!=null).sort((a,b)=>a[0]-b[0]);
+  const best=valid.length?valid[0][1]:-1;       // 展示タイム最速の枠index
+  const fmtSt=st=>st==null?'–':((st<0?'F':'')+'.'+Math.abs(Math.round(st*100)).toString().padStart(2,'0'));
+  h+='<table class="ex"><thead><tr><th>枠</th><th>展示T</th><th>チルト</th><th>進入</th><th>展示ST</th><th>部品交換</th></tr></thead><tbody>';
+  for(let i=0;i<6;i++){
+    const t=ts[i], tl=e.tilt?e.tilt[i]:null, c=e.course?e.course[i]:null, st=e.st?e.st[i]:null, pa=e.parts?e.parts[i]:null;
+    h+='<tr><td>'+chip(i+1,'mc')+'</td>'
+      +'<td class="'+(i===best?'extbest':'')+'">'+(t!=null?t.toFixed(2):'–')+'</td>'
+      +'<td>'+(tl!=null?((tl>0?'+':'')+tl.toFixed(1)):'–')+'</td>'
+      +'<td class="'+(c===1?'exin':'')+'">'+(c!=null?c+'c':'–')+'</td>'
+      +'<td>'+fmtSt(st)+'</td>'
+      +'<td class="parts">'+(pa&&pa.length?pa.join('・'):'–')+'</td></tr>';
+  }
+  h+='</tbody></table>';
+  h+='<div class="legend">※ 展示＝発走直前の情報（「更新」時に公式サイトから取得）。'
+    +'<b style="color:#43c59e">緑</b>＝展示タイム最速、<b style="color:#e0a93b">橙</b>＝展示でイン(1c)進入。'
+    +'モデルの確率自体は朝の出走表のみで算出（展示は判断材料として表示）。</div>';
+  return h;
+}
+
+// 「更新」ボタン：当日(base)の展示＋結果を serve_odds.py 経由で取得し D.races へ反映。
+// 結果が出たレースは着順/決まり手/配当を入れて前日同様の結果表示に切替わる。
+function updateAll(){
+  if(upBusy)return;
+  upBusy=true; upErr=false;
+  upMsg='取得中… 当日の展示・結果を収集しています（開催場数により数十秒かかることがあります）';
+  selDate=D.base; tab='pred'; sel=null; render();
+  fetch('update?date='+D.base.replace(/-/g,'')).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
+    const R=o.races||{}; let nres=0,nex=0;
+    D.races.forEach(r=>{
+      if(r.d!==D.base)return;                    // 反映は当日のみ
+      const rec=R[r.id]; if(!rec)return;
+      if(rec.ex){r.ex=rec.ex; nex++;}
+      if(rec.result){
+        const rs=rec.result, fin=rs.fin||[];
+        for(let w=1;w<=6;w++)r.b[w-1][2]=fin[w-1];   // 着順→前日同様の結果表示
+        if(rs.km)r.km=rs.km;
+        if(rs.po2!=null||rs.po3!=null)r.po=[rs.po2,rs.po3];
+        nres++;
+      }
+    });
+    upBusy=false; upErr=false;
+    upMsg='更新 '+(o.fetched_at||'')+' ／ 結果 '+nres+'レース・展示 '+nex+'レースを反映';
+    render();
+  }).catch(()=>{
+    upBusy=false; upErr=true;
+    upMsg='取得失敗：serve_odds.py 経由で開いてください（py -3.13 serve_odds.py → http://localhost:8787/today.html）。発走前は展示・結果がまだ無いことがあります。';
+    render();
+  });
+}
+
 function render(){
   if(tab==='stats'){
     root.innerHTML=statsView();
     document.querySelectorAll('.tb').forEach(b=>b.onclick=()=>{tab=b.dataset.t;sel=null;render();});
-    window.scrollTo(0,0);return;
+    document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
+    document.querySelectorAll('.sortb').forEach(b=>b.onclick=()=>{
+      const s=b.dataset.st==='v'?vsort:rsort, c=b.dataset.col;
+      if(s.c===c){s.d=-s.d;}else{s.c=c;s.d=-1;}   // 同じ列=方向反転／別列=降順から
+      render();
+    });
+    return;
   }
   root.innerHTML = sel===null ? nav()+listView() : detailView(dayRaces()[sel]);
   window.scrollTo(0,0);
   if(sel===null){
     document.querySelectorAll('.tb').forEach(b=>b.onclick=()=>{tab=b.dataset.t;sel=null;render();});
+    document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
     document.querySelectorAll('.dbtn').forEach(b=>b.onclick=()=>{selDate=b.dataset.d;cur='ALL';render();});
     document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{cur=b.dataset.v;render();});
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{sel=+rw.dataset.i;render();});
