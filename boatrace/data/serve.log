@@ -104,3 +104,13 @@ Traceback (most recent call last):
     ~~~~~~~~~~~~~~~~~~^^^
 ConnectionAbortedError: [WinError 10053] 確立された接続がホスト コンピューターのソウトウェアによって中止されました。
 ----------------------------------------
+127.0.0.1 - - [23/Jun/2026 21:20:10] "GET /today.html HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 21:24:24] "GET /today.html HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 21:25:10] "GET /today.html HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 21:25:37] code 404, message File not found
+127.0.0.1 - - [23/Jun/2026 21:25:37] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [23/Jun/2026 21:34:08] code 404, message File not found
+127.0.0.1 - - [23/Jun/2026 21:34:08] "GET /today.html%EF%BC%89%E3%81%AB%E4%BA%88%E6%83%B3%E3%81%8C%E5%87%BA%E3%81%A6%E3%81%84%E3%82%8B%E3%81%8B**%E8%A6%8B%E3%81%A6%E3%81%8F%E3%81%A0%E3%81%95%E3%81%84%E3%80%82%E5%87%BA%E3%81%A6%E3%81%84%E3%82%8C%E3%81%B0%E9%85%8D%E4%BF%A1%E3%81%AF%E6%AD%A3%E5%B8%B8%E3%81%A7%E3%81%99%E3%80%82 HTTP/1.1" 404 -
+127.0.0.1 - - [23/Jun/2026 21:39:49] "GET /today.html HTTP/1.1" 304 -
+127.0.0.1 - - [23/Jun/2026 21:41:03] update hd=20260623 races=144 result=144
+127.0.0.1 - - [23/Jun/2026 21:41:03] "GET /update?date=20260623 HTTP/1.1" 200 -
