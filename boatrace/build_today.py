@@ -1154,6 +1154,9 @@ function exView(r){
 // 結果が出たレースは着順/決まり手/配当を入れて前日同様の結果表示に切替わる。
 function updateAll(){
   if(upBusy)return;
+  // ファイル直開き(file://)では更新サーバに繋げない。サーバ版ページへ移動する
+  // （サーバ未起動なら接続不可＝ランチャー/常駐サーバで起動が必要）。
+  if(location.protocol==='file:'){location.href='http://localhost:8787/today.html#update';return;}
   upBusy=true; upErr=false;
   upMsg='取得中… 当日の展示・結果を収集しています（開催場数により数十秒かかることがあります）';
   selDate=D.base; tab='pred'; sel=null; render();
@@ -1205,7 +1208,21 @@ function render(){
     document.querySelector('.back').onclick=()=>{sel=null;render();};
   }
 }
+// file:// で直接開かれ、かつ更新サーバが起動中ならサーバ版へ自動で切替える
+// （更新ボタンは serve_odds.py 経由でないと動かないため）。サーバ停止中は
+// no-cors fetch が失敗→何もしない＝そのままオフライン閲覧できる。
+if(location.protocol==='file:'){
+  fetch('http://localhost:8787/today.html',{mode:'no-cors',cache:'no-store'})
+    .then(()=>{location.replace('http://localhost:8787/today.html');})
+    .catch(()=>{});
+}
 render();
+// サーバ版へ #update 付きで来たら、自動で更新を1回実行（file://から更新を押した導線）。
+if(location.protocol!=='file:'&&location.hash==='#update'){
+  history.replaceState(null,'',location.pathname);   // 二重実行防止
+  updateAll();
+}
+
 </script></body></html>"""
 
 
