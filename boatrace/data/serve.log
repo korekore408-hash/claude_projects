@@ -114,3 +114,51 @@ ConnectionAbortedError: [WinError 10053] 確立された接続がホスト コ�
 127.0.0.1 - - [23/Jun/2026 21:39:49] "GET /today.html HTTP/1.1" 304 -
 127.0.0.1 - - [23/Jun/2026 21:41:03] update hd=20260623 races=144 result=144
 127.0.0.1 - - [23/Jun/2026 21:41:03] "GET /update?date=20260623 HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 22:34:24] code 404, message File not found
+127.0.0.1 - - [23/Jun/2026 22:34:24] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [23/Jun/2026 22:35:10] update hd=20260623 races=144 result=144
+127.0.0.1 - - [23/Jun/2026 22:35:10] "GET /update?date=20260623 HTTP/1.1" 200 -
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 59010)
+Traceback (most recent call last):
+  File "C:\Users\kore4\AppData\Local\Programs\Python\Python313\Lib\socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kore4\AppData\Local\Programs\Python\Python313\Lib\socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\kore4\AppData\Local\Programs\Python\Python313\Lib\http\server.py", line 683, in __init__
+    super().__init__(*args, **kwargs)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\kore4\AppData\Local\Programs\Python\Python313\Lib\socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "C:\Users\kore4\AppData\Local\Programs\Python\Python313\Lib\http\server.py", line 447, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\kore4\AppData\Local\Programs\Python\Python313\Lib\http\server.py", line 435, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "C:\Users\kore4\OneDrive\デスクトップ\boatrace\serve_odds.py", line 153, in do_GET
+    return self._update()
+           ~~~~~~~~~~~~^^
+  File "C:\Users\kore4\OneDrive\デスクトップ\boatrace\serve_odds.py", line 175, in _update
+    return self._json(body)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Users\kore4\OneDrive\デスクトップ\boatrace\serve_odds.py", line 202, in _json
+    self.wfile.write(data)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\kore4\AppData\Local\Programs\Python\Python313\Lib\socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+ConnectionAbortedError: [WinError 10053] 確立された接続がホスト コンピューターのソウトウェアによって中止されました。
+----------------------------------------
+127.0.0.1 - - [23/Jun/2026 22:39:06] code 404, message File not found
+127.0.0.1 - - [23/Jun/2026 22:39:06] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [23/Jun/2026 22:39:49] update hd=20260623 races=144 result=144
+127.0.0.1 - - [23/Jun/2026 22:39:49] "GET /update?date=20260623 HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 22:40:36] "GET /today.html HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 22:48:57] "GET /today.html HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 22:50:52] "GET /today.html HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 22:51:45] "GET /today.html HTTP/1.1" 200 -
+127.0.0.1 - - [23/Jun/2026 22:57:11] "GET /today.html HTTP/1.1" 200 -

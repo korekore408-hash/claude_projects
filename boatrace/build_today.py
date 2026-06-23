@@ -256,6 +256,41 @@ def load_payouts(keep):
     return payout
 
 
+def load_bfile_meta(keep, venues_by_date):
+    """各日の B-file(出走表 txt, UTF-8) の場ヘッダ行から (グレード, 日目) を抽出。
+    返り値 {(date, 会場): (grade, day)}。日目=『第 N 日』(確実)。
+    グレードは明示マーカー(SG/G1/G2/G3)がある時のみ判定、無印は'一般'。
+    会場名はヘッダ行(NFKC・空白除去)の『ボートレース』直後の先頭一致で突き合わせ。"""
+    import unicodedata
+    meta = {}
+    for d in keep:
+        path = f"data/b{d[2:4]}{d[5:7]}{d[8:10]}.txt"
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        vset = venues_by_date.get(d, set())
+        for ln in lines:
+            if "ボートレース" not in ln:
+                continue
+            mday = re.search(r"第\s*([0-9０-９]+)\s*日", ln)
+            if not mday:
+                continue
+            day = int(unicodedata.normalize("NFKC", mday.group(1)))
+            z = unicodedata.normalize("NFKC", ln)
+            grade = ("SG" if "SG" in z else
+                     "G3" if ("G3" in z or "GIII" in z) else
+                     "G2" if ("G2" in z or "GII" in z) else
+                     "G1" if ("G1" in z or "GI" in z) else "一般")
+            head = z.replace(" ", "").split("ボートレース", 1)[-1]
+            for v in vset:
+                if head.startswith(v):
+                    meta[(d, v)] = (grade, day)
+                    break
+    return meta
+
+
 def regime_result(rel, pred, hist, payout, since):
     """予想の荒れ度（鉄板/標準/穴）ごとに、実際の的中率と回収率を集計。
     荒れ度＝本命確率(top1 p_win): ≥0.65 鉄板 / 0.45-0.65 標準 / <0.45 穴(波乱含み)。
@@ -542,6 +577,16 @@ def main():
                            for w in range(1, 7)]})
     out.sort(key=lambda x: (x["d"], x["c"], x["no"]))
 
+    # 会場×日付ごとの グレード/日目（B-file 出走表ヘッダから）。
+    vbd = {}
+    for o in out:
+        vbd.setdefault(o["d"], set()).add(o["v"])
+    bmeta = load_bfile_meta(keep, vbd)
+    for o in out:
+        g, day = bmeta.get((o["d"], o["v"]), ("一般", None))
+        o["g"] = g
+        o["day"] = day
+
     # 日付ラベル（当日/前日/前々日）
     rel_labels = ["当日", "前日", "前々日", "3日前", "4日前", "5日前", "6日前"]
     labels = []
@@ -678,6 +723,11 @@ HTML = r"""<!DOCTYPE html>
   .lvl.rdlo{background:#26262a;color:#7e8796}
   .prize{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
     background:#3a2a4a;color:#d6a8ff;margin-left:4px}
+  .chance{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
+    background:#3a2f15;color:#f0c869;margin-left:4px}
+  .vmeta{margin-left:8px;font-size:11px;font-weight:400;color:#9aa3b2}
+  .vmeta .grd{border-radius:6px;padding:1px 6px;background:#2a2f3a;color:#9aa3b2;margin-right:5px}
+  .vmeta .grd.hi{background:#3a2a14;color:#f0b649;font-weight:700}
   .rdbox{margin:8px 0;padding:8px 10px;border-radius:10px;background:#161a22;border:0.5px solid #2a2f3a;
     font-size:12px;color:#cdd6e2;line-height:1.5}
   .rdbox .h{font-weight:700;color:#9aa3b2;margin-right:6px}
@@ -779,14 +829,16 @@ function listView(){
   h+='</div>';
   rs.forEach((r,gi)=>{
     if(cur!=='ALL'&&cur!==r.c)return;
-    if(rs.findIndex(x=>x.c===r.c)===gi)h+='<h3>'+r.v+'</h3>';
+    if(rs.findIndex(x=>x.c===r.c)===gi)h+='<h3>'+r.v+'<span class="vmeta"><span class="grd'+(r.g&&r.g!=='一般'?' hi':'')+'">'+(r.g||'一般')+'</span>'+(r.day?'第'+r.day+'日':'')+'</span></h3>';
     let hm=0;for(let w=1;w<6;w++)if(r.b[w][1]>r.b[hm][1])hm=w;
     const ha=honAna(r);const done=hasResult(r);
     h+='<div class="row'+(done?' done':'')+'" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'+chip(hm+1)
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
-    const rd=rivalDiff(r);
-    h+='<span class="ha2">'+(done?'':'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
-        +(rd.prize?'<span class="prize">&#127919;勝負</span>':''))
+    const chance = ha.lvlcls==='haran' && ha.ana>=0.20;     // 波乱でより穴
+    const shobu = ha.hon>=0.65 && r.ev!=null && r.ev>=1.5;  // 鉄板×EV≥1.5（オッズ取得後に点灯）
+    h+='<span class="ha2"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
+        +(shobu?'<span class="prize">&#127919;勝負</span>':'')
+        +(chance?'<span class="chance">&#10024;チャンス</span>':'')
       +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
     if(done){
       const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
@@ -796,9 +848,13 @@ function listView(){
       const exHit=ex.length>=2&&plTop(s,2,nEx,xset).some(c=>eqArr(c[0],ex));
       const triHit=tri.length>=3&&plTop(s,3,nTri,xset).some(c=>eqArr(c[0],tri));
       const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中
-      const pay=r.po?r.po[1]:null;
+      const pay=r.po?r.po[1]:null;const pay2=r.po?r.po[0]:null;
       h+='<span class="res">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
         +'<span class="chev">&rsaquo;</span>';
+      h+='<div class="resline"><span class="rll">2連単</span>';
+      ex.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
+      if(exHit)h+='<span class="ok" style="font-size:11px">的中</span>';
+      h+='<span class="yen'+(exHit?' hit':'')+'">'+(pay2!=null?'¥'+pay2.toLocaleString():'配当 –')+'</span></div>';
       h+='<div class="resline"><span class="rll">3連単</span>';
       tri.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
       if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>';
