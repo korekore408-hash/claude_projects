@@ -89,11 +89,117 @@ def _merge(old, new):
         out["result"] = old["result"]
     out["status"] = ("result" if out.get("result")
                      else ("before" if out.get("ex") else "none"))
+    if out.get("ev") is None and old.get("ev") is not None:   # EVは発走前に取れたら残す
+        out["ev"] = old["ev"]
     return out
 
 
-def collect_update(hd, workers=UPDATE_WORKERS):
+# ============================================================
+# EV（期待値）付与：鉄板レースの実オッズを取得して 🎯勝負 を点灯させる
+# ============================================================
+_MODEL_CACHE = {"hd": None, "races": None}
+
+
+def _build_models(hd):
+    """当日の各レースの本命確率・買い目(ex2/ex3 とPL確率)を build_races で得る。
+    予測CSVは1日不変なのでプロセス内キャッシュ（更新ごとの再読込を避ける）。"""
+    if _MODEL_CACHE["hd"] == hd and _MODEL_CACHE["races"] is not None:
+        return _MODEL_CACHE["races"]
+    import build_today as bt
+    from make_ai_yosou import build_races
+    pred = {(r["race_id"], r["枠番"]): r for r in bt.load("predict_win.csv")}
+    meta = {(r["race_id"], r["枠番"]): r for r in bt.load("features_race_relative.csv")}
+    hist = {(r["race_id"], r["枠番"]): r for r in bt.load("features_player_history.csv")}
+    races = build_races(hd, pred, meta, hist, {})       # payout不要（EVは確率×オッズ）
+    _MODEL_CACHE.update(hd=hd, races=races)
+    return races
+
+
+def _merge_save_odds(hd, rows):
+    """取得したオッズ行を data/odds/odds_{hd}.csv に**マージ保存**（既存行は消さない）。
+    fetch_odds.save は上書きだが、こちらは30分毎の追記取得で過去取得分を保持する。"""
+    if not rows:
+        return
+    import csv
+    p = os.path.join("data", "odds", f"odds_{hd}.csv")
+    cols = ["race_id", "bet_type", "combo", "odds", "fetched_at"]
+    merged = {}
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                for r in csv.DictReader(f):
+                    merged[(r["race_id"], r["bet_type"], r["combo"])] = r
+        except OSError:
+            pass
+    for r in rows:
+        merged[(r["race_id"], r["bet_type"], r["combo"])] = r   # 最新オッズで上書き
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for k in sorted(merged):
+            w.writerow(merged[k])
+
+
+def _attach_ev(hd, out, workers=UPDATE_WORKERS):
+    """鉄板(hon≥0.65)かつ未確定のレースだけ実オッズを並列取得し、
+    買い目(ex2/ex3)の中の最良 EV=モデル確率×実オッズ を rec['ev'] に入れる。
+    取得したオッズは CSV にもマージ保存する（バックテスト/評価用キャッシュ）。"""
+    try:
+        models = {r["rid"]: r for r in _build_models(hd)}
+    except Exception as e:                      # 予測CSV未生成など → EVなしで続行
+        print(f"[ev] skip build_models: {e}")
+        return
+    targets = []
+    for rid, rec in out.items():
+        m = models.get(rid)
+        if not m or m["hon"] < 0.65:            # 勝負バッジの対象は鉄板のみ
+            continue
+        if rec and rec.get("status") == "result":   # 終了レースはオッズ無し
+            continue
+        targets.append(rid)
+    if not targets:
+        return
+
+    def fetch_one(rid):
+        jcd, hd2, rno = parse_race_id(rid)
+        tri = fetch_odds.fetch_trifecta(jcd, rno, hd2)
+        exa = fetch_odds.fetch_exacta(jcd, rno, hd2)
+        return rid, tri, exa
+
+    fetched_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = []
+    n_ev = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for rid, tri, exa in ex.map(fetch_one, targets):
+            m = models[rid]
+            best = 0.0
+            for combo, p in m["ex2"]:
+                od = exa.get(combo)
+                if od:
+                    best = max(best, p * od)
+            for combo, p in m["ex3"]:
+                od = tri.get(combo)
+                if od:
+                    best = max(best, p * od)
+            if best > 0:
+                rec = out.get(rid) or {}
+                rec["ev"] = round(best, 3)
+                out[rid] = rec
+                n_ev += 1
+            for (a, b, c), o in tri.items():
+                rows.append({"race_id": rid, "bet_type": "3t",
+                             "combo": f"{a}-{b}-{c}", "odds": o, "fetched_at": fetched_at})
+            for (a, b), o in exa.items():
+                rows.append({"race_id": rid, "bet_type": "2t",
+                             "combo": f"{a}-{b}", "odds": o, "fetched_at": fetched_at})
+    _merge_save_odds(hd, rows)
+    print(f"[ev] 鉄板{len(targets)}R オッズ取得 → EV付与{n_ev}R / オッズ{len(rows)}行保存")
+
+
+def collect_update(hd, workers=UPDATE_WORKERS, with_odds=False):
     """当日の全場・全レースの展示+結果を集める（並列取得）。
+    with_odds=True なら鉄板レースの実オッズも取得し EV を付与する（🎯勝負 点灯用）。
     その日にこれまで調べた展示・結果を **すべて引き継いで** 返し、ディスクにも保存する
     （リロード・サーバ再起動・レース終了後でも、朝に取れた展示が消えない）。
     手順: ①各場R1で開催場を判定（完成済みの場はキャッシュ流用、未完成のみ取得）
@@ -139,6 +245,10 @@ def collect_update(hd, workers=UPDATE_WORKERS):
                 if d["status"] != "none":
                     out[rid] = _merge(out.get(rid), _rec(d))
 
+    # ③ 鉄板レースの実オッズを取得して EV を付与（🎯勝負 バッジ点灯用）。
+    if with_odds:
+        _attach_ev(hd, out, workers=workers)
+
     # その日に調べた展示・結果をすべて保存（再押下・再起動・リロードで復元）。
     _save_cache(hd, out)
     return out
@@ -159,12 +269,13 @@ class Handler(SimpleHTTPRequestHandler):
         hd = date.replace("-", "")
         if not (len(hd) == 8 and hd.isdigit()):
             hd = datetime.date.today().strftime("%Y%m%d")
+        with_odds = (qs.get("odds") or ["0"])[0] not in ("0", "false", "")  # &odds=1 でEVも取得
         # 多重押下ガード: 既に取得中なら走らせず busy を返す（暴走防止）。
         if not _update_lock.acquire(blocking=False):
             return self._json({"busy": True,
                                "msg": "前回の更新がまだ取得中です。完了までお待ちください。"}, 409)
         try:
-            races = collect_update(hd)
+            races = collect_update(hd, with_odds=with_odds)
         finally:
             _update_lock.release()
         body = {"date": hd,

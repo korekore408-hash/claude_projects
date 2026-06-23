@@ -79,16 +79,58 @@ def k_tri(hon):    # 3連単（上限20）
 
 def bet_exclude(cls_by_w, lane_win1, hon):
     """買い目から除外する枠 [[枠,理由], ...]（検証済ガイドライン）。
-    B2(class_ord==1)は常時除外 / 荒れ帯(本命確率<0.45)で1号艇が成績不振
-    (lane_win_rate<0.40)なら1号艇も除外 / 除外後3艇未満になるなら除外しない。"""
+    荒れ帯(本命確率<0.45)で1号艇が成績不振(lane_win_rate<0.40)なら1号艇を除外
+    / 除外後3艇未満になるなら除外しない。
+    ※B2(class_ord==1)の一律除外は廃止（ユーザー要望 2026-06-24）。cls_by_w は
+      シグネチャ維持のため残置（現在は未使用）。"""
     xb, excl = [], set()
-    for w in range(1, 7):
-        cl = cls_by_w.get(w)
-        if cl is not None and int(cl) == 1:
-            xb.append([w, "B2"]); excl.add(w)
-    if hon < 0.45 and 1 not in excl and lane_win1 is not None and lane_win1 < 0.40:
+    if hon < 0.45 and lane_win1 is not None and lane_win1 < 0.40:
         xb.append([1, "1号艇不振"]); excl.add(1)
     return [] if 6 - len(excl) < 3 else xb
+
+
+CLASS_LABEL = {4: "A1", 3: "A2", 2: "B1", 1: "B2"}   # class_ord → 公式級別
+# 各コース(枠)の平均1着率の概算。コース毎の特徴は「この平均をどれだけ上回るか」で測る
+# （2〜6コースは構造的に勝率が低いので、絶対値でなく相対で評価しないと不当に低くなる）。
+LANE_BASE = {1: 0.50, 2: 0.14, 3: 0.12, 4: 0.10, 5: 0.08, 6: 0.05}
+
+
+def official_rank(cl):
+    """class_ord(4/3/2/1) → 公式級別ラベル A1/A2/B1/B2。不明は空。"""
+    try:
+        return CLASS_LABEL.get(int(cl), "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def ai_player_rank(f):
+    """AIオリジナル実力ランク S/A/B/C/D。
+    『選手の実力(級別＋直近フォーム＝コース非依存)』と『そのコースでの特徴(枠ごとの勝率を
+    コース平均と比べた相対力)』を掛け合わせ、その枠に座ったときの実力に特化して5段階評価。
+      ① 全体実力: 級別 A1+3.0 / A2+1.6 / B1+0.6 / B2-0.6
+                 ＋直近30勝率 ≥.55+1.5 / ≥.45+1.0 / ≥.35+0.6 / ≥.25+0.2 / <.25-0.3
+      ② コース力: その枠の勝率 − コース平均(LANE_BASE) が
+                 ≥+.10→+1.5 / ≥+.04→+1.0 / ≥-.04→±0 / それ未満→-1.0
+                 （試行 lane_n<6 は小標本割引で寄与半減）
+    合計 S≥4.3 / A≥2.9 / B≥1.5 / C≥-0.6 / D。"""
+    cl = f.get("cl")
+    if cl is None:
+        return ""
+    base = {4: 3.0, 3: 1.6, 2: 0.6, 1: -0.6}.get(int(cl), 0.0)
+    rc = f.get("recent")
+    if rc is not None:
+        base += (1.5 if rc >= 0.55 else 1.0 if rc >= 0.45 else 0.6 if rc >= 0.35
+                 else 0.2 if rc >= 0.25 else -0.3)
+    w, lw, ln = f.get("枠"), f.get("lane_win"), f.get("lane_n") or 0
+    course = 0.0
+    if lw is not None and w in LANE_BASE:
+        diff = lw - LANE_BASE[w]
+        course = 1.5 if diff >= 0.10 else 1.0 if diff >= 0.04 else 0.0 if diff >= -0.04 else -1.0
+        if ln < 6:                       # その枠での実績が小標本なら寄与半減
+            course *= 0.5
+    sc = base + course
+    return ("S" if sc >= 4.3 else "A" if sc >= 2.9 else "B" if sc >= 1.5
+            else "C" if sc >= -0.6 else "D")
 
 
 def make_comment(boats, field_std):
@@ -574,6 +616,10 @@ def main():
                     "ft": [[rc["feat"][w].get("motor_rank"),
                             rc["feat"][w].get("recent"),
                             rc["feat"][w].get("st_rank")]
+                           for w in range(1, 7)],
+                    # 枠ごと [公式級別 A1/A2/B1/B2, AIオリジナル実力ランク S/A/B/C/D]
+                    "rk": [[official_rank(rc["feat"][w].get("cl")),
+                            ai_player_rank(rc["feat"][w])]
                            for w in range(1, 7)]})
     out.sort(key=lambda x: (x["d"], x["c"], x["no"]))
 
@@ -582,8 +628,17 @@ def main():
     for o in out:
         vbd.setdefault(o["d"], set()).add(o["v"])
     bmeta = load_bfile_meta(keep, vbd)
+    # 当日のグレードは公式インデックスで上書き（B-fileは無印SG/G1を取りこぼすため）。
+    official_grade = {}
+    try:
+        import fetch_grade
+        official_grade = fetch_grade.fetch_grades(base.replace("-", ""))
+    except Exception as e:
+        print(f"  グレード公式取得スキップ: {e}")
     for o in out:
         g, day = bmeta.get((o["d"], o["v"]), ("一般", None))
+        if o["d"] == base and o["c"] in official_grade:   # 当日のみ公式で上書き
+            g = official_grade[o["c"]]
         o["g"] = g
         o["day"] = day
 
@@ -666,6 +721,10 @@ HTML = r"""<!DOCTYPE html>
   .fin{font-size:11px;color:#9aa3b2;min-width:26px}
   .fin b{color:#ffd54a}
   .bn{font-size:13px;color:#e6e6e6;min-width:78px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rk{display:inline-block;padding:0 5px;border-radius:4px;background:#2a3140;color:#aeb8c6;font-size:11px;font-weight:700;line-height:17px}
+  .airk{display:inline-block;min-width:17px;height:17px;line-height:17px;text-align:center;border-radius:4px;font-size:11px;font-weight:800;padding:0 2px}
+  .aiS{background:#e0b000;color:#1a1a1a}.aiA{background:#e2552e;color:#fff}.aiB{background:#2f6fe0;color:#fff}
+  .aiC{background:#3f4756;color:#dfe6ef}.aiD{background:#222934;color:#8a93a2}
   .barw{flex:1;height:15px;background:#1b212b;border-radius:4px;overflow:hidden}
   .bar{height:100%;border-radius:4px}
   .bp{font-size:12px;font-variant-numeric:tabular-nums;color:#cdd6e2;min-width:40px;text-align:right}
@@ -925,9 +984,16 @@ function detailView(r){
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];
     h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
+     +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
+        +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI実力ランク（級別×コース実績×直近）">'+r.rk[w][1]+'</span>':''):'')
      +'<div class="barw"><div class="bar" style="width:'+Math.max(b[1]/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(b[1]/10).toFixed(1)+'%</span></div>';});
-  // 買い目除外（B2 / 荒れ帯の不振1号艇）。確率は全艇ベース＝必要倍は不変。
+  h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">'
+    +'<span class="rk">A1</span> 公式級別　｜　'
+    +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
+    +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
+    +'AI実力ランク＝級別×その枠での勝率・直近フォームを掛け合わせた5段階評価</div>';
+  // 買い目除外（荒れ帯の不振1号艇）。確率は全艇ベース＝必要倍は不変。
   const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
   if(r.xb&&r.xb.length){
     h+='<div class="cause" style="border-left-color:#7f8896;color:#aab2bf"><span class="h" style="color:#9aa3b2">買い目から除外</span>'
@@ -1048,7 +1114,7 @@ function statsView(){
   h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
     +'「変動」=予想確率に応じた点数（2連単≤5/3連単≤20）以内に実際の決着が含まれた割合（その点数を買えば当たる割合）。'
     +'<b>「変動回収」=その変動点数を各100円で実際に買った場合の回収率（Σ配当÷賭け金）。100%超で利益。</b>'
-    +'※「変動」「変動回収」列はB2・不振1号艇を除外（本命列はモデル診断＝除外なし）。'
+    +'※「変動」「変動回収」列は荒れ帯の不振1号艇を除外（本命列はモデル診断＝除外なし）。'
     +'※ 4月までは学習期間を含むため的中率・回収率はやや高めに出る（5月以降が純粋な検証）。'
     +'※ 全期間でも回収率は100%未満が基本（控除率約25%の壁）。</div>';
   // 前日・前々日の場別 的中率＋回収率
@@ -1060,7 +1126,7 @@ function statsView(){
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
     h+='<div class="meta">実践的中＝予想確率連動の点数を実際に買った場合の的中率（2連単≤5/3連単≤20点, 各100円）。回収率100%超で利益。'
-      +'B2・荒れ帯の不振1号艇を買い目から除外したベース（点数=除外後の実点数）。並び替えは回収率基準。</div>';
+      +'荒れ帯の不振1号艇を買い目から除外したベース（点数=除外後の実点数）。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
     h+='<div class="swrap"><table class="st"><thead><tr>'
@@ -1079,7 +1145,7 @@ function statsView(){
   if(RG&&RG.length&&RG.some(r=>r.n)){
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・標準・穴 別の的中率と回収率（2026年〜）</div>';
     h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本命確率≥65％ ／ <b>標準</b>＝45–65％ ／ <b>穴</b>＝本命確率&lt;45％（波乱含み）。'
-      +'買い目＝確率連動の変動点数（2連単≤5／3連単≤20点・各100円, B2・不振1号艇は除外）。</div>';
+      +'買い目＝確率連動の変動点数（2連単≤5／3連単≤20点・各100円, 荒れ帯の不振1号艇は除外）。</div>';
     h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命1着　'
       +'<span style="color:#43c59e">■</span> 2連単（≤5点）　'
       +'<span style="color:#e0a93b">■</span> 3連単（≤20点）</div>';
@@ -1160,12 +1226,13 @@ function updateAll(){
   upBusy=true; upErr=false;
   upMsg='取得中… 当日の展示・結果を収集しています（開催場数により数十秒かかることがあります）';
   selDate=D.base; tab='pred'; sel=null; render();
-  fetch('update?date='+D.base.replace(/-/g,'')).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
-    const R=o.races||{}; let nres=0,nex=0;
+  fetch('update?date='+D.base.replace(/-/g,'')+'&odds=1').then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
+    const R=o.races||{}; let nres=0,nex=0,nev=0;
     D.races.forEach(r=>{
       if(r.d!==D.base)return;                    // 反映は当日のみ
       const rec=R[r.id]; if(!rec)return;
       if(rec.ex){r.ex=rec.ex; nex++;}
+      if(rec.ev!=null){r.ev=rec.ev; nev++;}      // 鉄板×EV≥1.5 で 🎯勝負 点灯
       if(rec.result){
         const rs=rec.result, fin=rs.fin||[];
         for(let w=1;w<=6;w++)r.b[w-1][2]=fin[w-1];   // 着順→前日同様の結果表示
@@ -1175,7 +1242,7 @@ function updateAll(){
       }
     });
     upBusy=false; upErr=false;
-    upMsg='更新 '+(o.fetched_at||'')+' ／ 結果 '+nres+'レース・展示 '+nex+'レースを反映';
+    upMsg='更新 '+(o.fetched_at||'')+' ／ 結果 '+nres+'レース・展示 '+nex+'レース'+(nev?'・EV '+nev+'レース':'')+'を反映';
     render();
   }).catch(()=>{
     upBusy=false; upErr=true;
