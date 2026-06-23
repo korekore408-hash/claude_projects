@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>競艇予想アプリ - KYOTEI Sample</title>
+<style>
+  :root {
+    --bg: #0a0f1e;
+    --panel: rgba(255,255,255,0.04);
+    --border: #1e293b;
+    --accent: #38bdf8;
+    --accent2: #a78bfa;
+    --green: #10b981;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    /* 競艇の艇番カラー（公式準拠） */
+    --lane1: #ffffff; --lane1t: #1e293b;
+    --lane2: #111827; --lane2t: #ffffff;
+    --lane3: #ef4444; --lane3t: #ffffff;
+    --lane4: #3b82f6; --lane4t: #ffffff;
+    --lane5: #fbbf24; --lane5t: #1e293b;
+    --lane6: #22c55e; --lane6t: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: 'Hiragino Kaku Gothic ProN','Noto Sans JP',sans-serif;
+    padding-bottom: 60px;
+  }
+  .header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10,15,30,0.95); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 18px; display: flex; align-items: center; gap: 12px;
+  }
+  .logo {
+    font-weight: 900; font-size: 18px;
+    background: linear-gradient(90deg,var(--accent),var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .logo small { display:block; font-size:10px; color:var(--muted); -webkit-text-fill-color: var(--muted); font-weight:400; }
+  .back {
+    background:none; border:none; color:var(--muted); font-size:22px; cursor:pointer; padding:0;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 16px; }
+  h2 { font-size: 15px; color: var(--accent); margin: 4px 0 12px; }
+
+  /* venue / race cards */
+  .grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  .card {
+    background: var(--panel); border:1px solid var(--border); border-radius:14px;
+    padding:14px; cursor:pointer; transition:.15s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .name { font-weight:700; font-size:15px; }
+  .card .meta { color:var(--muted); font-size:12px; margin-top:6px; }
+  .grade { display:inline-block; font-size:10px; font-weight:700; padding:2px 8px; border-radius:99px; }
+  .g-SG { background:#fbbf2422; color:#fbbf24; }
+  .g-G1 { background:#ef444422; color:#f87171; }
+  .g-G2 { background:#a78bfa22; color:#c4b5fd; }
+  .g-G3 { background:#38bdf822; color:#38bdf8; }
+  .g-一般 { background:#94a3b822; color:#94a3b8; }
+
+  .race-tabs { display:flex; gap:6px; overflow-x:auto; padding-bottom:8px; margin-bottom:14px; }
+  .race-tab {
+    flex-shrink:0; padding:8px 14px; border-radius:10px; cursor:pointer; font-size:13px; font-weight:700;
+    border:1.5px solid var(--border); background:transparent; color:var(--muted);
+  }
+  .race-tab.active { border-color:var(--accent); background:rgba(56,189,248,0.12); color:var(--accent); }
+
+  /* entry table */
+  .entry {
+    display:flex; align-items:center; gap:12px;
+    background: var(--panel); border:1px solid var(--border); border-radius:12px;
+    padding:12px 14px; margin-bottom:8px;
+  }
+  .lane {
+    width:34px; height:34px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+    font-weight:900; font-size:18px; flex-shrink:0;
+  }
+  .e-info { flex:1; min-width:0; }
+  .e-name { font-weight:700; font-size:15px; }
+  .e-sub { color:var(--muted); font-size:12px; margin-top:2px; }
+  .e-stats { text-align:right; font-size:12px; flex-shrink:0; }
+  .e-stats b { color:var(--accent); font-size:15px; }
+  .winbar { height:5px; background:var(--border); border-radius:99px; margin-top:6px; overflow:hidden; }
+  .winbar > i { display:block; height:100%; background:linear-gradient(90deg,var(--accent),var(--green)); border-radius:99px; }
+
+  /* prediction */
+  .pred-box { background:linear-gradient(135deg,rgba(56,189,248,0.08),rgba(167,139,250,0.08)); border:1px solid rgba(56,189,248,0.3); border-radius:16px; padding:18px; margin:18px 0; }
+  .pred-title { font-weight:800; font-size:14px; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
+  .combo { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px dashed var(--border); }
+  .combo:last-child { border-bottom:none; }
+  .combo-num { display:flex; gap:5px; align-items:center; }
+  .mini-lane { width:24px; height:24px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:13px; }
+  .arrow { color:var(--muted); font-size:12px; }
+  .combo-prob { text-align:right; }
+  .combo-prob b { color:var(--green); font-size:15px; }
+  .combo-prob small { color:var(--muted); display:block; font-size:11px; }
+  .rank-badge { font-size:10px; font-weight:700; color:var(--accent2); background:rgba(167,139,250,0.15); padding:2px 8px; border-radius:99px; margin-right:6px; }
+
+  /* bet simulator */
+  .sim { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:18px; margin-top:18px; }
+  .sim label { font-size:12px; color:var(--muted); display:block; margin-bottom:6px; }
+  .sim-row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+  select, input {
+    background:rgba(255,255,255,0.05); border:1px solid var(--border); border-radius:10px;
+    padding:10px 12px; color:var(--text); font-size:14px; outline:none;
+  }
+  .btn {
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); border:none; color:#fff;
+    border-radius:10px; padding:11px 20px; font-weight:700; font-size:14px; cursor:pointer;
+  }
+  .result { margin-top:16px; padding:14px; border-radius:12px; text-align:center; font-size:14px; }
+  .result.win { background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.4); color:var(--green); }
+  .result.lose { background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:#f87171; }
+  .result b { font-size:24px; display:block; margin-top:4px; }
+  .hint { color:var(--muted); font-size:12px; line-height:1.7; margin-top:10px; }
+  .disclaimer { color:#475569; font-size:11px; text-align:center; margin-top:28px; line-height:1.6; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <button class="back" id="backBtn" style="display:none">←</button>
+    <div class="logo">KYOTEI 予想<small id="subtitle">本日の開催場</small></div>
+  </div>
+  <div class="wrap" id="app"></div>
+
+<script>
+// ============================================================
+//  サンプルデータ（実データ風のダミー）
+//  ※実運用では公式の出走表・オッズAPIに差し替え
+// ============================================================
+const LANE = i => ({
+  bg:`var(--lane${i})`, fg:`var(--lane${i}t)`
+});
+
+const CLASS_W = { A1:1.0, A2:0.7, B1:0.45, B2:0.25 };
+
+function makeRacer(lane, name, cls, natRate, localRate, motor, stAvg) {
+  return { lane, name, cls, natRate, localRate, motor, stAvg };
+}
+
+// 各レースの出走表
+const VENUES = [
+  {
+    id:"01", name:"桐生", grade:"G3", title:"赤城雷神杯", weather:"晴 / 北東2m / 水温18℃",
+    races: buildRaces([
+      [ // 1R
+        makeRacer(1,"今垣 光太郎","A1",6.82,7.10,52.3,0.14),
+        makeRacer(2,"峰  竜太","A1",7.45,6.90,48.1,0.15),
+        makeRacer(3,"毒島 誠","A1",6.10,5.80,40.2,0.16),
+        makeRacer(4,"石野 貴之","A2",5.55,5.20,38.5,0.17),
+        makeRacer(5,"平本 真之","B1",4.80,4.50,35.0,0.18),
+        makeRacer(6,"中野 次郎","B1",4.20,4.00,33.1,0.19),
+      ],
+      [ // 2R
+        makeRacer(1,"白井 英治","A1",6.30,6.50,45.0,0.15),
+        makeRacer(2,"瓜生 正義","A1",6.95,6.20,49.5,0.14),
+        makeRacer(3,"井口 佳典","A2",5.40,5.10,41.0,0.16),
+        makeRacer(4,"田村 隆信","A2",5.10,4.90,37.2,0.17),
+        makeRacer(5,"渡辺 浩司","B1",4.60,4.30,34.5,0.18),
+        makeRacer(6,"森   高広","B1",4.05,3.90,32.0,0.20),
+      ],
+    ]),
+  },
+  {
+    id:"12", name:"住之江", grade:"SG", title:"グランプリ", weather:"曇 / 南西4m / 水温21℃",
+    races: buildRaces([
+      [
+        makeRacer(1,"峰  竜太","A1",7.80,7.50,55.0,0.13),
+        makeRacer(2,"馬場 貴也","A1",7.20,6.80,50.2,0.14),
+        makeRacer(3,"上瀧 和則","A1",6.50,6.10,44.8,0.15),
+        makeRacer(4,"椎名 豊","A1",6.80,6.40,47.0,0.15),
+        makeRacer(5,"丸岡 正典","A1",6.40,6.00,43.5,0.16),
+        makeRacer(6,"深谷 知博","A1",6.90,6.30,48.0,0.15),
+      ],
+    ]),
+  },
+  {
+    id:"22", name:"福岡", grade:"一般", title:"市民スポーツ杯", weather:"晴 / 無風 / 水温22℃",
+    races: buildRaces([
+      [
+        makeRacer(1,"篠崎 元志","A1",6.40,6.70,46.0,0.15),
+        makeRacer(2,"中島 孝平","A2",5.30,5.00,39.5,0.16),
+        makeRacer(3,"重野 哲之","B1",4.50,4.20,34.0,0.18),
+        makeRacer(4,"竹田 辰也","B1",4.30,4.10,33.5,0.19),
+        makeRacer(5,"林   美憲","B2",3.80,3.60,30.0,0.21),
+        makeRacer(6,"光元 康宏","B2",3.50,3.40,28.5,0.22),
+      ],
+    ]),
+  },
+];
+
+function buildRaces(raceList) {
+  return raceList.map((entries, i) => ({ no: i+1, entries }));
+}
+
+// ============================================================
+//  予想ロジック（簡易スコアリングモデル）
+//   強さ = 全国勝率 + 当地勝率 + モーター2連率 + ST + コース有利補正
+// ============================================================
+const COURSE_ADV = [0, 1.40, 0.55, 0.30, 0.15, 0.05, -0.10]; // 1コースが圧倒的に有利
+
+function strength(r) {
+  const cls = CLASS_W[r.cls] ?? 0.3;
+  const st = (0.20 - r.stAvg) * 8;       // STが速いほど加点
+  return r.natRate*0.45 + r.localRate*0.25 + r.motor*0.04
+       + cls*1.2 + st + COURSE_ADV[r.lane];
+}
+
+function winProbs(entries) {
+  // ソフトマックス的に勝率へ変換
+  const s = entries.map(e => ({ lane:e.lane, name:e.name, v: Math.exp(strength(e)*0.9) }));
+  const sum = s.reduce((a,b)=>a+b.v,0);
+  return s.map(x => ({ lane:x.lane, name:x.name, p: x.v/sum }));
+}
+
+// 3連単の上位組み合わせを生成（独立近似）
+function trifectaTop(entries, topN=5) {
+  const probs = winProbs(entries);
+  const pmap = {}; probs.forEach(p=>pmap[p.lane]=p.p);
+  const lanes = probs.map(p=>p.lane);
+  const combos = [];
+  for (const a of lanes) for (const b of lanes) for (const c of lanes) {
+    if (a===b||b===c||a===c) continue;
+    // 2着3着は残り確率の再正規化（簡易）
+    const pa = pmap[a];
+    const pb = pmap[b]/(1-pa);
+    const pc = pmap[c]/(1-pa-pmap[b]);
+    combos.push({ combo:[a,b,c], p: pa*pb*pc });
+  }
+  combos.sort((x,y)=>y.p-x.p);
+  return combos.slice(0, topN);
+}
+
+// 想定オッズ = 控除率25%を考慮した理論オッズ
+function estOdds(p) { return p>0 ? (0.75 / p) : 999; }
+
+// ============================================================
+//  画面描画
+// ============================================================
+const app = document.getElementById('app');
+const backBtn = document.getElementById('backBtn');
+const subtitle = document.getElementById('subtitle');
+let state = { view:'venues', venue:null, race:0 };
+
+backBtn.onclick = () => {
+  if (state.view === 'race') { state.view='venues'; render(); }
+};
+
+function laneStyle(i){ return `background:var(--lane${i});color:var(--lane${i}t);border:1px solid var(--border)`; }
+
+function render() {
+  backBtn.style.display = state.view==='venues' ? 'none' : 'block';
+  if (state.view==='venues') renderVenues();
+  else renderRace();
+}
+
+function renderVenues() {
+  subtitle.textContent = `本日の開催場 ${VENUES.length}場`;
+  app.innerHTML = `
+    <h2>開催レース場を選択</h2>
+    <div class="grid">
+      ${VENUES.map((v,i)=>`
+        <div class="card" onclick="openVenue(${i})">
+          <div class="name">${v.name} <span class="grade g-${v.grade}">${v.grade}</span></div>
+          <div class="meta">${v.title}<br>${v.weather}</div>
+        </div>
+      `).join('')}
+    </div>
+    <p class="disclaimer">
+      ※本アプリはサンプル（学習用デモ）です。出走表・オッズはダミーデータで、予想は簡易モデルによる参考値です。<br>
+      実際の舟券購入は自己責任で。20歳未満は舟券を購入できません。
+    </p>
+  `;
+}
+
+window.openVenue = (i) => { state.venue=i; state.race=0; state.view='race'; render(); };
+
+function renderRace() {
+  const v = VENUES[state.venue];
+  const race = v.races[state.race];
+  subtitle.textContent = `${v.name} ${v.grade} - ${v.title}`;
+  const probs = winProbs(race.entries);
+  const pmax = Math.max(...probs.map(p=>p.p));
+  const pmap = {}; probs.forEach(p=>pmap[p.lane]=p.p);
+  const tri = trifectaTop(race.entries, 5);
+
+  app.innerHTML = `
+    <div class="race-tabs">
+      ${v.races.map((r,i)=>`
+        <div class="race-tab ${i===state.race?'active':''}" onclick="selRace(${i})">${r.no}R</div>
+      `).join('')}
+    </div>
+
+    <h2>出走表 (${race.no}R)</h2>
+    ${race.entries.map(e=>{
+      const p = pmap[e.lane];
+      return `
+      <div class="entry">
+        <div class="lane" style="${laneStyle(e.lane)}">${e.lane}</div>
+        <div class="e-info">
+          <div class="e-name">${e.name} <span style="font-size:11px;color:var(--muted)">${e.cls}</span></div>
+          <div class="e-sub">全国 ${e.natRate.toFixed(2)} / 当地 ${e.localRate.toFixed(2)} / モーター ${e.motor.toFixed(1)}% / ST ${e.stAvg.toFixed(2)}</div>
+          <div class="winbar"><i style="width:${(p/pmax*100).toFixed(0)}%"></i></div>
+        </div>
+        <div class="e-stats">
+          <b>${(p*100).toFixed(1)}%</b><br><span style="color:var(--muted)">勝率予測</span>
+        </div>
+      </div>`;
+    }).join('')}
+
+    <div class="pred-box">
+      <div class="pred-title">🎯 AI予想 3連単 おすすめ買い目</div>
+      ${tri.map((t,i)=>`
+        <div class="combo">
+          <div class="combo-num">
+            <span class="rank-badge">${i===0?'本命':i===1?'対抗':i+1+'位'}</span>
+            <span class="mini-lane" style="${laneStyle(t.combo[0])}">${t.combo[0]}</span>
+            <span class="arrow">▶</span>
+            <span class="mini-lane" style="${laneStyle(t.combo[1])}">${t.combo[1]}</span>
+            <span class="arrow">▶</span>
+            <span class="mini-lane" style="${laneStyle(t.combo[2])}">${t.combo[2]}</span>
+          </div>
+          <div class="combo-prob">
+            <b>${(t.p*100).toFixed(1)}%</b>
+            <small>想定 ${estOdds(t.p).toFixed(1)}倍</small>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="sim">
+      <div class="pred-title">💰 舟券シミュレーター</div>
+      <div class="sim-row">
+        <div>
+          <label>買い目（3連単）</label>
+          <select id="bet"></select>
+        </div>
+        <div>
+          <label>金額(円)</label>
+          <input id="amt" type="number" value="1000" min="100" step="100" style="width:110px">
+        </div>
+        <button class="btn" onclick="runSim()">レース実行</button>
+      </div>
+      <div id="simResult"></div>
+      <p class="hint">「レース実行」を押すと、各艇の勝率に基づき着順を抽選します。買い目が的中すれば想定オッズで払戻計算します。</p>
+    </div>
+  `;
+
+  // 買い目セレクトを上位候補で埋める
+  const sel = document.getElementById('bet');
+  sel.innerHTML = tri.map(t=>{
+    const key = t.combo.join('-');
+    return `<option value="${key}" data-p="${t.p}">${key}（想定${estOdds(t.p).toFixed(1)}倍）</option>`;
+  }).join('');
+}
+
+window.selRace = (i) => { state.race=i; render(); };
+
+// 勝率分布から着順を抽選（1着→2着→3着の逐次サンプリング）
+function drawResult(entries) {
+  const probs = winProbs(entries).map(p=>({lane:p.lane, p:p.p}));
+  const order = [];
+  let pool = probs.slice();
+  for (let pos=0; pos<3; pos++) {
+    const sum = pool.reduce((a,b)=>a+b.p,0);
+    let r = Math.random()*sum, pick=pool[0];
+    for (const x of pool) { r-=x.p; if(r<=0){pick=x;break;} }
+    order.push(pick.lane);
+    pool = pool.filter(x=>x.lane!==pick.lane);
+  }
+  return order; // [1着,2着,3着]
+}
+
+window.runSim = () => {
+  const v = VENUES[state.venue];
+  const race = v.races[state.race];
+  const sel = document.getElementById('bet');
+  const opt = sel.options[sel.selectedIndex];
+  const betCombo = sel.value;
+  const p = parseFloat(opt.dataset.p);
+  const odds = estOdds(p);
+  const amt = parseInt(document.getElementById('amt').value||0, 10);
+
+  const result = drawResult(race.entries);
+  const resStr = result.join('-');
+  const hit = resStr === betCombo;
+  // オッズに分散を持たせて現実味を出す
+  const realOdds = hit ? Math.max(1.0, odds * (0.6 + Math.random()*1.2)) : 0;
+  const payout = hit ? Math.round(amt * realOdds / 100) * 100 : 0;
+  const box = document.getElementById('simResult');
+  box.className = 'result ' + (hit?'win':'lose');
+  box.innerHTML = hit
+    ? `🎉 的中！ 着順 ${resStr}（${realOdds.toFixed(1)}倍）<b>+${(payout-amt).toLocaleString()}円</b>`
+    : `😢 ハズレ 着順 ${resStr}（買い目 ${betCombo}）<b>-${amt.toLocaleString()}円</b>`;
+};
+
+render();
+</script>
+</body>
+</html>
