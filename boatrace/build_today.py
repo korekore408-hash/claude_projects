@@ -35,6 +35,37 @@ def to_float(s):
         return None
 
 
+def _pstdev(vs):
+    m = sum(vs) / len(vs)
+    return (sum((v - m) ** 2 for v in vs) / len(vs)) ** 0.5
+
+
+def rival_terciles(pred, since):
+    """全レースの「相手（非本命5艇）の p_win ばらつき」の3分位しきい値 [t1,t2]。
+    today.html で各レースの相手の差を 小/中/大 に分類するために埋め込む。
+    検証(analyze_rival_spread.py, honest OOS): 本命の強さを固定しても相手の差が大きいレースほど
+    2連単/3連単が当たる（主に P(2着|1着) が +7〜18pt）。"""
+    sincekey = since.replace("-", "")
+    byr = {}
+    for (rid, _w), pr in pred.items():
+        if rid[2:10] < sincekey:
+            continue
+        try:
+            byr.setdefault(rid, []).append(float(pr.get("p_win")))
+        except (TypeError, ValueError):
+            pass
+    sps = []
+    for ps in byr.values():
+        if len(ps) != 6:
+            continue
+        ps.sort(reverse=True)
+        sps.append(_pstdev(ps[1:]))          # 非本命5艇のばらつき
+    sps.sort()
+    if len(sps) < 3:
+        return [0.04, 0.07]
+    return [round(sps[len(sps) // 3], 4), round(sps[2 * len(sps) // 3], 4)]
+
+
 # 予想確率（本命確率 hon=top1 p_win）に応じた買目点数。堅い→少点 / 荒れ→多点。
 # 検証(2026年): 鉄板ほど少点で回収率が高く、大混戦は点数を広げる方が良い。上限は 2連単5 / 3連単20。
 def k_ex(hon):     # 2連単（上限5）
@@ -523,8 +554,9 @@ def main():
     recent = recent_stats(out, payout)
     regime = regime_result(rel, pred, hist, payout_all, args.stats_from)
 
+    rsp = rival_terciles(pred, args.stats_from)
     payload = {"labels": labels, "base": base, "races": out,
-               "vstats": vstats, "recent": recent, "regime": regime}
+               "vstats": vstats, "recent": recent, "regime": regime, "rsp": rsp}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
@@ -641,6 +673,15 @@ HTML = r"""<!DOCTYPE html>
   .lvl.honhit{background:#10362c;color:#43c59e}
   .lvl.anahit{background:#3a2f15;color:#e0a93b}
   .lvl.midhit{background:#2a2f3a;color:#cdd6e2}
+  .lvl.rdhi{background:#13294a;color:#7db1ff}
+  .lvl.rdmid{background:#2a2f3a;color:#9aa3b2}
+  .lvl.rdlo{background:#26262a;color:#7e8796}
+  .prize{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
+    background:#3a2a4a;color:#d6a8ff;margin-left:4px}
+  .rdbox{margin:8px 0;padding:8px 10px;border-radius:10px;background:#161a22;border:0.5px solid #2a2f3a;
+    font-size:12px;color:#cdd6e2;line-height:1.5}
+  .rdbox .h{font-weight:700;color:#9aa3b2;margin-right:6px}
+  .rdbox.prizebox{background:#241a2e;border-color:#5a3f6a;color:#e6cfff}
   .row.done{flex-wrap:wrap;row-gap:5px}
   .resline{flex-basis:100%;display:flex;align-items:center;gap:4px;padding-left:38px;font-size:12px;color:#9aa3b2}
   .resline .rll{color:#6b7280;font-size:11px;margin-right:2px}
@@ -698,6 +739,21 @@ function honAna(r){
   return {hon,ana,lvl:lvl[0],lvlcls:lvl[1],hmLane:idx[0]+1,anaLane:idx[3]+1};
 }
 
+// 相手（非本命5艇）の p_win ばらつき＝2・3着の絞りやすさ。s=per-mille p_win 配列。
+// 検証(OOS 7,862R): 本命の強さを固定しても「差あり」レースは2連単/3連単が高い
+// （主に P(2着|1着) が +7〜18pt）。勝負どころ＝本命が強い × 相手にも差がある。
+function rivalDiff(r){
+  const s=r.b.map(x=>x[1]).slice().sort((a,b)=>b-a);   // per-mille 降順
+  const riv=s.slice(1);                                 // 非本命5艇
+  const m=riv.reduce((a,b)=>a+b,0)/riv.length;
+  const sp=Math.sqrt(riv.reduce((a,b)=>a+(b-m)*(b-m),0)/riv.length)/1000;  // 0-1
+  const t=D.rsp||[0.04,0.07];
+  const lv = sp>=t[1]?['大','rdhi'] : sp<t[0]?['小','rdlo'] : ['中','rdmid'];
+  const hon=s[0]/1000;
+  const prize = hon>=0.50 && sp>=t[1];                  // 本命が強い×相手に差＝勝負どころ
+  return {sp,lvl:lv[0],cls:lv[1],prize,hon};
+}
+
 // 結果（過去日）の1着が、モデルで本命/中位/穴のどれだったか。
 // 本命=モデル1番手が1着 / 中位=2-3番手 / 穴=4-6番手（軽視艇）が1着。
 function winKind(r){
@@ -728,7 +784,9 @@ function listView(){
     const ha=honAna(r);const done=hasResult(r);
     h+='<div class="row'+(done?' done':'')+'" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'+chip(hm+1)
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
-    h+='<span class="ha2">'+(done?'':'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>')
+    const rd=rivalDiff(r);
+    h+='<span class="ha2">'+(done?'':'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
+        +(rd.prize?'<span class="prize">&#127919;勝負</span>':''))
       +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
     if(done){
       const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
@@ -820,6 +878,16 @@ function detailView(r){
       +r.xb.map(e=>chip(e[0],'mc')+' '+r.b[e[0]-1][0]+'（'+(e[1]==='B2'?'B2級':'1号艇 成績不振')+'）').join(' ')
       +'<br><span style="font-size:11px;color:#7e8796">※検証で「回収率を保ったまま賭け金を絞れる」と確認した枠を2連単/3連単の買い目から除外（確率・本命/穴の表示はそのまま）。</span></div>';
   }
+  // 相手（非本命5艇）の差＝2・3着の絞りやすさ。勝負どころ＝本命が強い×相手に差。
+  const rd=rivalDiff(r);
+  h+='<div class="rdbox'+(rd.prize?' prizebox':'')+'">'
+    +'<span class="h">相手の差</span><span class="lvl '+rd.cls+'">'+rd.lvl+'</span> '
+    +(rd.prize
+       ? '&#127919; <b>勝負どころ</b>：本命が強く、相手（2・3着）にも差がある。検証では同じ本命確率でも2連単/3連単の的中が一段高い帯（P(2着&#124;1着)が+7〜18pt）。点数を絞って2連単/3連単に厚く張る価値。'
+       : rd.lvl==='大'
+         ? '相手（2・3着）は絞りやすいが、本命確率が低め。1着が読みづらいので頭は広めに。'
+         : '相手が横一線で2・3着を絞りにくい。本命が強くても2連単/3連単は伸びにくい帯＝点数を欲張らない。')
+    +'<br><span style="font-size:11px;color:#7e8796">※「相手の差」＝非本命5艇の1着確率のばらつき（発走前にモデルから分かる量）。1着の精度は本命確率が決め、相手の差はもっぱら2・3着を絞れるかに効く（検証 OOS 7,862R）。</span></div>';
   // 2連単 上位（予想確率で点数変動・上限5）
   const honD=Math.max(...s)/1000;const nEx=kEx(honD),nTri=kTri(honD);
   const ex=plTop(s,2,nEx,xset);

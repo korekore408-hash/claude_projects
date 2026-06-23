@@ -26,6 +26,7 @@
 import argparse
 import csv
 import datetime
+import os
 import subprocess
 import sys
 
@@ -71,6 +72,17 @@ def main():
     prev = today - datetime.timedelta(days=1)
     print(f"=== 当日予想デイリー: {today} ===")
 
+    # 0. 前日Kの強制取り直し（再発防止）。
+    #    ナイター場(蒲郡/若松/大村等)は終了が遅く、前日の夕方に取得したKは不完全版になる。
+    #    download_lzh は既存ファイルがあると再DLしないので、消してから取り直すことで
+    #    翌朝に揃う完全版へ上書きする（前日結果の欠落を自動修復）。
+    prev_key = prev.strftime("%y%m%d")
+    for ext in ("lzh", "txt", "csv"):
+        p = os.path.join("data", f"k{prev_key}.{ext}")
+        if os.path.exists(p):
+            os.remove(p)
+            print(f"  前日K 再取得のため削除: {p}")
+
     # 1. 取得（前日Kで履歴を最新化 ＋ 当日Bで出走表）。当日Kはまだ無いので404でOK。
     run(["fetch_range.py", "--start", prev.isoformat(),
          "--end", today.isoformat(), "--which", "both"])
@@ -84,7 +96,6 @@ def main():
     # 4a. 評価用予測（train<=260430 固定。直近=OOSのまま honest な的中率/回収率）。
     run(["predict_combos.py", "--mode", "split", "--train-end", "260430"])
     # 4b. 当日用に「前日まで全データ」で再学習した最新モデルで予測（学習を毎日追加）。
-    prev_key = prev.strftime("%y%m%d")
     run(["predict_combos.py", "--mode", "split", "--train-end", prev_key,
          "--out", "predict_win_latest.csv"])
     # 4c. 当日のレース行だけ最新モデルの予測に差し替え（過去はそのまま）。

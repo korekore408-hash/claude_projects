@@ -1,0 +1,435 @@
+============================================================
+[2026/06/22  7:05:28.05] 自動実行 開始
+期間: 2026-06-21 ～ 2026-06-22 （2 日間） / 対象: ['program', 'results']
+============================================================
+[2026-06-21]
+    （既にDL済み: b260621.lzh）
+    （既にDL済み: k260621.lzh）
+[2026-06-22]
+    （既にDL済み: b260622.lzh）
+    × データなし (HTTP 404)
+============================================================
+○ 番組表まとめCSV: data\番組表_まとめ.csv
+  合計 2,160 行
+完了。
+[b] 対象 204 件
+[k] 対象 203 件
+○ 変換 0 / スキップ(既存) 407 / 空 0
+○ 出力: features_player_history.csv
+  ラインナップ源=b  K-file 203 / B-file 204
+  日数 204 / レース 31872 / 行 191232
+  期間 2025-08-01 ～ 2026-06-22  recent-n=20 recent-days=30
+○ 出力: features_race_relative.csv
+  レース 31872 / 行 191232
+  期間 2025-08-02 ～ 2026-06-22
+○ 出力: race_flags.csv（31119 レース / 対象外 7454 / 対象 23665）
+    レーン変更            6004
+    転覆・失格系           1266
+    フライング            538
+    欠場               299
+    安定板(判定不可)        0
+レース 31872 / 学習 23377 / 検証 7736
+
+--- 学習した重み（標準化後） ---
+  class_ord            +0.094
+  win_rate_national    +0.251
+  motor_top2_rate      +0.042
+  st_avg               -0.106
+  lane_win_rate        +0.100
+  recent30_winrate     +0.003
+  venue_own_lane_winrate +0.593
+  motor_intrinsic_win  -0.010
+  motor_intrinsic_top2 +0.047
+  age                  -0.129
+  top2_rate_local      +0.101
+  motor_rank_in_race   -0.098
+  weight               +0.021
+  local_win_rate       +0.105
+  st_std               +0.004
+  winrate_rank_in_race +0.011
+  winrate_diff_top     -0.271
+  venue_rough_x_gap    -0.028
+  wind_x_lane          -0.012
+  wave_x_lane          -0.006
+  lane2                +0.116
+  lane3                +0.089
+  lane4                +0.006
+  lane5                -0.311
+  lane6                -0.829
+
+--- 精度（train / test）時系列分割 ---
+  1着的中率   0.562 / 0.568   （1号艇ベース 0.548）
+  2連単 top1  0.220 / 0.226
+  3連単 top1  0.088 / 0.097
+  勝者logloss 1.217 / 1.203
+
+○ 出力: predict_win.csv（191232 行）
+レース 31872 / 学習 31113 / 検証 0
+
+--- 学習した重み（標準化後） ---
+  class_ord            +0.099
+  win_rate_national    +0.237
+  motor_top2_rate      +0.039
+  st_avg               -0.107
+  lane_win_rate        +0.111
+  recent30_winrate     +0.005
+  venue_own_lane_winrate +0.604
+  motor_intrinsic_win  -0.011
+  motor_intrinsic_top2 +0.048
+  age                  -0.119
+  top2_rate_local      +0.096
+  motor_rank_in_race   -0.094
+  weight               +0.008
+  local_win_rate       +0.108
+  st_std               -0.004
+  winrate_rank_in_race +0.007
+  winrate_diff_top     -0.255
+  venue_rough_x_gap    -0.043
+  wind_x_lane          +0.003
+  wave_x_lane          -0.006
+  lane2                +0.181
+  lane3                +0.136
+  lane4                +0.040
+  lane5                -0.295
+  lane6                -0.807
+
+--- 精度（train / test）時系列分割 ---
+  1着的中率   0.563 / 0.000   （1号艇ベース 0.000）
+  2連単 top1  0.221 / 0.000
+  3連単 top1  0.090 / 0.000
+  勝者logloss 1.213 / 0.000
+
+○ 出力: predict_win_latest.csv（191232 行）
+○ 当日予想アプリ: today.html
+  対象日 ['2026-06-20', '2026-06-21', '2026-06-22']（既定表示=2026-06-22）/ レース 528
+  場別成績: 2026-01-01～（2026-01-01～2026-06-21 / 26054レース）
+○ 当日予想PDF: today.pdf
+  対象日 ['2026-06-22', '2026-06-21', '2026-06-20'] / レース 528
+○ ビューア生成: viewer.html
+  レース 2136 / 行 12816 / 期間 2026-06-09～2026-06-22
+  ダブルクリックでブラウザ表示できます。
+=== 当日予想デイリー: 2026-06-22 ===
+
+$ fetch_range.py --start 2026-06-21 --end 2026-06-22 --which both
+
+$ convert_all.py
+
+$ features_player_history.py
+
+$ features_race_relative.py --neutral-weather-date 2026-06-22
+
+$ race_flags.py
+
+$ predict_combos.py --mode split --train-end 260430
+
+$ predict_combos.py --mode split --train-end 260621 --out predict_win_latest.csv
+  当日 1008 行を最新モデル予測に差し替え
+
+$ build_today.py --date 2026-06-22
+
+$ build_today_pdf.py --date 2026-06-22
+
+$ build_viewer.py --last-days 14
+
+○ 完了:
+  today.html … 当日予想アプリ（自宅LAN配信や保存用）
+  today.pdf  … 携帯でどこでも開ける当日予想（OneDrive同期で外出先もOK）
+  viewer.html… 直近14日の詳細ビューア（PC向け）
+[2026/06/22  7:23:13.40] 完了 http://localhost:8787/today.html
+============================================================
+[2026/06/22 20:10:08.99] 自動実行 開始
+期間: 2026-06-21 ～ 2026-06-22 （2 日間） / 対象: ['program', 'results']
+============================================================
+[2026-06-21]
+    （既にDL済み: b260621.lzh）
+    （既にDL済み: k260621.lzh）
+[2026-06-22]
+    （既にDL済み: b260622.lzh）
+    ○ DL: k260622.lzh (31,648 バイト)
+============================================================
+○ 番組表まとめCSV: data\番組表_まとめ.csv
+  合計 2,160 行
+完了。
+[b] 対象 204 件
+[k] 対象 204 件
+○ 変換 1 / スキップ(既存) 407 / 空 0
+○ 出力: features_player_history.csv
+  ラインナップ源=b  K-file 204 / B-file 204
+  日数 204 / レース 31872 / 行 191232
+  期間 2025-08-01 ～ 2026-06-22  recent-n=20 recent-days=30
+○ 出力: features_race_relative.csv
+  レース 31872 / 行 191232
+  期間 2025-08-02 ～ 2026-06-22
+○ 出力: race_flags.csv（31251 レース / 対象外 7486 / 対象 23765）
+    レーン変更            6028
+    転覆・失格系           1272
+    フライング            539
+    欠場               302
+    安定板(判定不可)        0
+レース 31872 / 学習 23377 / 検証 7868
+
+--- 学習した重み（標準化後） ---
+  class_ord            +0.094
+  win_rate_national    +0.251
+  motor_top2_rate      +0.042
+  st_avg               -0.106
+  lane_win_rate        +0.100
+  recent30_winrate     +0.003
+  venue_own_lane_winrate +0.593
+  motor_intrinsic_win  -0.010
+  motor_intrinsic_top2 +0.047
+  age                  -0.129
+  top2_rate_local      +0.101
+  motor_rank_in_race   -0.098
+  weight               +0.021
+  local_win_rate       +0.105
+  st_std               +0.004
+  winrate_rank_in_race +0.011
+  winrate_diff_top     -0.271
+  venue_rough_x_gap    -0.028
+  wind_x_lane          -0.012
+  wave_x_lane          -0.006
+  lane2                +0.116
+  lane3                +0.089
+  lane4                +0.006
+  lane5                -0.311
+  lane6                -0.829
+
+--- 精度（train / test）時系列分割 ---
+  1着的中率   0.562 / 0.568   （1号艇ベース 0.548）
+  2連単 top1  0.220 / 0.227
+  3連単 top1  0.088 / 0.097
+  勝者logloss 1.217 / 1.202
+
+○ 出力: predict_win.csv（191232 行）
+レース 31872 / 学習 31113 / 検証 132
+
+--- 学習した重み（標準化後） ---
+  class_ord            +0.099
+  win_rate_national    +0.237
+  motor_top2_rate      +0.039
+  st_avg               -0.107
+  lane_win_rate        +0.111
+  recent30_winrate     +0.005
+  venue_own_lane_winrate +0.604
+  motor_intrinsic_win  -0.011
+  motor_intrinsic_top2 +0.048
+  age                  -0.119
+  top2_rate_local      +0.096
+  motor_rank_in_race   -0.094
+  weight               +0.008
+  local_win_rate       +0.108
+  st_std               -0.004
+  winrate_rank_in_race +0.007
+  winrate_diff_top     -0.255
+  venue_rough_x_gap    -0.043
+  wind_x_lane          +0.003
+  wave_x_lane          -0.006
+  lane2                +0.181
+  lane3                +0.136
+  lane4                +0.040
+  lane5                -0.295
+  lane6                -0.807
+
+--- 精度（train / test）時系列分割 ---
+  1着的中率   0.563 / 0.583   （1号艇ベース 0.508）
+  2連単 top1  0.221 / 0.265
+  3連単 top1  0.090 / 0.091
+  勝者logloss 1.213 / 1.155
+
+○ 出力: predict_win_latest.csv（191232 行）
+○ 当日予想アプリ: today.html
+  対象日 ['2026-06-20', '2026-06-21', '2026-06-22']（既定表示=2026-06-22）/ レース 528
+  場別成績: 2026-01-01～（2026-01-01～2026-06-22 / 26186レース）
+○ 当日予想PDF: today.pdf
+  対象日 ['2026-06-22', '2026-06-21', '2026-06-20'] / レース 528
+○ ビューア生成: viewer.html
+  レース 2136 / 行 12816 / 期間 2026-06-09～2026-06-22
+  ダブルクリックでブラウザ表示できます。
+=== 当日予想デイリー: 2026-06-22 ===
+
+$ fetch_range.py --start 2026-06-21 --end 2026-06-22 --which both
+
+$ convert_all.py
+
+$ features_player_history.py
+
+$ features_race_relative.py --neutral-weather-date 2026-06-22
+
+$ race_flags.py
+
+$ predict_combos.py --mode split --train-end 260430
+
+$ predict_combos.py --mode split --train-end 260621 --out predict_win_latest.csv
+  当日 1008 行を最新モデル予測に差し替え
+
+$ build_today.py --date 2026-06-22
+
+$ build_today_pdf.py --date 2026-06-22
+
+$ build_viewer.py --last-days 14
+
+○ 完了:
+  today.html … 当日予想アプリ（自宅LAN配信や保存用）
+  today.pdf  … 携帯でどこでも開ける当日予想（OneDrive同期で外出先もOK）
+  viewer.html… 直近14日の詳細ビューア（PC向け）
+============================================================
+[2026/06/22 22:12:21.44] 自動生成 開始
+期間: 2026-06-21 ～ 2026-06-22 （2 日間） / 対象: ['program', 'results']
+============================================================
+[2026-06-21]
+    （既にDL済み: b260621.lzh）
+    （既にDL済み: k260621.lzh）
+[2026-06-22]
+    （既にDL済み: b260622.lzh）
+    （既にDL済み: k260622.lzh）
+============================================================
+○ 番組表まとめCSV: data\番組表_まとめ.csv
+  合計 2,160 行
+完了。
+[b] 対象 204 件
+[k] 対象 204 件
+○ 変換 0 / スキップ(既存) 408 / 空 0
+^C============================================================
+[2026/06/23  7:00:02.55] 自動生成 開始
+期間: 2026-06-22 ～ 2026-06-23 （2 日間） / 対象: ['program', 'results']
+============================================================
+[2026-06-22]
+    （既にDL済み: b260622.lzh）
+    ○ DL: k260622.lzh (39,835 バイト)
+[2026-06-23]
+    ○ DL: b260623.lzh (28,044 バイト)
+    × データなし (HTTP 404)
+============================================================
+○ 番組表まとめCSV: data\番組表_まとめ.csv
+  合計 1,872 行
+完了。
+[b] 対象 205 件
+[k] 対象 204 件
+○ 変換 2 / スキップ(既存) 407 / 空 0
+○ 出力: features_player_history.csv
+  ラインナップ源=b  K-file 204 / B-file 205
+  日数 205 / レース 32016 / 行 192096
+  期間 2025-08-01 ～ 2026-06-23  recent-n=20 recent-days=30
+○ 出力: features_race_relative.csv
+  レース 32016 / 行 192096
+  期間 2025-08-02 ～ 2026-06-22
+○ 出力: race_flags.csv（31407 レース / 対象外 7514 / 対象 23893）
+    レーン変更            6052
+    転覆・失格系           1274
+    フライング            541
+    欠場               302
+    安定板(判定不可)        0
+レース 32016 / 学習 23377 / 検証 8024
+
+--- 学習した重み（標準化後） ---
+  class_ord            +0.094
+  win_rate_national    +0.251
+  motor_top2_rate      +0.042
+  st_avg               -0.106
+  lane_win_rate        +0.100
+  recent30_winrate     +0.003
+  venue_own_lane_winrate +0.593
+  motor_intrinsic_win  -0.010
+  motor_intrinsic_top2 +0.047
+  age                  -0.129
+  top2_rate_local      +0.101
+  motor_rank_in_race   -0.098
+  weight               +0.021
+  local_win_rate       +0.105
+  st_std               +0.004
+  winrate_rank_in_race +0.011
+  winrate_diff_top     -0.271
+  venue_rough_x_gap    -0.028
+  wind_x_lane          -0.012
+  wave_x_lane          -0.006
+  lane2                +0.116
+  lane3                +0.089
+  lane4                +0.006
+  lane5                -0.311
+  lane6                -0.829
+
+--- 精度（train / test）時系列分割 ---
+  1着的中率   0.562 / 0.569   （1号艇ベース 0.549）
+  2連単 top1  0.220 / 0.228
+  3連単 top1  0.088 / 0.098
+  勝者logloss 1.217 / 1.199
+
+○ 出力: predict_win.csv（192096 行）
+レース 32016 / 学習 31401 / 検証 0
+
+--- 学習した重み（標準化後） ---
+  class_ord            +0.099
+  win_rate_national    +0.238
+  motor_top2_rate      +0.039
+  st_avg               -0.106
+  lane_win_rate        +0.112
+  recent30_winrate     +0.005
+  venue_own_lane_winrate +0.606
+  motor_intrinsic_win  -0.011
+  motor_intrinsic_top2 +0.048
+  age                  -0.120
+  top2_rate_local      +0.095
+  motor_rank_in_race   -0.093
+  weight               +0.007
+  local_win_rate       +0.108
+  st_std               -0.003
+  winrate_rank_in_race +0.007
+  winrate_diff_top     -0.256
+  venue_rough_x_gap    -0.044
+  wind_x_lane          +0.007
+  wave_x_lane          -0.008
+  lane2                +0.185
+  lane3                +0.139
+  lane4                +0.040
+  lane5                -0.297
+  lane6                -0.809
+
+--- 精度（train / test）時系列分割 ---
+  1着的中率   0.564 / 0.000   （1号艇ベース 0.000）
+  2連単 top1  0.222 / 0.000
+  3連単 top1  0.090 / 0.000
+  勝者logloss 1.212 / 0.000
+
+○ 出力: predict_win_latest.csv（192096 行）
+○ 当日予想アプリ: today.html
+  対象日 ['2026-06-21', '2026-06-22', '2026-06-23']（既定表示=2026-06-23）/ レース 504
+  場別成績: 2026-01-01～（2026-01-01～2026-06-22 / 26342レース）
+○ 当日予想PDF: today.pdf
+  対象日 ['2026-06-23', '2026-06-22', '2026-06-21'] / レース 504
+○ ビューア生成: viewer.html
+  レース 2136 / 行 12816 / 期間 2026-06-10～2026-06-23
+  ダブルクリックでブラウザ表示できます。
+=== 当日予想デイリー: 2026-06-23 ===
+  前日K 再取得のため削除: data\k260622.lzh
+  前日K 再取得のため削除: data\k260622.txt
+  前日K 再取得のため削除: data\k260622.csv
+
+$ fetch_range.py --start 2026-06-22 --end 2026-06-23 --which both
+
+$ convert_all.py
+
+$ features_player_history.py
+
+$ features_race_relative.py --neutral-weather-date 2026-06-23
+
+$ race_flags.py
+
+$ predict_combos.py --mode split --train-end 260430
+
+$ predict_combos.py --mode split --train-end 260622 --out predict_win_latest.csv
+  当日 864 行を最新モデル予測に差し替え
+
+$ build_today.py --date 2026-06-23
+
+$ build_today_pdf.py --date 2026-06-23
+
+$ build_viewer.py --last-days 14
+
+○ 完了:
+  today.html … 当日予想アプリ（自宅LAN配信や保存用）
+  today.pdf  … 携帯でどこでも開ける当日予想（OneDrive同期で外出先もOK）
+  viewer.html… 直近14日の詳細ビューア（PC向け）
+[2026/06/23  7:21:44.74] 生成完了 http://localhost:8787/today.html
+============================================================
+[2026/06/23 20:17:39.55] 自動生成 開始

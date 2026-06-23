@@ -72,9 +72,13 @@ def _boat_blocks(html):
     返り値 {枠: ブロックHTML}（最初に出てくる艇順テーブル＝展示テーブルを優先）。"""
     marks = [(m.start(), int(m.group(1)))
              for m in re.finditer(r"is-boatColor([1-6])", html)]
+    # 展示行はほぼ等間隔。最終枠のブロックはEOFまで伸びてページ末尾の凡例
+    # (label4 の部品名一覧)を飲み込み部品交換を誤検出するので、典型的な行長で上限を設ける。
+    gaps = [marks[i + 1][0] - marks[i][0] for i in range(len(marks) - 1)]
+    row_len = max(gaps) if gaps else 2000
     blocks = {}
     for i, (pos, w) in enumerate(marks):
-        end = marks[i + 1][0] if i + 1 < len(marks) else len(html)
+        end = marks[i + 1][0] if i + 1 < len(marks) else min(len(html), pos + row_len)
         if w not in blocks:                      # 各枠の最初の出現＝展示行
             blocks[w] = html[pos:end]
     return blocks
@@ -167,15 +171,31 @@ def _num(m):
 # 結果
 # ============================================================
 
+# 着順は全角数字（１２３…）で描画される。半角化用。
+_ZEN = "０１２３４５６７８９"
+
+
+def _zen2han(s):
+    return "".join(str(_ZEN.index(c)) if c in _ZEN else c for c in s)
+
+
 def parse_result(html):
     """raceresult HTML → {fin:[着順 枠1..6], order:[1着枠,2着枠,3着枠..],
-    km:決まり手, po2:2連単配当, po3:3連単配当}。未確定/無ければ None。"""
+    km:決まり手, po2:2連単配当, po3:3連単配当}。未確定/無ければ None。
+
+    実HTML構造（2026 公式 raceresult）:
+      <td class="is-fs14">１</td>                      ← 着順は全角数字 / Ｆ/Ｌ/失/欠
+      <td class="is-fs14 is-fBold is-boatColor4">4</td> ← is-boatColor は td自身・中身が枠番
+    配当:
+      <span class="numberSet1_number is-type4">4</span>…  ← 組番は色付きボックス（文字列でない）
+      <td><span class="is-payout1">&yen;2,970</span></td>
+    """
     if not html:
         return None
-    # 着順テーブル: 「着(1-6/F/L/失/欠)」→ 直後の is-boatColor{枠}
+    # 着順td（全角/半角数字・Ｆ/Ｌ/失/欠）→ 直後の is-boatColor td（中身＝枠番）
     pairs = re.findall(
-        r">\s*(1|2|3|4|5|6|F|L0?|失|欠)\s*</td>\s*<td[^>]*>\s*"
-        r"<[^>]*is-boatColor([1-6])", html)
+        r"<td[^>]*>\s*([０-９0-9ＦFＬL失欠]+)\s*</td>\s*<td[^>]*is-boatColor([1-6])",
+        html)
     fin = [None] * 6
     seen = set()
     for chaku, wstr in pairs:
@@ -183,47 +203,38 @@ def parse_result(html):
         if w in seen:
             continue
         seen.add(w)
-        if chaku in ("F", "L", "L0", "失", "欠"):
-            fin[w - 1] = None                      # 非完走
-        else:
-            fin[w - 1] = int(chaku)
+        c = _zen2han(chaku)
+        fin[w - 1] = int(c) if c.isdigit() else None   # 非完走(F/L/失/欠)は None
         if len(seen) == 6:
             break
     if not any(f == 1 for f in fin):               # 1着が無い＝未確定
         return None
     order = sorted([w for w in range(1, 7) if fin[w - 1]],
                    key=lambda w: fin[w - 1])
-    # 決まり手
+    # 決まり手（まくり差し を まくり/差し より先に当てる）
     km = ""
-    mk = re.search(r"決まり手.*?(" + "|".join(KIMARITE) + ")", html, re.S)
-    if not mk:
-        mk = re.search("(" + "|".join(KIMARITE) + ")", html)
+    mk = re.search(r"(まくり差し|逃げ|差し|まくり|抜き|恵まれ)", html)
     if mk:
         km = mk.group(1)
-    # 配当: 実着順から組番を作り、その文字列の直後の金額を拾う（最も確実）。
-    po3 = po2 = None
-    if len(order) >= 3:
-        po3 = _payout_after(html, "{}-{}-{}".format(*order[:3]))
-    if len(order) >= 2:
-        po2 = _payout_after(html, "{}-{}".format(*order[:2]), trifecta_guard=True)
+    # 配当: numberSet1_row の数字ボックス列 → 直後の is-payout 金額。
+    rows = _payout_rows(html)
+    po3 = next((a for n, a in rows if len(n) == 3), None)
+    po2 = next((a for n, a in rows if len(n) == 2), None)
     return {"fin": fin, "order": order, "km": km, "po2": po2, "po3": po3}
 
 
-def _payout_after(html, combo, trifecta_guard=False):
-    """combo 文字列（'4-6-1' / '4-6'）の出現直後にある金額(円)を返す。
-    trifecta_guard=True のとき '4-6' が '4-6-1' の一部に当たらないよう次が '-' でない位置を探す。"""
-    start = 0
-    while True:
-        i = html.find(combo, start)
-        if i < 0:
-            return None
-        nxt = html[i + len(combo): i + len(combo) + 1]
-        if trifecta_guard and nxt == "-":
-            start = i + 1
+def _payout_rows(html):
+    """払戻テーブルの各行 (組番digits, 金額) を文書順に返す。
+    3連単は先頭の3桁行・2連単は先頭の2桁行（いずれも連複より前に出る）。"""
+    rows = []
+    for rm in re.finditer(r"numberSet1_row[^>]*>(.*?)</div>", html, re.S):
+        nums = re.findall(r'numberSet1_number is-type\d">\s*(\d)', rm.group(1))
+        if not nums:
             continue
-        m = re.search(r"[¥￥]?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,})",
-                      html[i + len(combo): i + len(combo) + 300])
-        return int(m.group(1).replace(",", "")) if m else None
+        am = re.search(r'is-payout\d">\s*&yen;\s*([0-9,]+)',
+                       html[rm.end(): rm.end() + 400])
+        rows.append((nums, int(am.group(1).replace(",", "")) if am else None))
+    return rows
 
 
 # ============================================================
@@ -236,7 +247,7 @@ def fetch_race(jcd, rno, hd, want_before=True, want_result=True):
     if want_result:
         out["result"] = parse_result(_get(URL_RESULT.format(r=rno, jcd=f"{jcd:02d}", hd=hd)))
         time.sleep(WAIT_SECONDS)
-    if want_before and not out["result"]:          # 結果が出ていれば展示は不要
+    if want_before:                                # 結果が出ていても展示は「その日調べた情報」として取得
         out["ex"] = parse_beforeinfo(_get(URL_BEFORE.format(r=rno, jcd=f"{jcd:02d}", hd=hd)))
         time.sleep(WAIT_SECONDS)
     out["status"] = "result" if out["result"] else ("before" if out["ex"] else "none")
