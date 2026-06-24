@@ -1,0 +1,5 @@
+# GitHub Actions（Linux / Python 3.13）で当日予想パイプラインを動かすための依存。
+# 予測・特徴量・ページ生成はすべて Python 標準ライブラリのみで動くため、
+# 外部依存はこの2つだけ（どちらも cp313 manylinux ホイールあり＝コンパイル不要）。
+requests
+lhafile

@@ -549,35 +549,49 @@ function exView(r){
 
 // 「更新」ボタン：当日(base)の展示＋結果を serve_odds.py 経由で取得し D.races へ反映。
 // 結果が出たレースは着順/決まり手/配当を入れて前日同様の結果表示に切替わる。
+// 取得結果 o={races,fetched_at} を当日(base)レースへ反映。戻り値=反映件数。
+function applyUpd(o){
+  const R=o.races||{}; let nres=0,nex=0,nev=0;
+  D.races.forEach(r=>{
+    if(r.d!==D.base)return;                      // 反映は当日のみ
+    const rec=R[r.id]; if(!rec)return;
+    if(rec.ex){r.ex=rec.ex; nex++;}
+    if(rec.ev!=null){r.ev=rec.ev; nev++;}        // 鉄板×EV≥1.5 で 🎯勝負 点灯
+    if(rec.result){
+      const rs=rec.result, fin=rs.fin||[];
+      for(let w=1;w<=6;w++)r.b[w-1][2]=fin[w-1];   // 着順→前日同様の結果表示
+      if(rs.km)r.km=rs.km;
+      if(rs.po2!=null||rs.po3!=null)r.po=[rs.po2,rs.po3];
+      nres++;
+    }
+  });
+  return {nres,nex,nev};
+}
+// 更新データの取得元: まず静的 ./update.json（クラウド配信＝Actionsが40分毎に生成）、
+// 無ければ更新サーバ /update（ローカル serve_odds.py / LAN配信）へフォールバック。
+function fetchUpd(){
+  const hd=D.base.replace(/-/g,'');
+  return fetch('update.json',{cache:'no-store'}).then(r=>{if(r.ok)return r.json();throw 0;})
+    .catch(()=>fetch('update?date='+hd+'&odds=1').then(r=>{if(!r.ok)throw 0;return r.json();}));
+}
+
+// 「更新」ボタン：当日(base)の展示＋結果＋EVを取得して D.races へ反映。
 function updateAll(){
   if(upBusy)return;
-  // ファイル直開き(file://)では更新サーバに繋げない。サーバ版ページへ移動する
+  // ファイル直開き(file://)では取得不可。更新サーバ版ページへ移動する
   // （サーバ未起動なら接続不可＝ランチャー/常駐サーバで起動が必要）。
   if(location.protocol==='file:'){location.href='http://localhost:8787/today.html#update';return;}
   upBusy=true; upErr=false;
   upMsg='取得中… 当日の展示・結果を収集しています（開催場数により数十秒かかることがあります）';
   selDate=D.base; tab='pred'; sel=null; render();
-  fetch('update?date='+D.base.replace(/-/g,'')+'&odds=1').then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
-    const R=o.races||{}; let nres=0,nex=0,nev=0;
-    D.races.forEach(r=>{
-      if(r.d!==D.base)return;                    // 反映は当日のみ
-      const rec=R[r.id]; if(!rec)return;
-      if(rec.ex){r.ex=rec.ex; nex++;}
-      if(rec.ev!=null){r.ev=rec.ev; nev++;}      // 鉄板×EV≥1.5 で 🎯勝負 点灯
-      if(rec.result){
-        const rs=rec.result, fin=rs.fin||[];
-        for(let w=1;w<=6;w++)r.b[w-1][2]=fin[w-1];   // 着順→前日同様の結果表示
-        if(rs.km)r.km=rs.km;
-        if(rs.po2!=null||rs.po3!=null)r.po=[rs.po2,rs.po3];
-        nres++;
-      }
-    });
+  fetchUpd().then(o=>{
+    const n=applyUpd(o);
     upBusy=false; upErr=false;
-    upMsg='更新 '+(o.fetched_at||'')+' ／ 結果 '+nres+'レース・展示 '+nex+'レース'+(nev?'・EV '+nev+'レース':'')+'を反映';
+    upMsg='更新 '+(o.fetched_at||'')+' ／ 結果 '+n.nres+'レース・展示 '+n.nex+'レース'+(n.nev?'・EV '+n.nev+'レース':'')+'を反映';
     render();
   }).catch(()=>{
     upBusy=false; upErr=true;
-    upMsg='取得失敗：serve_odds.py 経由で開いてください（py -3.13 serve_odds.py → http://localhost:8787/today.html）。発走前は展示・結果がまだ無いことがあります。';
+    upMsg='取得失敗：発走前は展示・結果がまだ無いことがあります。ローカルでは py -3.13 serve_odds.py 経由で開いてください。';
     render();
   });
 }
@@ -613,6 +627,14 @@ if(location.protocol==='file:'){
   fetch('http://localhost:8787/today.html',{mode:'no-cors',cache:'no-store'})
     .then(()=>{location.replace('http://localhost:8787/today.html');})
     .catch(()=>{});
+}else{
+  // クラウド配信(静的)では、ページ表示時に update.json を自動反映（ボタン押下不要）。
+  // ローカルサーバ等で update.json が無ければ静かに無視（従来どおり手動更新で取得）。
+  fetch('update.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
+    const n=applyUpd(o);
+    upMsg='自動更新 '+(o.fetched_at||'')+' ／ 結果 '+n.nres+'・展示 '+n.nex+(n.nev?'・EV '+n.nev:'')+'レースを反映';
+    render();
+  }).catch(()=>{});
 }
 render();
 // サーバ版へ #update 付きで来たら、自動で更新を1回実行（file://から更新を押した導線）。

@@ -1,0 +1,51 @@
+name: boatrace-daily
+
+# 朝1回：前日Kで履歴更新 → 当日Bで出走表 → 特徴量再計算 → 予測 → today.html 生成。
+# 生成物（today.html・各CSV）をリポジトリに commit & push し、Cloudflare Pages が自動再デプロイする。
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 00:00 UTC = 09:00 JST（更新窓 10:00 の前に当日ページを用意）
+  workflow_dispatch:        # 手動実行も可
+
+concurrency:
+  group: boatrace-daily
+  cancel-in-progress: false
+
+permissions:
+  contents: write           # 生成物をリポジトリに push するため
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TZ: Asia/Tokyo         # daily.py の date.today() を JST にする
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: boatrace/requirements.txt
+
+      - name: install deps
+        run: pip install -r boatrace/requirements.txt
+
+      - name: run daily pipeline
+        working-directory: boatrace
+        run: python daily.py --date "$(date +%Y-%m-%d)"
+
+      - name: commit & push generated files
+        run: |
+          git config user.name  "boatrace-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add boatrace/today.html boatrace/today.pdf boatrace/viewer.html \
+                  boatrace/predict_win.csv boatrace/features_*.csv boatrace/race_flags.csv \
+                  boatrace/data
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "chore(boatrace): daily build $(date +%Y-%m-%d) [skip ci]"
+            git push
+          fi
