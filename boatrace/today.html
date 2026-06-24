@@ -224,7 +224,7 @@ function listView(){
     const ha=honAna(r);const done=hasResult(r);
     h+='<div class="row'+(done?' done':'')+'" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'+chip(hm+1)
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
-    const chance = ha.lvlcls==='haran' && ha.ana>=0.20;     // 波乱でより穴
+    const chance = ha.hon<0.35 && ha.ana>=0.25;            // 本命弱い×穴厚い＝コメントチャンス
     const shobu = ha.hon>=0.65 && r.ev!=null && r.ev>=1.5;  // 鉄板×EV≥1.5（オッズ取得後に点灯）
     h+='<span class="ha2"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
