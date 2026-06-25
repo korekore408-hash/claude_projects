@@ -46,6 +46,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "no changes"
           else
-            git commit -m "chore(boatrace): daily build $(date +%Y-%m-%d) [skip ci]"
+            git commit -m "chore(boatrace): daily build $(date +%Y-%m-%d)"
             git push
           fi
