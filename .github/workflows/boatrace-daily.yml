@@ -44,8 +44,11 @@ jobs:
                   boatrace/predict_win.csv boatrace/features_*.csv boatrace/race_flags.csv \
                   boatrace/data
           if git diff --cached --quiet; then
-            echo "no changes"
-          else
-            git commit -m "chore(boatrace): daily build $(date +%Y-%m-%d)"
-            git push
+            echo "no changes"; exit 0
           fi
+          git commit -m "chore(boatrace): daily build $(date +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash origin master && git push origin master && exit 0
+            echo "push race, retry $i"; sleep 5
+          done
+          echo "push failed after retries"; exit 1
