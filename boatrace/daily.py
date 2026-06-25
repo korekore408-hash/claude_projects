@@ -39,6 +39,16 @@ def run(args, **kw):
         sys.exit(r.returncode)
 
 
+def run_optional(args, **kw):
+    """失敗してもパイプライン全体は止めない（PDF/ビューア等の非必須生成物用）。
+    例: Linux(GitHub Actions)では today.pdf の日本語フォント(msgothic.ttc)が無く落ちるが、
+    クラウド配信に PDF は不要なので警告だけ出して続行し、today.html の commit を妨げない。"""
+    print(f"\n$ {' '.join(args)}")
+    r = subprocess.run([sys.executable] + args, **kw)
+    if r.returncode != 0:
+        print(f"⚠ スキップ（exit {r.returncode}・続行）: {args}")
+
+
 def merge_today(today, base="predict_win.csv", latest="predict_win_latest.csv"):
     """当日のレース行だけ、最新モデル(前日まで学習)の予測に差し替える。
     過去レースは base（固定split）のまま＝直近の評価は honest OOS を維持。"""
@@ -102,8 +112,9 @@ def main():
     merge_today(today)
     # 5-7. ページ生成（HTMLアプリ ＋ 携帯どこでも用PDF ＋ 詳細ビューア）
     run(["build_today.py", "--date", today.isoformat()])
-    run(["build_today_pdf.py", "--date", today.isoformat()])
-    run(["build_viewer.py", "--last-days", "14"])
+    # PDF/ビューアは非必須（クラウド配信不要）。失敗しても today.html の commit を止めない。
+    run_optional(["build_today_pdf.py", "--date", today.isoformat()])
+    run_optional(["build_viewer.py", "--last-days", "14"])
 
     print(f"\n○ 完了:")
     print("  today.html … 当日予想アプリ（自宅LAN配信や保存用）")
