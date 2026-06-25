@@ -1,12 +1,12 @@
 name: boatrace-update
 
-# 毎時更新（09:00〜21:00 JST = 1日13回）：当日の展示・結果・鉄板EVだけを取得して
+# 2時間毎更新（09:00〜21:00 JST = 1日7回）：当日の展示・結果・鉄板EVだけを取得して
 # today.html が自動読込する update.json を更新する（予想は朝の daily で確定済み・ここでは触らない）。
 # 結果(的中/配当)が時間とともに反映される。commit&push → Cloudflare 自動再デプロイ。
-# GitHub cron は UTC。09:00 JST = 00:00 UTC なので毎正時 00:00〜12:00 UTC を指定。
+# private 無料枠(月2000分)に収めるため毎時→2時間毎に削減。GitHub cron は UTC（09:00 JST=00:00 UTC）。
 on:
   schedule:
-    - cron: '0 0-12 * * *'   # 毎正時 00:00-12:00 UTC = 09:00-21:00 JST（13回）
+    - cron: '0 0-12/2 * * *'   # 00,02,04,06,08,10,12 UTC = 09,11,13,15,17,19,21 JST（7回）
   workflow_dispatch:
 
 concurrency:
