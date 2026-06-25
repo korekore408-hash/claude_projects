@@ -3,3 +3,6 @@
 # 外部依存はこの2つだけ（どちらも cp313 manylinux ホイールあり＝コンパイル不要）。
 requests
 lhafile
+# build_today_pdf.py が today.pdf 生成に使用（from fpdf import FPDF）。
+# クラウド配信には不要だが、daily.py が PDF 生成で落ちると全体が止まるため必須。
+fpdf2==2.8.7

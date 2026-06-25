@@ -816,6 +816,9 @@ HTML = r"""<!DOCTYPE html>
 const D=__DATA__;
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
 let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
+// ライブ更新サーバ(serve_odds.py)がある環境か。file://(→サーバへ誘導)・localhost・LANはtrue。
+// クラウド配信(pages.dev等)はfalse＝/updateが無いので「更新」ボタンは隠す（毎朝の自動更新のみ）。
+const IS_LIVE=location.protocol==='file:'||/^(localhost$|127\.|0\.0\.0\.0$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
 // 「更新」ボタンの状態（当日の展示+結果取得）。upMsg=ステータス表示文字列。
 let upMsg='', upErr=false, upBusy=false;
 // 場別テーブルの並び替え状態（c='e'(2連単)/'t'(3連単), d=1昇順/-1降順, null=既定）。
@@ -1044,7 +1047,7 @@ function nav(){
   return '<h1>競艇当日予想</h1><div class="tabs">'
     +'<button class="tb'+(tab==='pred'?' on':'')+'" data-t="pred">予想</button>'
     +'<button class="tb'+(tab==='stats'?' on':'')+'" data-t="stats">場別成績</button>'
-    +'<button class="upbtn"'+(upBusy?' disabled':'')+' data-act="update">更新</button></div>'
+    +(IS_LIVE?'<button class="upbtn"'+(upBusy?' disabled':'')+' data-act="update">更新</button>':'')+'</div>'
     +'<div class="upstat'+(upErr?' err':'')+'" id="upstat">'+(upMsg||'')+'</div>';
 }
 // 棒グラフ（自己完結SVG）。data=[[帯ラベル, 予想中央%, 実測%, レース数], ...]。
