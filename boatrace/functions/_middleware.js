@@ -39,8 +39,18 @@ export async function onRequest(context) {
   if (!expected) return new Response("SITE_PASSWORD 未設定（Cloudflare Pages の環境変数に追加してください）", { status: 500 });
 
   const token = await sha256hex(expected + "|br");
+  const url = new URL(request.url);
+  const cookie = request.headers.get("cookie") || "";
+  const authed = cookie.split(";").some((c) => c.trim() === `${COOKIE}=${token}`);
 
-  // ログイン送信
+  // API（/api/*）: フォームログインは行わず、認証済みCookieのみ通す。
+  //   → 「更新」ボタンの POST /api/refresh が（ログイン送信と誤認されず）Function に届く。
+  if (url.pathname.startsWith("/api/")) {
+    if (!authed) return new Response(JSON.stringify({ status: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+    return next();
+  }
+
+  // 通常ページ: POST はログイン送信として扱う。
   if (request.method === "POST") {
     const form = await request.formData();
     const pw = (form.get("pw") || "").toString();
@@ -48,7 +58,7 @@ export async function onRequest(context) {
       return new Response(null, {
         status: 302,
         headers: {
-          location: new URL(request.url).pathname,
+          location: url.pathname,
           "set-cookie": `${COOKIE}=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
         },
       });
@@ -57,9 +67,7 @@ export async function onRequest(context) {
   }
 
   // Cookie 検証 → 認証済みなら本来の静的ファイルを配信
-  const cookie = request.headers.get("cookie") || "";
-  const ok = cookie.split(";").some((c) => c.trim() === `${COOKIE}=${token}`);
-  if (ok) return next();
+  if (authed) return next();
 
   return loginPage("");
 }

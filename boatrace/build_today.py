@@ -819,8 +819,11 @@ let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
 // ライブ更新サーバ(serve_odds.py)がある環境か。file://(→サーバへ誘導)・localhost・LANはtrue。
 // クラウド配信(pages.dev等)はfalse＝/updateが無いので「更新」ボタンは隠す（毎朝の自動更新のみ）。
 const IS_LIVE=location.protocol==='file:'||/^(localhost$|127\.|0\.0\.0\.0$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+// クラウド配信(pages.dev等の http/https かつ非ローカル)。更新ボタンは収集サーバが無いため
+// /api/refresh(Pages Function)経由で GitHub Actions(boatrace-update) を起動し、生成される update.json をポーリング反映する。
+const IS_CLOUD=(location.protocol==='http:'||location.protocol==='https:')&&!IS_LIVE;
 // 「更新」ボタンの状態（当日の展示+結果取得）。upMsg=ステータス表示文字列。
-let upMsg='', upErr=false, upBusy=false;
+let upMsg='', upErr=false, upBusy=false, upFetched='';
 // 場別テーブルの並び替え状態（c='e'(2連単)/'t'(3連単), d=1昇順/-1降順, null=既定）。
 let vsort={c:null,d:-1}, rsort={c:null,d:-1};
 const root=document.getElementById('app');
@@ -1047,7 +1050,7 @@ function nav(){
   return '<h1>競艇当日予想</h1><div class="tabs">'
     +'<button class="tb'+(tab==='pred'?' on':'')+'" data-t="pred">予想</button>'
     +'<button class="tb'+(tab==='stats'?' on':'')+'" data-t="stats">場別成績</button>'
-    +(IS_LIVE?'<button class="upbtn"'+(upBusy?' disabled':'')+' data-act="update">更新</button>':'')+'</div>'
+    +((IS_LIVE||IS_CLOUD)?'<button class="upbtn"'+(upBusy?' disabled':'')+' data-act="update">更新</button>':'')+'</div>'
     +'<div class="upstat'+(upErr?' err':'')+'" id="upstat">'+(upMsg||'')+'</div>';
 }
 // 棒グラフ（自己完結SVG）。data=[[帯ラベル, 予想中央%, 実測%, レース数], ...]。
@@ -1248,9 +1251,38 @@ function fetchUpd(){
     .catch(()=>fetch('update?date='+hd+'&odds=1').then(r=>{if(!r.ok)throw 0;return r.json();}));
 }
 
+// クラウド: update.json を周期取得し、fetched_at が prev から変われば反映。tries回まで20秒間隔。
+function pollUpd(prev,tries){
+  if(tries<=0){upBusy=false;upErr=true;upMsg='反映待ちがタイムアウトしました。数分後にページを再読み込みしてください。';render();return;}
+  fetch('update.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
+    if(o.fetched_at&&o.fetched_at!==prev){
+      const n=applyUpd(o); upFetched=o.fetched_at; upBusy=false; upErr=false;
+      upMsg='更新 '+o.fetched_at+' ／ 結果 '+n.nres+'・展示 '+n.nex+(n.nev?'・EV '+n.nev:'')+'レースを反映';
+      render();
+    }else{ setTimeout(()=>pollUpd(prev,tries-1),20000); }
+  }).catch(()=>setTimeout(()=>pollUpd(prev,tries-1),20000));
+}
+// クラウド「更新」: /api/refresh が Actions(boatrace-update) を起動→update.json生成→ポーリング反映。
+function requestRefresh(){
+  if(upBusy)return;
+  upBusy=true; upErr=false;
+  upMsg='収集をリクエスト中…（GitHubで取得→反映まで数分かかります）';
+  selDate=D.base; tab='pred'; sel=null; render();
+  fetch('/api/refresh',{method:'POST',cache:'no-store'})
+    .then(r=>r.json().catch(()=>({status:r.ok?'queued':'error'})))
+    .then(o=>{
+      if(o.status==='already_running'){ upMsg='すでに収集中です。反映までお待ちください…'; }
+      else if(o.status==='queued'){ upMsg='収集を開始しました。反映まで数分お待ちください…'; }
+      else { upBusy=false; upErr=true; upMsg='起動に失敗しました（'+(o.message||o.status||'error')+'）。'; render(); return; }
+      render();
+      pollUpd(upFetched,30);   // 20秒×30=最大10分
+    })
+    .catch(()=>{ upBusy=false; upErr=true; upMsg='起動に失敗しました（通信エラー）。'; render(); });
+}
 // 「更新」ボタン：当日(base)の展示＋結果＋EVを取得して D.races へ反映。
 function updateAll(){
   if(upBusy)return;
+  if(IS_CLOUD){requestRefresh();return;}   // クラウド=Actions起動→ポーリング反映
   // ファイル直開き(file://)では取得不可。更新サーバ版ページへ移動する
   // （サーバ未起動なら接続不可＝ランチャー/常駐サーバで起動が必要）。
   if(location.protocol==='file:'){location.href='http://localhost:8787/today.html#update';return;}
@@ -1304,7 +1336,7 @@ if(location.protocol==='file:'){
   // クラウド配信(静的)では、ページ表示時に update.json を自動反映（ボタン押下不要）。
   // ローカルサーバ等で update.json が無ければ静かに無視（従来どおり手動更新で取得）。
   fetch('update.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
-    const n=applyUpd(o);
+    const n=applyUpd(o); upFetched=o.fetched_at||'';
     upMsg='自動更新 '+(o.fetched_at||'')+' ／ 結果 '+n.nres+'・展示 '+n.nex+(n.nev?'・EV '+n.nev:'')+'レースを反映';
     render();
   }).catch(()=>{});
