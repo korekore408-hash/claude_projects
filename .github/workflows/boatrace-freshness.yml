@@ -1,0 +1,43 @@
+name: boatrace-freshness
+
+# 鮮度監視＝自己修復: 朝の daily が cron 間引き/失敗で「当日版が出ていない」状態を検知し、
+# その時だけ boatrace-daily を再実行する。today.html の "base" が JST 今日と一致するかで判定。
+# 依存なし（check_today_fresh.py は標準ライブラリのみ）＝1回が軽量(約1分)。
+on:
+  schedule:
+    - cron: '30 20 * * *'   # 20:30 UTC = 翌05:30 JST
+    - cron: '30 21 * * *'   # 21:30 UTC = 翌06:30 JST
+    - cron: '30 0 * * *'    # 00:30 UTC = 09:30 JST（daily 04:17 起動の取りこぼし保険）
+  workflow_dispatch:
+
+concurrency:
+  group: boatrace-freshness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write            # stale 検知時に boatrace-daily を dispatch するため
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: check freshness and self-heal
+        working-directory: boatrace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if python check_today_fresh.py; then
+            echo "fresh: 当日版あり。再実行しない。"
+          else
+            echo "stale 検知 → boatrace-daily を再実行する"
+            gh workflow run boatrace-daily.yml -R "${{ github.repository }}"
+          fi
