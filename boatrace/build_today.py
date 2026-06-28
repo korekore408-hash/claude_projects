@@ -615,16 +615,7 @@ def main():
     pred = {(r["race_id"], r["枠番"]): r for r in load(args.pred)}
     hist = {(r["race_id"], r["枠番"]): r for r in load(args.hist)}
 
-    # 予想スコアの2系統: model_map=従来(学習モデル p_win) / api_map=API予想(簡易合成)。
-    # 場別成績・回収率を両系統で同じ全履歴から算出して比較できるようにする。
-    model_map = {}
-    for (rid, w), pr in pred.items():
-        v = to_float(pr.get("p_win"))
-        if v is not None:
-            try:
-                model_map[(rid, int(w))] = v
-            except (ValueError, TypeError):
-                pass
+    # 予想スコア: api_map=API予想(簡易合成・主系統)。荒れ度/割合/穴/点数/除外の基準。
     api_map = build_api_scores(rel)
     # 荒れ度（鉄板/標準/穴）・割合・穴・点数・除外はすべて API本命確率で1回だけ判定し両系統共通化
     # （ユーザー決定 2026-06-27: 割合・帯分けともAPIに統一）。従来モデルは比較用の別系統スコア。
@@ -759,17 +750,13 @@ def main():
 
     payout_all = load_payouts(sorted({r["日付"] for r in rel
                                       if r["日付"] >= args.stats_from}))
-    # 従来モデル / API予想 の2系統で同じ全履歴から場別成績・荒れ度別・直近を算出。
-    vstats = venue_stats(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
+    # API予想（主系統）の全履歴から場別成績・荒れ度別・直近を算出。
     vstats_api = venue_stats(rel, pred, api_map, hist, payout_all, args.stats_from, hon_canon)
-    recent = recent_stats(out, payout, "b")
     recent_api = recent_stats(out, payout, "ab")
-    regime = regime_result(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
     regime_api = regime_result(rel, pred, api_map, hist, payout_all, args.stats_from, hon_canon)
 
     rsp = rival_terciles(pred, args.stats_from)
     payload = {"labels": labels, "base": base, "races": out,
-               "vstats": vstats, "recent": recent, "regime": regime,
                "vstats_api": vstats_api, "recent_api": recent_api,
                "regime_api": regime_api, "rsp": rsp}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
@@ -778,8 +765,8 @@ def main():
         f.write(html)
     print(f"○ 当日予想アプリ: {args.out}")
     print(f"  対象日 {keep}（既定表示={base}）/ レース {len(out)}")
-    print(f"  場別成績: {args.stats_from}〜（{vstats['from']}〜{vstats['to']} "
-          f"/ {vstats['n']}レース）")
+    print(f"  場別成績: {args.stats_from}〜（{vstats_api['from']}〜{vstats_api['to']} "
+          f"/ {vstats_api['n']}レース）")
 
 
 HTML = r"""<!DOCTYPE html>
@@ -876,6 +863,8 @@ HTML = r"""<!DOCTYPE html>
   .rk{font-size:11px;color:#5b6472;min-width:20px}
   .cp{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums;color:#9aa3b2;text-align:right}
   .odds{display:block;font-size:11px;color:#e0a93b;font-weight:600}
+  .stake{margin-left:8px;font-size:13px;font-weight:800;font-variant-numeric:tabular-nums;color:#43c59e;white-space:nowrap}
+  .kbadge.bud{color:#43c59e;background:#10241c;border-color:#2f6f55}
   .legend{font-size:11px;color:#7e8796;margin:18px 0 0;line-height:1.6}
   .tabs{display:flex;gap:6px;margin:6px 0 10px}
   .tb{flex:1;font-size:14px;padding:8px 6px;border-radius:8px;border:0.5px solid #39404d;background:transparent;color:#cdd6e2;cursor:pointer;text-align:center}
@@ -946,8 +935,6 @@ HTML = r"""<!DOCTYPE html>
 const D=__DATA__;
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
 let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
-// 場別成績タブの予想系統トグル: 'model'=従来(学習モデル) / 'api'=API予想(簡易合成)。
-let sstat='api';
 // ライブ更新サーバ(serve_odds.py)がある環境か。file://(→サーバへ誘導)・localhost・LANはtrue。
 // クラウド配信(pages.dev等)はfalse＝/updateが無いので「更新」ボタンは隠す（毎朝の自動更新のみ）。
 const IS_LIVE=location.protocol==='file:'||/^(localhost$|127\.|0\.0\.0\.0$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
@@ -987,7 +974,22 @@ function honAnaS(s){
   return {hon,ana,lvl:lvl[0],lvlcls:lvl[1],hmLane:idx[0]+1,anaLane:idx[3]+1};
 }
 function honAna(r){return honAnaS(r.ab);}            // 主系統＝API（割合・荒れ度・穴の基準）
-function honAnaRef(r){return honAnaS(r.b.map(x=>x[1]));}  // 参考＝従来モデル
+// 予算budget円を買い目に確率比例で配分（¥100単位・各点最低¥100・合計=budget）。割り振りは自由（確率比例）。
+function allocYen(probs,budget){
+  const unit=100,n=probs.length; if(!n)return [];
+  let units=new Array(n).fill(1);                 // 各点 最低1ユニット(¥100)
+  let rest=Math.round(budget/unit)-n;             // 残りユニットを確率比例で上積み
+  if(rest>0){
+    const tot=probs.reduce((a,b)=>a+b,0)||1;
+    const raw=probs.map(p=>p/tot*rest);
+    const add=raw.map(x=>Math.floor(x));
+    let r=rest-add.reduce((a,b)=>a+b,0);
+    const ord=raw.map((x,i)=>[i,x-Math.floor(x)]).sort((a,b)=>b[1]-a[1]);
+    for(let k=0;k<r;k++)add[ord[k%n][0]]++;        // 端数は小数部の大きい順
+    for(let i=0;i<n;i++)units[i]+=add[i];
+  }
+  return units.map(u=>u*unit);
+}
 // 枠 -> 予想順位（1=最上位）。穴型判定に使う。sArr=per-mille配列。
 function laneRankMap(sArr){const o=[0,1,2,3,4,5].slice().sort((a,b)=>sArr[b]-sArr[a]);const m={};o.forEach((i,rk)=>m[i+1]=rk+1);return m;}
 // 買い目の型: 含む枠の最下位順位で 本命型(≤3)/標準型(=4)/穴型(≥5)。標準帯の3タイプ提示に使う。
@@ -1049,7 +1051,7 @@ function listView(){
      +(r.tm?'<span class="rtm">'+r.tm+'</span>':'')+chip(hm+1)
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
     const chance = ha.hon<0.35 && ha.ana>=0.25;            // 本命弱い×穴厚い＝コメントチャンス
-    const shobu = ha.hon>=0.65 && r.ev!=null && r.ev>=1.5;  // 鉄板×EV≥1.5（オッズ取得後に点灯）
+    const shobu = r.ev!=null && r.ev>=1.5;  // EV≥1.5で点灯（荒れ度の帯は問わず・オッズ取得後）
     h+='<span class="ha2"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
         +(chance?'<span class="chance">&#10024;チャンス</span>':'')
@@ -1076,12 +1078,6 @@ function listView(){
     }else{
       h+='<span class="chev">&rsaquo;</span>';
     }
-    // 参考：従来モデル（学習）の本命をサブ行で併記。主系統(API)本命と違えばバッジ表示。
-    {let rhm=0;for(let w=1;w<6;w++)if(r.b[w][1]>r.b[rhm][1])rhm=w;const rha=honAnaRef(r);
-     h+='<div class="apiline"><span class="apilab ref">従来</span>'+chip(rhm+1,'mc')
-       +'<span class="anm">'+r.b[rhm][0]+'</span>'
-       +'<span class="hp">本命<b>'+Math.round(rha.hon*100)+'</b> 穴<b class="a">'+Math.round(rha.ana*100)+'</b></span>'
-       +(rhm!==hm?'<span class="apidiff">API本命と相違</span>':'')+'</div>';}
     h+='</div>';
   });
   return h;
@@ -1175,23 +1171,27 @@ function detailView(r){
   // 2連単 上位（予想確率で点数変動・上限5）
   const honD=Math.max(...s)/1000;const nEx=kEx(honD),nTri=kTri(honD);
   const ex=plTop(s,2,nEx,xset);
+  const exYen=allocYen(ex.map(c=>c[1]),2000);
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
-  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   ex.forEach((c,i)=>{const hit=actEx&&eqArr(c[0],actEx);
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
+     +'<span class="stake">¥'+exYen[i].toLocaleString()+'</span>'
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
   // 3連単 上位（予想確率で点数変動・上限20）。標準帯は本命型/標準型/穴型を明示し穴型を必ず1点含める。
   const rankMap=laneRankMap(s);const stdBand=honD>=0.45&&honD<0.65;
   const triAll=plTop(s,3,200,xset);
   const tri=stdTriBuy(triAll,nTri,honD,rankMap);
+  const triYen=allocYen(tri.map(c=>c[1]),2000);
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
-  h+='<div class="sec">3連単 上位'+nTri+'<span class="kbadge">確率連動</span>'+(stdBand?'<span class="kbadge">本命/標準/穴</span>':'')+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+  h+='<div class="sec">3連単 上位'+nTri+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(stdBand?'<span class="kbadge">本命/標準/穴</span>':'')+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
   tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);const tk=stdBand?comboKind(c[0],rankMap):null;
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
      +(tk?'<span class="ctag '+tk[1]+'">'+tk[0]+'</span>':'')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
+     +'<span class="stake">¥'+triYen[i].toLocaleString()+'</span>'
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(stdBand)h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※標準帯は買い目を <span class="ctag tg-hon">本命型</span>（上位3艇）/<span class="ctag tg-std">標準型</span>（4番手絡み）/<span class="ctag tg-ana">穴型</span>（5-6番手絡み）に分類。穴型を必ず1点含む（点数・回収は変えず＝検証で回収率は不変）。</div>';
   if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
@@ -1201,53 +1201,8 @@ function detailView(r){
     +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝API予想確率の逆数）。</div>';
   h+='<div class="legend">※ 主系統＝API予想（割合・荒れ度・買い目の基準）。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連単≦5・3連単≦20）＝本命確率'+Math.round(honD*100)+'%で2連単'+nEx+'点/3連単'+nTri+'点。'
+    +'<b>金額は2連単・3連単それぞれ¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
     +'実オッズはモデル外なので各自で確認し「必要◯倍」と比較してください。</div>';
-  h+=refBlock(r);   // 参考：従来モデル（比較用）を同じ詳細内に併記
-  return h;
-}
-
-// 参考：従来モデル（学習）の詳細ブロック。主系統はAPI（上）。割合・荒れ度・点数・除外はAPI共通。
-function refBlock(r){
-  const s=r.b.map(x=>x[1]); if(!s||!s.length)return '';
-  const mx=Math.max(...s);const done=hasResult(r);
-  const ord=done?finishOrder(r):null;
-  const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
-  const ha=honAnaS(s);                       // 従来モデルの本命/穴（参考表示）
-  const haC=honAnaS(r.ab);                    // 荒れ度ラベル＝API本命確率（レース共通）
-  const honC=Math.max(...r.ab)/1000;          // 点数・除外もAPI本命確率で共通判定
-  let h='<div class="predhdr ref">従来モデル（参考）<span class="psub">学習モデル・比較用／割合・荒れ度の基準はAPI</span></div>';
-  h+='<div class="sec">本命確率 / 穴確率（従来モデル）</div>';
-  h+='<div class="ha"><div class="hacell"><div class="hak">本命確率</div><div class="hav hon">'
-    +Math.round(ha.hon*100)+'%</div><div class="hsub">'+chip(ha.hmLane,'mc')+' '+r.b[ha.hmLane-1][0]+'</div></div>'
-    +'<div class="hacell"><div class="hak">穴確率（4-6番手）</div><div class="hav ana">'
-    +Math.round(ha.ana*100)+'%</div><div class="hsub"><span class="lvl '+haC.lvlcls+'">'+haC.lvl+'</span><span style="font-size:10px;color:#7e8796"> 荒れ度=API共通</span></div></div></div>';
-  h+='<div class="sec">1着確率（従来モデル）</div>';
-  r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];
-    h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
-     +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
-     +'<div class="barw"><div class="bar" style="width:'+Math.max(b[1]/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
-     +'<span class="bp">'+(b[1]/10).toFixed(1)+'%</span></div>';});
-  const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
-  const nEx=kEx(honC),nTri=kTri(honC);
-  const ex=plTop(s,2,nEx,xset);
-  let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
-  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">従来</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
-  ex.forEach((c,i)=>{const hit=actEx&&eqArr(c[0],actEx);
-    h+='<div class="crow'+(hit?' hit':'')+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')
-     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
-     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
-  if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
-  const tri=plTop(s,3,nTri,xset);
-  let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
-  h+='<div class="sec">3連単 上位'+nTri+'<span class="kbadge">従来</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
-  tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);
-    h+='<div class="crow'+(hit?' hit':'')+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
-     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
-     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
-  if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
-  h+='<div class="legend">※ 従来モデル＝出走表＋選手履歴で学習した確率（比較用の参考）。'
-    +'割合・穴確率・荒れ度（鉄板/標準/穴）・買目点数・除外はすべて主系統のAPI本命確率で共通判定（本命確率'+Math.round(honC*100)+'%→2連単'+nEx+'点/3連単'+nTri+'点）。'
-    +'「場別成績」タブで両系統の的中率・回収率を同条件で比較できる。</div>';
   return h;
 }
 
@@ -1303,20 +1258,14 @@ function sortbar(tbl,st){
   return '<div class="sortbar">並び替え:'+mk('e','2連単')+mk('t','3連単')+'</div>';
 }
 function statsView(){
-  // 場別成績は Python 側で全期間（2026年〜）集計済み。系統トグル(従来/API)で切替表示。
-  const isApi=sstat==='api';
-  const V=isApi?D.vstats_api:D.vstats;
-  const RC=isApi?D.recent_api:D.recent;
-  const RG=isApi?D.regime_api:D.regime;
+  // 場別成績は Python 側で全期間（2026年〜）集計済み（API予想基準）。
+  const V=D.vstats_api;
+  const RC=D.recent_api;
+  const RG=D.regime_api;
   let h=nav();
-  h+='<div class="tabs" style="margin:2px 0 8px">'
-    +'<button class="tb sst'+(isApi?' on':'')+'" data-s="api">API予想（主）</button>'
-    +'<button class="tb sst'+(!isApi?' on':'')+'" data-s="model">従来モデル（参考）</button></div>';
-  h+='<div class="meta" style="margin-top:0">'
-    +(isApi?'<b style="color:#7fb2ff">API予想</b>（勝率＋枠＋機力の簡易合成）':'<b style="color:#ffd54a">従来予想</b>（学習モデル）')
-    +'の成績。上のトグルで系統を切り替えて比較できます。'
-    +'<br><span style="font-size:11px;color:#7e8796">※荒れ度（鉄板/標準/穴）・買目点数・除外は両系統とも主系統のAPI本命確率で判定した共通仕様。'
-    +'系統差は「どの買い目を上位に置くか」だけ＝同条件での的中率・回収率比較。</span></div>';
+  h+='<div class="meta" style="margin-top:6px">'
+    +'<b style="color:#7fb2ff">API予想</b>（勝率＋枠＋機力の簡易合成）の成績。'
+    +'<br><span style="font-size:11px;color:#7e8796">※荒れ度（鉄板/標準/穴）・買目点数・除外は主系統のAPI本命確率で判定。</span></div>';
   if(!V||!V.n){return h+'<div class="meta">結果データがまだありません。</div>';}
   const cell=(v,extra)=>'<td class="num'+(extra?' '+extra:'')+'">'+v+'%</td>';
   const row=(a,all)=>'<tr'+(all?' class="all"':'')+'><td class="k">'+a[0]+'</td>'
@@ -1367,7 +1316,7 @@ function statsView(){
   if(RG&&RG.length&&RG.some(r=>r.n)){
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・標準・穴 別の的中率と回収率（2026年〜）</div>';
     h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本命確率≥65％ ／ <b>標準</b>＝45–65％ ／ <b>穴</b>＝本命確率&lt;45％（波乱含み）。'
-      +'<b>荒れ度・点数・除外はAPI本命確率で判定し両系統共通</b>（従来モデルは比較用の別系統スコア）。'
+      +'<b>荒れ度・点数・除外はAPI本命確率で判定</b>。'
       +'買い目＝確率連動の変動点数（2連単≤5／3連単≤20点・各100円, 荒れ帯の不振1号艇は除外）。</div>';
     h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命1着　'
       +'<span style="color:#43c59e">■</span> 2連単（≤5点）　'
@@ -1521,7 +1470,6 @@ function render(){
   if(tab==='stats'){
     root.innerHTML=statsView();
     document.querySelectorAll('.tb[data-t]').forEach(b=>b.onclick=()=>{tab=b.dataset.t;sel=null;render();});
-    document.querySelectorAll('.tb[data-s]').forEach(b=>b.onclick=()=>{sstat=b.dataset.s;render();});
     document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
     document.querySelectorAll('.sortb').forEach(b=>b.onclick=()=>{
       const s=b.dataset.st==='v'?vsort:rsort, c=b.dataset.col;
