@@ -194,9 +194,11 @@ STD_BUILDERS = {"current": build_topk, "std20": build_std20, "std30": build_std3
                 "std40": build_std40, "axis": build_axis}
 
 
-def backtest(races, system, hon_canon, payout, kpol=pol_current, std_builder=build_topk):
+def backtest(races, system, hon_canon, payout, kpol=pol_current, std_builder=build_topk,
+             min_lw1=None):
     """system='model'|'api'。荒れ度=API本命確率(hon_canon)共通。
     標準帯(gi==1)の3連単のみ std_builder で買い目を構成（他帯・2連単は PL上位K）。
+    min_lw1 を指定すると 1号艇の lane_win_rate が閾値未満のレースを丸ごと除外（買わない）。
     返り値 agg[gi]=[n,win,n2,h2,pts2,pay2,n3,h3,pts3,pay3]。"""
     agg = [[0] * 10 for _ in range(3)]
     for rid, rc in races.items():
@@ -208,6 +210,10 @@ def backtest(races, system, hon_canon, payout, kpol=pol_current, std_builder=bui
         hon = hon_canon.get(rid)
         if hon is None:
             continue
+        if min_lw1 is not None:
+            lw1 = rc["lw"].get(1)
+            if lw1 is None or lw1 < min_lw1:
+                continue          # 弱い1号艇のレースは買わない（レースごと除外）
         fins = [rc["fin"][w] for w in range(1, 7)]
         order = sorted([w for w in range(1, 7)
                         if fins[w - 1] is not None and fins[w - 1] >= 1],
@@ -282,8 +288,11 @@ def main():
     ap.add_argument("--pred", default="predict_win.csv")
     ap.add_argument("--hist", default="features_player_history.csv")
     ap.add_argument("--since", default="2026-01-01")
-    ap.add_argument("--mode", choices=["policy", "stdmix"], default="policy",
-                    help="policy=点数ポリシー比較 / stdmix=標準帯の混合買い目比較")
+    ap.add_argument("--mode", choices=["policy", "stdmix", "lane1"], default="policy",
+                    help="policy=点数ポリシー比較 / stdmix=標準帯の混合買い目比較 / "
+                         "lane1=弱い1号艇のレース除外（1号艇lane_win_rate下限を掃引）")
+    ap.add_argument("--lw1-grid", default="0.0,0.40,0.50,0.55,0.60,0.65,0.70",
+                    help="lane1モードの1号艇lane_win_rate下限グリッド（0.0=除外なし）")
     ap.add_argument("--system", nargs="*", default=["model", "api"],
                     choices=["model", "api"])
     ap.add_argument("--detail", action="store_true", help="帯別の詳細表も表示")
@@ -301,6 +310,29 @@ def main():
         if h is not None:
             nb[0 if h >= 0.65 else (2 if h < 0.45 else 1)] += 1
     print(f"対象レース {len(races)}  / API荒れ度: 鉄板{nb[0]} 標準{nb[1]} 穴{nb[2]}")
+
+    if args.mode == "lane1":
+        grid = [float(x) for x in args.lw1_grid.split(",")]
+        print("\n==== 弱い1号艇のレース除外（点数ポリシー=current・買い目据置）====")
+        print(" 系統 1号艇下限   残R数  残率   本命1着  2連回収 3連回収 総回収  賭け金")
+        for system in args.system:
+            base_roi = None
+            for thr in grid:
+                ml = None if thr <= 0 else thr
+                agg = backtest(races, system, hon_canon, payout,
+                               pol_current, build_topk, min_lw1=ml)
+                s = summarize(agg)
+                if thr <= 0:
+                    base_roi = s["roi"]
+                sname = "従来" if system == "model" else "API "
+                d = f"{s['roi']-base_roi:+.1f}" if base_roi is not None else "  – "
+                lab = "除外なし" if thr <= 0 else f">={thr:.2f} "
+                rr = _pct(s["n"], nb[0] + nb[1] + nb[2])
+                print(f" {sname} {lab:<8s} {s['n']:6d} {rr:5.1f}% {s['win']:5.1f}%   "
+                      f"{s['r2']:6.1f}% {s['r3']:6.1f}% {s['roi']:6.1f}%({d}) ￥{s['stake']:>9,}")
+        print("\n※残R数=1号艇が閾値以上で実際に賭けたレース数。総回収(差)=除外なし比。")
+        print("  回収率が上がっても賭け金(母数)が減るので、利益額は『総回収×賭け金』で見ること。")
+        return
 
     rows = []
     if args.mode == "policy":

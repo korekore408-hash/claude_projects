@@ -1232,9 +1232,16 @@ function detailView(r){
   // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
   const rankMap=laneRankMap(s);const stdBand=honD>=0.45&&honD<0.65;
   if(!triOn(honD)){
-    h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#e0a93b;background:#241c10;border-color:#6f5a2f">穴帯=見送り</span></div>';
+    const refTri=plTop(s,3,200,xset).slice(0,nTri);   // 穴帯：買わないが予想のみ参考表示
+    const refHit=actTri?refTri.some(c=>eqArr(c[0],actTri)):false;
+    h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#e0a93b;background:#241c10;border-color:#6f5a2f">穴帯=見送り</span><span class="kbadge">参考'+refTri.length+'点</span>'+(actTri?(refHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
     h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率'+Math.round(honD*100)+'%）は3連単を買いません。穴の3連単は回収率72.9%で資金を溶かす主犯（backtest 27,660R）。停止すると全体回収率が77.4%→78.2%（+0.8pt）に上がり賭け金も減ります。<b>この帯は2連単のみ勝負。</b></div>';
-    if(actTri){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
+    h+='<div style="font-size:11px;color:#7e8796;margin:4px 0 1px">参考（予想のみ・<b>購入しない</b>）：買うとしたら上位'+refTri.length+'点。¥配分の対象外です。</div>';
+    refTri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);
+      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.72" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
+       +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
+       +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
+    if(actTri&&!refHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
   }else{
   const triAll=plTop(s,3,200,xset);
   const tri=triBuyList(triAll,nTri,honD,rankMap);
