@@ -37,11 +37,16 @@ def load_races(rel_path, pred_path, hist_path, since):
                 model_map[(rid, int(w))] = v
             except (ValueError, TypeError):
                 pass
-    # 荒れ度（鉄板/標準/穴）の基準＝API本命確率（レース共通・両系統で同一）。
-    hon_canon = {}
-    for (rid, w), v in api_map.items():
-        if v is not None and v > hon_canon.get(rid, -1.0):
-            hon_canon[rid] = v
+    # 荒れ度（鉄板/標準/穴）の基準＝本命確率(max p_win)。api / model それぞれで作り
+    #   --hon で選べるようにする（学習モデル主役化＝フル復帰の検証用）。
+    def _hon(mp):
+        h = {}
+        for (rid, w), v in mp.items():
+            if v is not None and v > h.get(rid, -1.0):
+                h[rid] = v
+        return h
+    hon_api = _hon(api_map)
+    hon_model = _hon(model_map)
 
     races = {}
     for r in rel:
@@ -67,7 +72,7 @@ def load_races(rel_path, pred_path, hist_path, since):
         rc["model"][w] = model_map.get((rid, w))
         rc["api"][w] = api_map.get((rid, w))
     payout = B.load_payouts(sorted({r["日付"] for r in rel if r["日付"] >= since}))
-    return races, hon_canon, payout
+    return races, hon_api, hon_model, payout
 
 
 # ---- 点数ポリシー: hon(本命確率0-1) -> (2連単点数, 3連単点数)。0=その帯は買わない ----
@@ -282,10 +287,14 @@ def main():
     ap.add_argument("--system", nargs="*", default=["model", "api"],
                     choices=["model", "api"])
     ap.add_argument("--detail", action="store_true", help="帯別の詳細表も表示")
+    ap.add_argument("--hon", choices=["api", "model"], default="api",
+                    help="荒れ度(鉄板/標準/穴)・点数・除外の基準とする本命確率: "
+                         "api=簡易合成(現状) / model=学習モデル(フル復帰の検証)")
     args = ap.parse_args()
 
-    print(f"データ読込（since={args.since}・荒れ度=API本命確率で共通判定）…")
-    races, hon_canon, payout = load_races(args.rel, args.pred, args.hist, args.since)
+    print(f"データ読込（since={args.since}・荒れ度基準={args.hon}本命確率で共通判定）…")
+    races, hon_api, hon_model, payout = load_races(args.rel, args.pred, args.hist, args.since)
+    hon_canon = hon_model if args.hon == "model" else hon_api
     nb = [0, 0, 0]
     for rid in races:
         h = hon_canon.get(rid)

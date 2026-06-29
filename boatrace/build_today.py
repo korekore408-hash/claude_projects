@@ -623,6 +623,17 @@ def main():
     for (rid, w), v in api_map.items():
         if v is not None and v > hon_canon.get(rid, -1.0):
             hon_canon[rid] = v
+    # 学習モデル(predict_win.csv)の p_win マップ。本命/順位/買い目/1着確率・成績集計の主系統
+    # （2026-06-29: 学習モデルを予想の主役に復帰。本命1着的中 56.7%>API 54.9%。
+    #   荒れ度/点数/除外は hon_canon=API のまま＝backtestで回収率75.8%>フル切替74.3%）。
+    model_map = {}
+    for (rid, w), pr in pred.items():
+        v = to_float(pr.get("p_win"))
+        if v is not None:
+            try:
+                model_map[(rid, int(w))] = v
+            except (ValueError, TypeError):
+                pass
 
     all_dates = sorted({r["日付"] for r in rel})
     base = args.date or all_dates[-1]
@@ -750,10 +761,11 @@ def main():
 
     payout_all = load_payouts(sorted({r["日付"] for r in rel
                                       if r["日付"] >= args.stats_from}))
-    # API予想（主系統）の全履歴から場別成績・荒れ度別・直近を算出。
-    vstats_api = venue_stats(rel, pred, api_map, hist, payout_all, args.stats_from, hon_canon)
-    recent_api = recent_stats(out, payout, "ab")
-    regime_api = regime_result(rel, pred, api_map, hist, payout_all, args.stats_from, hon_canon)
+    # 学習モデル（主系統）の全履歴から場別成績・荒れ度別・直近を算出。
+    # 順位付け＝学習モデル(model_map/"b")、荒れ度・点数・除外の基準＝API本命確率(hon_canon)で共通。
+    vstats_api = venue_stats(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
+    recent_api = recent_stats(out, payout, "b")
+    regime_api = regime_result(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
 
     rsp = rival_terciles(pred, args.stats_from)
     payload = {"labels": labels, "base": base, "races": out,
@@ -997,15 +1009,13 @@ function allocYen(probs,budget){
 function laneRankMap(sArr){const o=[0,1,2,3,4,5].slice().sort((a,b)=>sArr[b]-sArr[a]);const m={};o.forEach((i,rk)=>m[i+1]=rk+1);return m;}
 // 買い目の型: 含む枠の最下位順位で 本命型(≤3)/標準型(=4)/穴型(≥5)。標準帯の3タイプ提示に使う。
 function comboKind(combo,rankMap){const mx=Math.max.apply(null,combo.map(w=>rankMap[w]));return mx>=5?['穴型','tg-ana']:mx>=4?['標準型','tg-std']:['本命型','tg-hon'];}
-// 標準帯の3連単買い目: PL上位K点に最低1点の穴型を必ず含める（無ければ最下位1点と入替＝点数・回収は不変）。
-function stdTriBuy(allCombos,k,hon,rankMap){
-  let tri=allCombos.slice(0,k);
-  if(hon>=0.45&&hon<0.65&&tri.length===k&&!tri.some(c=>comboKind(c[0],rankMap)[0]==='穴型')){
-    const ana=allCombos.find(c=>comboKind(c[0],rankMap)[0]==='穴型'&&!tri.some(t=>eqArr(t[0],c[0])));
-    if(ana)tri=tri.slice(0,k-1).concat([ana]);
-  }
-  return tri;
+// 3連単の購入買い目: 標準帯(0.45-0.65)は穴型(5-6番手絡み)を購入対象から外す（穴型は参考表示のみ・買わない）。
+function triBuyList(allCombos,k,hon,rankMap){
+  if(hon>=0.45&&hon<0.65)return allCombos.filter(c=>comboKind(c[0],rankMap)[0]!=='穴型').slice(0,k);
+  return allCombos.slice(0,k);
 }
+// 標準帯の穴型（購入しない・参考表示用）。確率上位を最大n点。
+function triAnaRef(allCombos,rankMap,n){return allCombos.filter(c=>comboKind(c[0],rankMap)[0]==='穴型').slice(0,n||3);}
 
 // 相手（非本命5艇）の p_win ばらつき＝2・3着の絞りやすさ。s=per-mille p_win 配列。
 // 検証(OOS 7,862R): 本命の強さを固定しても「差あり」レースは2連単/3連単が高い
@@ -1025,7 +1035,7 @@ function rivalDiff(r){
 // 結果（過去日）の1着が、モデルで本命/中位/穴のどれだったか。
 // 本命=モデル1番手が1着 / 中位=2-3番手 / 穴=4-6番手（軽視艇）が1着。
 function winKind(r){
-  const s=r.ab;
+  const s=r.b.map(x=>x[1]);                            // 学習モデル順位で本命/中位/穴を判定
   const win=finishOrder(r)[0];
   const rank=[0,1,2,3,4,5].sort((a,b)=>s[b]-s[a]).indexOf(win-1)+1;   // 1=本命
   if(rank===1)return {lab:'本命',cls:'honhit',rank};
@@ -1048,7 +1058,7 @@ function listView(){
   rs.forEach((r,gi)=>{
     if(cur!=='ALL'&&cur!==r.c)return;
     if(rs.findIndex(x=>x.c===r.c)===gi)h+='<h3>'+r.v+'<span class="vmeta"><span class="grd'+(r.g&&r.g!=='一般'?' hi':'')+'">'+(r.g||'一般')+'</span>'+(r.day?'第'+r.day+'日':'')+'</span></h3>';
-    let hm=0;for(let w=1;w<6;w++)if(r.ab[w]>r.ab[hm])hm=w;   // 主系統＝API本命
+    const ps=r.b.map(x=>x[1]);let hm=0;for(let w=1;w<6;w++)if(ps[w]>ps[hm])hm=w;   // 本命＝学習モデル1番手
     const ha=honAna(r);const done=hasResult(r);
     h+='<div class="row'+(done?' done':'')+'" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'
      +(r.tm?'<span class="rtm">'+r.tm+'</span>':'')+chip(hm+1)
@@ -1060,12 +1070,13 @@ function listView(){
         +(chance?'<span class="chance">&#10024;チャンス</span>':'')
       +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
     if(done){
-      const s=r.ab;const ord=finishOrder(r);                  // 主系統＝API で的中判定
-      const hon=Math.max(...s)/1000;const nEx=kEx(hon),nTri=kTri(hon);
+      const s=r.b.map(x=>x[1]);const ord=finishOrder(r);      // 買い目＝学習モデル
+      const hon=Math.max(...r.ab)/1000;const nEx=kEx(hon),nTri=kTri(hon);   // 点数＝API本命確率
       const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
       const ex=ord.slice(0,2);const tri=ord.slice(0,3);
       const exHit=ex.length>=2&&plTop(s,2,nEx,xset).some(c=>eqArr(c[0],ex));
-      const triHit=triOn(hon)&&tri.length>=3&&plTop(s,3,nTri,xset).some(c=>eqArr(c[0],tri)); // 穴帯は3連単を買わない
+      const triBuy=triBuyList(plTop(s,3,200,xset),nTri,hon,laneRankMap(s)); // 標準帯は穴型を購入対象外
+      const triHit=triOn(hon)&&tri.length>=3&&triBuy.some(c=>eqArr(c[0],tri)); // 穴帯は3連単を買わない
       const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中
       const pay=r.po?r.po[1]:null;const pay2=r.po?r.po[0]:null;
       h+='<span class="res">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
@@ -1088,7 +1099,8 @@ function listView(){
 }
 
 function detailView(r){
-  const s=r.ab;const mx=Math.max(...s);             // 主系統＝API（割合・荒れ度・買い目の基準）
+  const ps=r.b.map(x=>x[1]);const s=ps;const mx=Math.max(...ps);   // 本命/順位/買い目/1着確率＝学習モデル
+  const honBand=Math.max(...r.ab)/1000;                            // 荒れ度/点数/除外の基準＝API本命確率(backtestでAPI据置)
   const done=hasResult(r);const ord=done?finishOrder(r):null;
   const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
   let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
@@ -1110,7 +1122,7 @@ function detailView(r){
   if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
   // 本命確率 / 穴確率
   const ha=honAna(r);
-  h+='<div class="predhdr api">API予想<span class="psub">勝率＋枠＋機力の簡易合成（割合・荒れ度の基準）</span></div>';
+  h+='<div class="predhdr api">荒れ度の基準＝API簡易合成<span class="psub">勝率＋枠＋機力（鉄板/標準/穴・点数・除外の判定に使用）</span></div>';
   h+='<div class="sec">本命確率 / 穴確率</div>';
   h+='<div class="ha"><div class="hacell"><div class="hak">本命確率</div><div class="hav hon">'
     +Math.round(ha.hon*100)+'%</div><div class="hsub">'+chip(ha.hmLane,'mc')+' '+r.b[ha.hmLane-1][0]+'</div></div>'
@@ -1142,8 +1154,8 @@ function detailView(r){
         +evrow('2連単',actEx,r.po[0])+'<br>'+evrow('3連単',actTri,r.po[1])+'</div>';
     }
   }
-  h+='<div class="sec">1着確率（API予想）</div>';
-  r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=r.ab[w];
+  h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
+  r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
     h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
@@ -1173,7 +1185,7 @@ function detailView(r){
          : '相手が横一線で2・3着を絞りにくい。本命が強くても2連単/3連単は伸びにくい帯＝点数を欲張らない。')
     +'<br><span style="font-size:11px;color:#7e8796">※「相手の差」＝非本命5艇の1着確率のばらつき（発走前にモデルから分かる量）。1着の精度は本命確率が決め、相手の差はもっぱら2・3着を絞れるかに効く（検証 OOS 7,862R）。</span></div>';
   // 2連単 上位（予想確率で点数変動・上限5）
-  const honD=Math.max(...s)/1000;const nEx=kEx(honD),nTri=kTri(honD);
+  const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
   const ex=plTop(s,2,nEx,xset);
   const exYen=allocYen(ex.map(c=>c[1]),2000);
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
@@ -1193,27 +1205,36 @@ function detailView(r){
     if(actTri){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
   }else{
   const triAll=plTop(s,3,200,xset);
-  const tri=stdTriBuy(triAll,nTri,honD,rankMap);
+  const tri=triBuyList(triAll,nTri,honD,rankMap);
   const triYen=allocYen(tri.map(c=>c[1]),2000);
+  const anaRef=stdBand?triAnaRef(triAll,rankMap,3):[];   // 穴型＝参考表示（買わない）
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
-  h+='<div class="sec">3連単 上位'+nTri+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(stdBand?'<span class="kbadge">本命/標準/穴</span>':'')+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
-  tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);const tk=stdBand?comboKind(c[0],rankMap):null;
+  h+='<div class="sec">3連単 上位'+tri.length+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+  tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);const tk=(stdBand&&comboKind(c[0],rankMap)[0]==='本命型')?comboKind(c[0],rankMap):null;
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
      +(tk?'<span class="ctag '+tk[1]+'">'+tk[0]+'</span>':'')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
      +'<span class="stake">¥'+triYen[i].toLocaleString()+'</span>'
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
-  if(stdBand)h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※標準帯は買い目を <span class="ctag tg-hon">本命型</span>（上位3艇）/<span class="ctag tg-std">標準型</span>（4番手絡み）/<span class="ctag tg-ana">穴型</span>（5-6番手絡み）に分類。穴型を必ず1点含む（点数・回収は変えず＝検証で回収率は不変）。</div>';
+  if(stdBand&&anaRef.length){
+    h+='<div style="font-size:11px;color:#7e8796;margin:4px 0 1px">参考（穴目・<b>購入しない</b>）：荒れた場合の形。¥配分の対象外です。</div>';
+    anaRef.forEach(c=>{const hit=actTri&&eqArr(c[0],actTri);
+      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.72"><span class="rk">参</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
+       +'<span class="ctag tg-ana">穴目</span>'
+       +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
+       +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
+  }
   if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
   }
   // 実オッズ取得ボタンは一旦非表示（必要オッズ表示のみ残す）
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
-    +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝API予想確率の逆数）。</div>';
-  h+='<div class="legend">※ 主系統＝API予想（割合・荒れ度・買い目の基準）。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
+    +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝AI予想確率の逆数）。</div>';
+  h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率・買い目）。割合・荒れ度・点数・除外の基準＝API簡易合成。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連単≦5・3連単≦20）＝本命確率'+Math.round(honD*100)+'%で2連単'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
     +'<b>金額は'+(triOn(honD)?'2連単・3連単それぞれ':'2連単に')+'¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
     +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
+    +(stdBand?'標準帯の3連単は穴型（5-6番手絡み）を購入対象から外し、参考としてのみ表示します（¥配分は本命寄りの買い目のみ）。':'')
     +'実オッズはモデル外なので各自で確認し「必要◯倍」と比較してください。</div>';
   return h;
 }
@@ -1270,14 +1291,14 @@ function sortbar(tbl,st){
   return '<div class="sortbar">並び替え:'+mk('e','2連単')+mk('t','3連単')+'</div>';
 }
 function statsView(){
-  // 場別成績は Python 側で全期間（2026年〜）集計済み（API予想基準）。
+  // 場別成績は Python 側で全期間（2026年〜）集計済み（学習モデル＝主系統で順位付け）。
   const V=D.vstats_api;
   const RC=D.recent_api;
   const RG=D.regime_api;
   let h=nav();
   h+='<div class="meta" style="margin-top:6px">'
-    +'<b style="color:#7fb2ff">API予想</b>（勝率＋枠＋機力の簡易合成）の成績。'
-    +'<br><span style="font-size:11px;color:#7e8796">※荒れ度（鉄板/標準/穴）・買目点数・除外は主系統のAPI本命確率で判定。</span></div>';
+    +'<b style="color:#7fb2ff">AI予想（学習モデル）</b>の成績。'
+    +'<br><span style="font-size:11px;color:#7e8796">※荒れ度（鉄板/標準/穴）・買目点数・除外はAPI本命確率で判定（順位付けは学習モデル）。</span></div>';
   if(!V||!V.n){return h+'<div class="meta">結果データがまだありません。</div>';}
   const cell=(v,extra)=>'<td class="num'+(extra?' '+extra:'')+'">'+v+'%</td>';
   const row=(a,all)=>'<tr'+(all?' class="all"':'')+'><td class="k">'+a[0]+'</td>'
