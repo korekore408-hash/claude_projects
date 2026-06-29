@@ -941,6 +941,11 @@ HTML = r"""<!DOCTYPE html>
   table.ex td.parts{text-align:left;font-size:10px;color:#9aa3b2;white-space:normal}
   table.ex .extbest{color:#43c59e;font-weight:800}
   table.ex .exin{color:#e0a93b;font-weight:700}
+  .tjp{background:#16212b;border:1px solid #2b3a48;border-radius:8px;padding:9px 11px;margin:6px 0 2px;font-size:13px;line-height:1.7}
+  .tjp .tjhon{font-weight:800;color:#eef3f8}
+  .tjp .tchg{color:#ef7a27;font-weight:700;font-size:12px}
+  .tjp .tsame{color:#8ea0ba;font-weight:600;font-size:12px}
+  .tjp .tjrk{color:#aebacb;font-size:12px;margin-top:4px}
 </style></head><body>
 <div id="app"></div>
 <script>
@@ -960,6 +965,33 @@ let vsort={c:null,d:-1}, rsort={c:null,d:-1};
 const root=document.getElementById('app');
 const mmdd=s=>s.slice(5);
 function chip(w,cls){const a=LC[w];return '<span class="'+(cls||'wk')+'" style="background:'+a[0]+';color:'+a[1]+'">'+w+'</span>';}
+// 展示反映後の予想: 朝の p_win(r.b[i][1]/1000) に展示タイム/展示STを軽くブレンド。
+// backtest(1032R,7日)で本命1着 55.9%→約57%(+0.5〜1.4pt)。係数は控えめ固定(過適合回避)・
+// 大きいβは逆効果を実測。展示が無ければ null（朝予想のまま）。
+function tenjiPred(r){
+  const e=r&&r.ex; if(!e||!e.time)return null;
+  const ts=e.time, st=e.st||[];
+  if(!ts.some(x=>x!=null))return null;
+  function zs(arr){
+    const xs=arr.filter(x=>x!=null&&isFinite(x));
+    if(xs.length<2)return arr.map(()=>0);
+    const m=xs.reduce((a,b)=>a+b,0)/xs.length;
+    const sd=Math.sqrt(xs.reduce((a,b)=>a+(b-m)*(b-m),0)/xs.length)||1;
+    return arr.map(x=>(x!=null&&isFinite(x))?(x-m)/sd:0);
+  }
+  const stEff=st.map(x=>(x!=null&&x<0)?0.30:x);   // 展示ST: F(負)は遅い扱い
+  const zt=zs(ts), zst=zs(stEff), BT=0.2, BS=0.1;
+  let sc=[],mx=-1e9;
+  for(let i=0;i<6;i++){
+    const p=((r.b[i]?r.b[i][1]:0)||1)/1000;
+    sc[i]=Math.log(Math.max(p,1e-9))-BT*zt[i]-BS*zst[i];
+    if(sc[i]>mx)mx=sc[i];
+  }
+  const e2=sc.map(s=>Math.exp(s-mx)), sm=e2.reduce((a,b)=>a+b,0)||1;
+  const prob=e2.map(x=>x/sm);
+  const order=prob.map((p,i)=>[p,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
+  return {prob:prob, order:order, top:order[0]};
+}
 function dayRaces(){return D.races.filter(r=>r.d===selDate);}
 function hasResult(r){return r.b.some(x=>x[2]===1);}  // 1着が決まっていれば結果あり（F/失格混在でも可）
 function finishOrder(r){return r.b.map((b,i)=>[i+1,b[2]]).filter(x=>x[1]).sort((a,b)=>a[1]-b[1]).map(x=>x[0]);}
@@ -1415,9 +1447,19 @@ function exView(r){
       +'<td class="parts">'+(pa&&pa.length?pa.join('・'):'–')+'</td></tr>';
   }
   h+='</tbody></table>';
+  // 展示後の予想（展示タイム/STを朝予想に軽くブレンド）
+  const tp=tenjiPred(r);
+  if(tp){
+    const ps=r.b.map(x=>x[1]); let mh=0; for(let i=1;i<6;i++)if(ps[i]>ps[mh])mh=i;  // 朝の本命index
+    const changed=tp.top!==mh;
+    h+='<div class="tjp"><div class="tjhon">展示後の本命 '+chip(tp.top+1,'mc')+' '+(r.b[tp.top]?r.b[tp.top][0]:'')
+      +' <span style="color:#43c59e">'+Math.round(tp.prob[tp.top]*100)+'%</span>'
+      +(changed?' <span class="tchg">▲ 朝の本命は'+chip(mh+1,'mc')+'</span>':' <span class="tsame">朝と同じ</span>')+'</div>';
+    h+='<div class="tjrk">展示後の順位　'+tp.order.map(i=>chip(i+1,'mc')).join(' ')+'</div></div>';
+  }
   h+='<div class="legend">※ 展示＝発走直前の情報（「更新」時に公式サイトから取得）。'
     +'<b style="color:#43c59e">緑</b>＝展示タイム最速、<b style="color:#e0a93b">橙</b>＝展示でイン(1c)進入。'
-    +'モデルの確率自体は朝の出走表のみで算出（展示は判断材料として表示）。</div>';
+    +'「展示後の本命」＝朝のAI予想に展示タイム・展示STを軽く加味した補正（過去検証で本命的中+0.5〜1.4pt）。荒れ度・買い目・点数は朝予想のまま。</div>';
   return h;
 }
 
