@@ -23,6 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: compute JST day
+        id: day
+        run: echo "d=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -36,13 +40,25 @@ jobs:
         working-directory: boatrace
         run: python daily.py --date "$(date +%Y-%m-%d)"
 
+      # 派生CSV(計~88MB)は git に置かず cache で update ジョブへ受け渡す（リポジトリ肥大回避）。
+      # update(boatrace-update.yml)が同じキーで restore する。同日の再実行ではキー重複で
+      # 「already exists」警告のみ（非致命）。古いキーは7日/LRUで自然消滅。
+      - name: save derived CSV cache (for update job)
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            boatrace/predict_win.csv
+            boatrace/features_race_relative.csv
+            boatrace/features_player_history.csv
+          key: boatrace-derived-${{ steps.day.outputs.d }}
+
       - name: commit & push generated files
         run: |
           git config user.name  "boatrace-bot"
           git config user.email "actions@users.noreply.github.com"
+          # 派生CSV(predict_win/features_*)は .gitignore 済み＝commit対象外（cacheで配布）。
           git add boatrace/today.html boatrace/today.pdf boatrace/viewer.html \
-                  boatrace/predict_win.csv boatrace/features_*.csv boatrace/race_flags.csv \
-                  boatrace/data
+                  boatrace/race_flags.csv boatrace/data
           if git diff --cached --quiet; then
             echo "no changes"; exit 0
           fi

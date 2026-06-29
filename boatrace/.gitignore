@@ -1,3 +1,13 @@
 __pycache__/
 *.pyc
 predict_win_latest.csv
+
+# 派生CSV（dailyが毎回 data/ から全再生成する出力）。gitに置くと毎日~88MB増えて
+# リポジトリが肥大しcheckoutも遅くなるため追跡しない。
+#  - features_*.csv / predict_win.csv は update ジョブ(ci_update→serve_odds)も読むので
+#    daily→update へは GitHub Actions の cache(boatrace-derived-*) 経由で受け渡す。
+#  - predict_win_oos.csv はオフライン分析(analyze_honmei_ana/backtest_ev)専用・CI不要。
+features_player_history.csv
+features_race_relative.csv
+predict_win.csv
+predict_win_oos.csv

@@ -27,6 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: compute JST day
+        id: day
+        run: echo "d=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -36,7 +40,35 @@ jobs:
       - name: install deps
         run: pip install -r boatrace/requirements.txt
 
+      # daily が保存した派生CSV(予測/特徴量)を取り出す。serve_odds がEV算出に読む。
+      # 当日キー優先・無ければ最新の boatrace-derived-* にフォールバック。
+      - name: restore derived CSV cache (from daily job)
+        id: derived
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            boatrace/predict_win.csv
+            boatrace/features_race_relative.csv
+            boatrace/features_player_history.csv
+          key: boatrace-derived-${{ steps.day.outputs.d }}
+          restore-keys: |
+            boatrace-derived-
+
+      # cache miss（その日 daily 未実行/cache失効）なら update.json を触らず終了し
+      # 前回分を温存（壊さない）。次の daily で cache が再生成され自己修復する。
+      - name: guard - skip if derived CSV missing
+        id: guard
+        working-directory: boatrace
+        run: |
+          if [ -f predict_win.csv ] && [ -f features_race_relative.csv ] && [ -f features_player_history.csv ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::derived CSV cache miss — skip update.json (keep previous; next daily self-heals)"
+          fi
+
       - name: collect exhibition / results / EV
+        if: steps.guard.outputs.ok == '1'
         working-directory: boatrace
         run: python ci_update.py
 
