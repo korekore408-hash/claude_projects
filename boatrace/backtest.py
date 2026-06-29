@@ -93,8 +93,16 @@ def pol_tetsu_only(hon):
     return 2, 4
 
 
+def pol_no_ana_tri(hon):
+    """穴帯(本命<0.45)は3連単のみ停止し2連単は残す。
+    穴帯3連単=72.9%(資金を溶かす主犯)を落とし、穴帯2連単=83.4%(下支え)は維持する案。"""
+    k2, k3 = B.k_ex(hon), B.k_tri(hon)
+    return (k2, 0) if hon < 0.45 else (k2, k3)
+
+
 POLICIES = {"current": pol_current, "tight": pol_tight,
-            "no_ana": pol_no_ana, "tetsu_only": pol_tetsu_only}
+            "no_ana": pol_no_ana, "no_ana_tri": pol_no_ana_tri,
+            "tetsu_only": pol_tetsu_only}
 
 
 # ---- PL確率で全組合せを列挙して降順ソート（JS plTop の Python版）----
