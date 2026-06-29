@@ -190,6 +190,9 @@ function plTop(s,kind,k,excl){excl=excl||{};const idx=[0,1,2,3,4,5].filter(i=>s[
 // 予想確率（本命確率hon=0-1）に応じた買目点数。堅い→少点/荒れ→多点。上限 2連単5/3連単20。
 function kEx(hon){return hon>=0.65?2:hon>=0.50?3:hon>=0.40?4:5;}
 function kTri(hon){return hon>=0.65?4:hon>=0.50?7:hon>=0.40?10:hon>=0.30?14:20;}
+// 穴帯(本命<0.45)は3連単を買わない。穴の3連単は回収72.9%(資金を溶かす主犯)、2連単は83.4%で
+// 下支え。穴3連単のみ停止で全体回収率 77.4%→78.2%(+0.8pt)・賭け金▲16%(backtest no_ana_tri)。
+function triOn(hon){return hon>=0.45;}
 // 本命確率/穴確率/荒れ度/穴筆頭。s=per-mille p_win 配列。
 // 本命=モデル1番手(p_win最大)。穴=モデル順位4-6(=軽視された艇)の1着。
 // 検証(29,233R OOS): 本命確率はキャリブ良好、穴率はΣp_win(4-6)とほぼ一致(平均13%)。
@@ -291,7 +294,7 @@ function listView(){
       const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
       const ex=ord.slice(0,2);const tri=ord.slice(0,3);
       const exHit=ex.length>=2&&plTop(s,2,nEx,xset).some(c=>eqArr(c[0],ex));
-      const triHit=tri.length>=3&&plTop(s,3,nTri,xset).some(c=>eqArr(c[0],tri));
+      const triHit=triOn(hon)&&tri.length>=3&&plTop(s,3,nTri,xset).some(c=>eqArr(c[0],tri)); // 穴帯は3連単を買わない
       const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中
       const pay=r.po?r.po[1]:null;const pay2=r.po?r.po[0]:null;
       h+='<span class="res">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
@@ -303,6 +306,7 @@ function listView(){
       h+='<div class="resline"><span class="rll">3連単</span>';
       tri.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
       if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>';
+      if(!triOn(hon))h+='<span style="font-size:11px;color:#7e8796;margin-left:4px">穴帯=見送り</span>';
       h+='<span class="yen'+(triHit?' hit':'')+'">'+(pay!=null?'¥'+pay.toLocaleString():'配当 –')+'</span></div>';
     }else{
       h+='<span class="chev">&rsaquo;</span>';
@@ -410,7 +414,13 @@ function detailView(r){
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
   // 3連単 上位（予想確率で点数変動・上限20）。標準帯は本命型/標準型/穴型を明示し穴型を必ず1点含める。
+  // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
   const rankMap=laneRankMap(s);const stdBand=honD>=0.45&&honD<0.65;
+  if(!triOn(honD)){
+    h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#e0a93b;background:#241c10;border-color:#6f5a2f">穴帯=見送り</span></div>';
+    h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率'+Math.round(honD*100)+'%）は3連単を買いません。穴の3連単は回収率72.9%で資金を溶かす主犯（backtest 27,660R）。停止すると全体回収率が77.4%→78.2%（+0.8pt）に上がり賭け金も減ります。<b>この帯は2連単のみ勝負。</b></div>';
+    if(actTri){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
+  }else{
   const triAll=plTop(s,3,200,xset);
   const tri=stdTriBuy(triAll,nTri,honD,rankMap);
   const triYen=allocYen(tri.map(c=>c[1]),2000);
@@ -424,13 +434,15 @@ function detailView(r){
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(stdBand)h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※標準帯は買い目を <span class="ctag tg-hon">本命型</span>（上位3艇）/<span class="ctag tg-std">標準型</span>（4番手絡み）/<span class="ctag tg-ana">穴型</span>（5-6番手絡み）に分類。穴型を必ず1点含む（点数・回収は変えず＝検証で回収率は不変）。</div>';
   if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
+  }
   // 実オッズ取得ボタンは一旦非表示（必要オッズ表示のみ残す）
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
     +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝API予想確率の逆数）。</div>';
   h+='<div class="legend">※ 主系統＝API予想（割合・荒れ度・買い目の基準）。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
-    +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連単≦5・3連単≦20）＝本命確率'+Math.round(honD*100)+'%で2連単'+nEx+'点/3連単'+nTri+'点。'
-    +'<b>金額は2連単・3連単それぞれ¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
+    +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連単≦5・3連単≦20）＝本命確率'+Math.round(honD*100)+'%で2連単'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
+    +'<b>金額は'+(triOn(honD)?'2連単・3連単それぞれ':'2連単に')+'¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
+    +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
     +'実オッズはモデル外なので各自で確認し「必要◯倍」と比較してください。</div>';
   return h;
 }
