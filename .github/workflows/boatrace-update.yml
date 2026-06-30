@@ -1,14 +1,24 @@
 name: boatrace-update
 
-# 3時間毎更新（09:00〜21:00 JST = 1日5回）：当日の展示・結果・鉄板EVだけを取得して
-# today.html が自動読込する update.json を更新する（予想は朝の daily で確定済み・ここでは触らない）。
-# 結果(的中/配当)が時間とともに反映される。commit&push → Cloudflare 自動再デプロイ。
-# ★Cloudflare Pages ビルド500回/月に収めるため2時間毎→3時間毎に削減（5回/日）。
-# ★加えて today.html の「更新」ボタンが /api/refresh 経由で workflow_dispatch を叩き、オンデマンド収集も可能。
-# GitHub cron は UTC（09:00 JST=00:00 UTC）。
+# 当日の展示・結果・鉄板EVを「窓取得」で自動収集し、today.html が読む update.json を更新する。
+# 予想は朝の daily で確定済み・ここでは触らない（結果/的中/配当が時間とともに反映される）。
+#
+# ★高頻度化（速度A・KV配信）の設計:
+#   - 30分ごと（10:00〜21:30 JST）に `--window` で「発走7分前〜の展示／発走10分後〜の結果」だけを取得。
+#     取得済み・窓外・中止場はスキップ＝1回あたり数レースのみ＝軽量。
+#   - update.json は Cloudflare KV へ即時 PUT（ci_update.py / push_kv）。today.html は /api/update(KV) を
+#     最優先で読むので、git commit せず＝Cloudflare ビルド枠を一切消費せずに即時反映できる。
+#   - 「取得済み」キャッシュ data/before/before_YYYYMMDD.json は git commit せず actions/cache で持ち回す。
+#
+# ★自己安全（Secret 未設定でも壊れない）:
+#   - KV 用 Secret（CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID / CF_API_TOKEN）が未設定なら push_kv は no-op。
+#   - その場合 schedule は commit しない＝高頻度でもビルド枠を溶かさない（更新は KV 設定後に有効化）。
+#   - 手動「更新」ボタン（workflow_dispatch）だけは KV 失敗時に commit フォールバックして従来どおり動く。
+#
+# GitHub cron は UTC（00:00 UTC = 09:00 JST）。
 on:
   schedule:
-    - cron: '0 0-12/3 * * *'   # 00,03,06,09,12 UTC = 09,12,15,18,21 JST（5回）
+    - cron: '*/30 1-12 * * *'   # 01:00〜12:30 UTC = 10:00〜21:30 JST を 30分ごと（race帯のみ）
   workflow_dispatch:
 
 concurrency:
@@ -21,7 +31,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       TZ: Asia/Tokyo
     steps:
@@ -67,31 +77,50 @@ jobs:
             echo "::warning::derived CSV cache miss — skip update.json (keep previous; next daily self-heals)"
           fi
 
-      - name: collect exhibition / results / EV
+      # 「取得済み」キャッシュ（data/before/before_YYYYMMDD.json）を当日内で持ち回す。
+      # これにより窓取得は「前回以降に窓入りした数レース」だけを取得＝軽量・低分課金。
+      # mutable: key は run ごとに一意・restore は当日プレフィックスで直近を取り出す。
+      - name: restore before-cache (intraday)
+        if: steps.guard.outputs.ok == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: boatrace/data/before
+          key: boatrace-before-${{ steps.day.outputs.d }}-${{ github.run_id }}
+          restore-keys: |
+            boatrace-before-${{ steps.day.outputs.d }}-
+
+      - name: collect exhibition / results / EV (window)
         id: collect
         if: steps.guard.outputs.ok == '1'
         working-directory: boatrace
         env:
           # 速度A: 3つ揃えば ci_update.py が update.json を KV へ即時書き込み（リビルド不要）。
-          # 未設定なら何もせず従来どおり commit にフォールバックする（縮退安全）。
+          # 未設定なら push_kv は no-op（kv_ok=0）＝従来 commit にフォールバックする（縮退安全）。
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
-          # 更新ボタン/手動(workflow_dispatch)=窓取得で高速・低負荷(展示=発走7分前〜/結果=10分後〜・
-          #   窓内が空なら2分後に再取得)。3時間毎(schedule)=全取得スイープで取りこぼしを拾う安全網。
+          # schedule(30分毎)=窓取得・再取得なし（次の30分で拾う）。dispatch(更新ボタン)=窓取得＋2分後再取得。
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python ci_update.py --window --retries 2
           else
-            python ci_update.py
+            python ci_update.py --window
           fi
 
+      # 「取得済み」キャッシュを保存（次の30分 run が流用）。
+      - name: save before-cache (intraday)
+        if: steps.guard.outputs.ok == '1' && always()
+        uses: actions/cache/save@v4
+        with:
+          path: boatrace/data/before
+          key: boatrace-before-${{ steps.day.outputs.d }}-${{ github.run_id }}
+
       # commit（=Cloudflareリビルド・ビルド枠消費）の要否:
-      #  ・schedule(3時間毎)は常に commit＝静的 update.json と before-cache を温存。
-      #  ・workflow_dispatch(「更新」ボタン)は KV 書込み成功時は commit を省く＝リビルド0・即時。
-      #    KV 未設定/失敗時のみ commit にフォールバック（従来挙動）。
-      - name: commit & push update.json
-        if: github.event_name == 'schedule' || steps.collect.outputs.kv_ok != '1'
+      #  ・KV 書込み成功時は commit しない＝リビルド0・即時（KV が live ソース）。
+      #  ・schedule で KV 未設定/失敗時は commit しない＝高頻度でもビルド枠を溶かさない（更新は KV 設定後に有効化）。
+      #  ・手動「更新」ボタン(workflow_dispatch)で KV 未設定/失敗時のみ commit フォールバック（従来どおり動く）。
+      - name: commit & push update.json (fallback only)
+        if: steps.collect.outputs.kv_ok != '1' && github.event_name == 'workflow_dispatch'
         run: |
           git config user.name  "boatrace-bot"
           git config user.email "actions@users.noreply.github.com"
