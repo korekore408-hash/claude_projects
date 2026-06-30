@@ -239,6 +239,15 @@ def _pl_rank(s, kind, actual, excl=None):
     return g + 1
 
 
+def _pl_topk(s, kind, k):
+    """PL確率 上位k の買い目（枠tuple のリスト）。返還点数の判定に使う。"""
+    import itertools
+    idx = [i for i in range(6) if s[i] and s[i] > 0]
+    combos = [tuple(i + 1 for i in c) for c in itertools.permutations(idx, kind)]
+    combos.sort(key=lambda c: _pl_prob(s, list(c)), reverse=True)
+    return combos[:k]
+
+
 def venue_stats(rel, pred, score_map, hist, payout, since, hon_map=None):
     """since 以降の結果がある全レースから、場別の的中率＋変動回収率を集計。
     score_map={(race_id,枠int):p_win} で予想系統を差し替え（従来モデル/API予想 共用）。
@@ -549,19 +558,25 @@ def recent_stats(out, payout, pmkey="b"):
         bet2 = min(kx, m * (m - 1))
         bet3 = min(kt, m * (m - 1) * (m - 2))
         po = payout.get(r["id"], (0, 0))
+        # 非完走（フライング等）艇＝着順なし。その艇を含む買い目は返還＝賭け金から除外。
+        fly = {w for w in range(1, 7) if not fins[w - 1]}
         a = ag.setdefault(r["c"], {"v": r["v"], "n2": 0, "h2": 0, "p2": 0, "pts2": 0,
-                                   "n3": 0, "h3": 0, "p3": 0, "pts3": 0})
+                                   "n3": 0, "h3": 0, "p3": 0, "pts3": 0, "nf": 0})
         dmin = r["d"] if dmin is None or r["d"] < dmin else dmin
         dmax = r["d"] if dmax is None or r["d"] > dmax else dmax
+        if fly:
+            a["nf"] += 1
         if len(order) >= 2 and bet2 > 0:
+            ref2 = sum(1 for c in _pl_topk(sv, 2, bet2) if any(w in fly for w in c))
             a["n2"] += 1
-            a["pts2"] += bet2
+            a["pts2"] += bet2 - ref2                          # 返還ぶんを賭け金から除外
             if _pl_rank(sv, 2, tuple(order[:2])) <= bet2:
                 a["h2"] += 1
                 a["p2"] += po[0]
         if len(order) >= 3 and bet3 > 0:
+            ref3 = sum(1 for c in _pl_topk(sv, 3, bet3) if any(w in fly for w in c))
             a["n3"] += 1
-            a["pts3"] += bet3
+            a["pts3"] += bet3 - ref3
             if _pl_rank(sv, 3, tuple(order[:3])) <= bet3:
                 a["h3"] += 1
                 a["p3"] += po[1]
@@ -578,7 +593,8 @@ def recent_stats(out, payout, pmkey="b"):
     T = {k: sum(a[k] for a in ag.values()) for k in
          ["n2", "h2", "p2", "pts2", "n3", "h3", "p3", "pts3"]}
     T["v"] = "全場"
-    return {"from": dmin, "to": dmax, "rows": rows, "all": stat(T)}
+    nf = sum(a.get("nf", 0) for a in ag.values())
+    return {"from": dmin, "to": dmax, "rows": rows, "all": stat(T), "nf": nf}
 
 
 def main():
@@ -772,6 +788,17 @@ HTML = r"""<!DOCTYPE html>
        background:#0f1115;color:#e6e6e6;max-width:560px}
   h1{font-size:18px;margin:0}
   .meta{font-size:12px;color:#9aa3b2;margin:4px 0 8px;line-height:1.5}
+  .sumbar{border:0.5px solid #2c3340;border-radius:10px;padding:8px 10px;margin:6px 0 12px;background:#12151c}
+  .sumttl{font-size:11px;color:#9aa3b2;margin:0 0 6px}
+  .sumt{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  .sumt th{font-size:12px;font-weight:700;color:#cdd6e2;text-align:right;padding:2px 4px}
+  .sumt th small{display:block;font-size:9px;color:#6b7280;font-weight:400}
+  .sumt td{font-size:13px;text-align:right;padding:3px 4px;color:#e6e6e6}
+  .sumt td.rl{text-align:left;color:#9aa3b2;font-size:12px}
+  .sumt td small{font-size:9px;color:#6b7280;margin-left:3px}
+  .sumt tr+tr td{border-top:0.5px solid #20262f}
+  .sumt b.rok{color:#43c59e}.sumt b.ramb{color:#e0a93b}.sumt b.rng{color:#7e8796}
+  .sumf{font-size:10.5px;color:#8a93a3;margin:6px 0 0}
   .dsel{display:flex;gap:6px;margin:0 0 10px}
   .dbtn{flex:1;font-size:14px;padding:8px 6px;border-radius:8px;border:0.5px solid #39404d;
         background:transparent;color:#cdd6e2;cursor:pointer;text-align:center}
@@ -1095,6 +1122,68 @@ function isHit(r){
   const triHit=triOn(hon)&&tri.length>=3&&triBuyList(plTop(s,3,200),nTri,hon,laneRankMap(s)).some(c=>eqArr(c[0],tri));
   return exHit||triHit;
 }
+// 非完走（フライング等）艇＝着順なし。フライングは買い目が返還される＝賭け金は損失でなく戻る。
+function flySet(r){const f={};r.b.forEach((b,i)=>{if(!b[2])f[i+1]=1;});return f;}
+// 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
+// （betScore＝展示反映後・確率連動点数・各¥2,000配分・穴帯3連単は見送り）。
+// 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
+// 当日は update.json 反映後の D.races を使うので、なるべく最新状態を表す。
+function daySummary(date){
+  let nDone=0,nHit=0,inv=0,ret=0,nF=0;
+  D.races.forEach(r=>{
+    if(r.d!==date||!hasResult(r))return;
+    nDone++;
+    const fly=flySet(r);if(Object.keys(fly).length)nF++;
+    const s=betScore(r);const ord=finishOrder(r);
+    const hon=Math.max(...r.ab)/1000;
+    const actEx=ord.slice(0,2),actTri=ord.slice(0,3);
+    let hit=false;
+    const ex=plTop(s,2,kEx(hon));const exYen=allocYen(ex.map(c=>c[1]),2000);
+    ex.forEach((c,i)=>{
+      if(!c[0].some(w=>fly[w]))inv+=exYen[i];                 // 返還ぶんは投資から除外
+      if(actEx.length>=2&&eqArr(c[0],actEx)){ret+=r.po?Math.round(r.po[0]*exYen[i]/100):0;hit=true;}
+    });
+    if(triOn(hon)){
+      const tri=triBuyList(plTop(s,3,200),kTri(hon),hon,laneRankMap(s));
+      const triYen=allocYen(tri.map(c=>c[1]),2000);
+      tri.forEach((c,i)=>{
+        if(!c[0].some(w=>fly[w]))inv+=triYen[i];
+        if(actTri.length>=3&&eqArr(c[0],actTri)){ret+=r.po?Math.round(r.po[1]*triYen[i]/100):0;hit=true;}
+      });
+    }
+    if(hit)nHit++;
+  });
+  return {nDone,nHit,inv,ret,nF};
+}
+// 最上部サマリー: 当日/前日/前々日 の 的中率・投資・回収・回収率 を横並び（当日は最新反映）。
+function summaryBar(){
+  const cols=D.labels.map(l=>({lab:l[0],d:l[1],s:daySummary(l[1])}));
+  if(!cols.some(c=>c.s.nDone))return '';     // まだ結果が1つも無ければ出さない
+  const pct=(a,b)=>b?Math.round(a/b*100):0;
+  const yen=v=>'¥'+Math.round(v).toLocaleString();
+  const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
+  let h='<div class="sumbar"><div class="sumttl">的中率・回収率'
+    +((IS_LIVE||IS_CLOUD)?'（当日は最新反映）':'')
+    +'　買い目を各¥2,000配分・フライングは返還</div>';
+  h+='<table class="sumt"><thead><tr><th></th>';
+  cols.forEach(c=>h+='<th>'+c.lab+'<small>'+mmdd(c.d)+'</small></th>');
+  h+='</tr></thead><tbody>';
+  const cellY=(c,v)=>'<td>'+(c.s.nDone?yen(v):'–')+'</td>';
+  h+='<tr><td class="rl">的中率</td>';
+  cols.forEach(c=>h+='<td>'+(c.s.nDone?pct(c.s.nHit,c.s.nDone)+'%<small>'+c.s.nHit+'/'+c.s.nDone+'</small>':'–')+'</td>');
+  h+='</tr><tr><td class="rl">投資</td>';
+  cols.forEach(c=>h+=cellY(c,c.s.inv));
+  h+='</tr><tr><td class="rl">回収</td>';
+  cols.forEach(c=>h+=cellY(c,c.s.ret));
+  h+='</tr><tr><td class="rl">回収率</td>';
+  cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
+  h+='</tr></tbody></table>';
+  const fcols=cols.filter(c=>c.s.nF);
+  if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
+    +'（非完走艇を含む買い目は投資から除外）</div>';
+  h+='</div>';
+  return h;
+}
 // リアル＝全会場を締切時刻順に1列表示。現在時刻の直近レースをハイライトし自動スクロール。
 function realList(rs){
   const tmv=s=>{if(!s)return 1e9;const p=s.split(':');return (+p[0])*60+(+p[1]);};
@@ -1122,8 +1211,11 @@ function realList(rs){
       +'<span class="rno">'+r.no+'R</span>'+chip(hm+1)
       +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
     if(done){
-      const hit=isHit(r);
-      h+='<span class="rrt">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
+      const hit=isHit(r);const shobu=r.ev!=null&&r.ev>=1.5;
+      const lvlTag=ha.lvlcls!=='std'?'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>':'';  // 鉄板/波乱含みは残す・標準は出さない
+      h+='<span class="rrt">'+lvlTag
+        +(shobu?'<span class="prize">&#127919;勝負</span>':'')
+        +(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
     }else{
       const shobu=r.ev!=null&&r.ev>=1.5;
       h+='<span class="rrt"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
@@ -1138,7 +1230,7 @@ function realList(rs){
 function listView(){
   const rs=dayRaces();
   const lab=D.labels.find(l=>l[1]===selDate);
-  let h='<div class="dsel">';
+  let h=summaryBar()+'<div class="dsel">';
   for(const l of D.labels)h+='<button class="dbtn'+(selDate===l[1]?' on':'')+'" data-d="'+l[1]+'">'+l[0]+'<small>'+mmdd(l[1])+'</small></button>';
   h+='</div>';
   h+='<div class="meta">直前情報なしモデル（朝の出走表のみ）・ '+rs.length+'レース ・ タップで詳細'
@@ -1443,7 +1535,9 @@ function statsView(){
     for(const a of rrows)h+=rrow(a,false);
     h+=rrow(RC.all,true);
     h+='</tbody></table></div>';
-    h+='<div class="legend">※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。'
+    h+='<div class="legend">'
+      +(RC.nf?'<b style="color:#e0a93b">フライング返還を反映</b>：非完走艇（F等）を含む買い目はその賭け金を投資から除外して回収率を算出（直近2日でF '+RC.nf+'レース）。':'')
+      +'※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。'
       +'確率帯別バックテスト(2026全体)ではどの帯も回収率100%未満（控除率約25%の壁）＝確率だけで機械的に買うと負ける。'
       +'各レース詳細の「買えてた場合の妙味」で、実配当が必要オッズを超えたか（＝買えてたら+EVか）を確認できる。</div>';
   }
