@@ -790,6 +790,17 @@ HTML = r"""<!DOCTYPE html>
   .row:active{background:#12161d}
   .rno{font-size:13px;color:#9aa3b2;min-width:30px;font-weight:600}
   .rtm{font-size:11px;color:#6b7280;font-variant-numeric:tabular-nums;min-width:34px}
+  .vbtn.rt.on{background:#2b2f1c;color:#f2d98a;border-color:#5a6472}
+  .livedot{width:7px;height:7px;border-radius:50%;background:#43c59e;display:inline-block;margin-right:4px;vertical-align:-1px}
+  .rrow .rtm2{font-size:13px;color:#cdd6e2;font-variant-numeric:tabular-nums;min-width:38px;font-weight:600}
+  .vpill{font-size:11px;padding:1px 7px;border-radius:5px;border:0.5px solid;white-space:nowrap}
+  .rrow.past{opacity:.5}
+  .rrow.nowrow{background:rgba(224,169,59,.07);border-left:3px solid #e0a93b;border-radius:0}
+  .rrt{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .nowline{display:flex;align-items:center;gap:8px;padding:7px 2px}
+  .nowline .l{flex:1;height:0;border-top:1.5px dashed #e0a93b}
+  .nowline b{font-size:11px;color:#e0a93b;font-weight:600;white-space:nowrap}
+  .soon{font-size:10px;color:#1a1d12;background:#e0a93b;padding:1px 6px;border-radius:4px;font-weight:700}
   .dhtm{font-size:13px;color:#9aa3b2;font-weight:600}
   .apiline{flex-basis:100%;display:flex;align-items:center;gap:6px;padding-left:38px;font-size:12px;color:#9aa3b2}
   .apilab{font-size:10px;font-weight:700;color:#7fb2ff;background:#14233a;border:0.5px solid #2b4a6f;border-radius:6px;padding:1px 6px}
@@ -1055,6 +1066,68 @@ function winKind(r){
   return {lab:'中位',cls:'midhit',rank};
 }
 
+// 会場コード→色（[文字色, 背景, 枠]）。リアル（時刻順）で会場を見分けるための固定色。
+const VC=[['#7fb2ff','rgba(47,127,214,.16)','rgba(47,127,214,.45)'],
+  ['#5dcaa5','rgba(29,158,117,.16)','rgba(29,158,117,.45)'],
+  ['#e0c07a','rgba(224,169,59,.15)','rgba(224,169,59,.45)'],
+  ['#aaa2f0','rgba(127,119,221,.2)','rgba(127,119,221,.5)'],
+  ['#ed93b1','rgba(212,83,126,.16)','rgba(212,83,126,.45)'],
+  ['#f0997b','rgba(216,90,48,.16)','rgba(216,90,48,.45)'],
+  ['#97c459','rgba(99,153,34,.18)','rgba(99,153,34,.5)'],
+  ['#5dc7e0','rgba(93,199,224,.15)','rgba(93,199,224,.45)'],
+  ['#f09595','rgba(226,75,74,.15)','rgba(226,75,74,.45)'],
+  ['#c7c3b6','rgba(180,178,169,.14)','rgba(180,178,169,.4)']];
+function venueColor(c){return VC[(parseInt(c,10)||0)%VC.length];}
+// 結果ありレースが「的中」か（2連単≤kEx か 3連単買い目に決着が入った）。一覧の的中表示と共通基準。
+function isHit(r){
+  if(!hasResult(r))return null;
+  const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
+  const hon=Math.max(...r.ab)/1000;const nEx=kEx(hon),nTri=kTri(hon);
+  const ex=ord.slice(0,2),tri=ord.slice(0,3);
+  const exHit=ex.length>=2&&plTop(s,2,nEx).some(c=>eqArr(c[0],ex));
+  const triHit=triOn(hon)&&tri.length>=3&&triBuyList(plTop(s,3,200),nTri,hon,laneRankMap(s)).some(c=>eqArr(c[0],tri));
+  return exHit||triHit;
+}
+// リアル＝全会場を締切時刻順に1列表示。現在時刻の直近レースをハイライトし自動スクロール。
+function realList(rs){
+  const tmv=s=>{if(!s)return 1e9;const p=s.split(':');return (+p[0])*60+(+p[1]);};
+  const order=rs.map((r,i)=>i).sort((a,b)=>tmv(rs[a].tm)-tmv(rs[b].tm));
+  const isToday=selDate===D.base;
+  const now=new Date();const nowMin=now.getHours()*60+now.getMinutes();
+  const hhmm=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  let tgt=-1;
+  if(isToday){for(const i of order){if(rs[i].tm&&tmv(rs[i].tm)>=nowMin){tgt=i;break;}}}
+  let h='<div class="meta">締切時刻順・全'+rs.length+'レース・タップで詳細'
+    +(isToday&&tgt>=0?'・<span style="color:#e0a93b">現在 '+hhmm+'</span> の直近へ自動スクロール':'')+'</div>';
+  let nowShown=false;
+  for(const i of order){
+    const r=rs[i];
+    if(isToday&&tgt>=0&&!nowShown&&i===tgt){
+      h+='<div class="nowline"><span class="l"></span><b>&#9660; 現在 '+hhmm+'</b><span class="l"></span></div>';
+      nowShown=true;
+    }
+    const ps=r.b.map(x=>x[1]);let hm=0;for(let w=1;w<6;w++)if(ps[w]>ps[hm])hm=w;
+    const ha=honAna(r);const done=hasResult(r);const vc=venueColor(r.c);
+    const past=isToday&&r.tm&&tmv(r.tm)<nowMin;
+    h+='<div class="row rrow'+(i===tgt?' nowrow':'')+(past?' past':'')+'" data-i="'+i+'"'+(i===tgt?' id="nowtarget"':'')+'>'
+      +'<span class="rtm2">'+(r.tm||'--:--')+'</span>'
+      +'<span class="vpill" style="color:'+vc[0]+';background:'+vc[1]+';border-color:'+vc[2]+'">'+r.v+'</span>'
+      +'<span class="rno">'+r.no+'R</span>'+chip(hm+1)
+      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
+    if(done){
+      const hit=isHit(r);
+      h+='<span class="rrt">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
+    }else{
+      const shobu=r.ev!=null&&r.ev>=1.5;
+      h+='<span class="rrt"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
+        +(i===tgt?'<span class="soon">まもなく</span>':'')
+        +(shobu?'<span class="prize">&#127919;勝負</span>':'')
+        +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
+    }
+    h+='<span class="chev">&rsaquo;</span></div>';
+  }
+  return h;
+}
 function listView(){
   const rs=dayRaces();
   const lab=D.labels.find(l=>l[1]===selDate);
@@ -1064,9 +1137,12 @@ function listView(){
   h+='<div class="meta">直前情報なしモデル（朝の出走表のみ）・ '+rs.length+'レース ・ タップで詳細'
     +(hasResult(rs[0]||{b:[]})?' ・ 結果あり（的中=2連単/3連単の変動上位に決着 / 下段に3連単の決着と配当）':'')+'</div>';
   const venues=[];const seen={};for(const r of rs){if(!seen[r.c]){seen[r.c]=1;venues.push([r.c,r.v]);}}
+  const isBase=selDate===D.base, anytm=rs.some(r=>r.tm);
   h+='<div class="vfilter"><button class="vbtn'+(cur==='ALL'?' on':'')+'" data-v="ALL">全場</button>';
+  if(isBase&&anytm)h+='<button class="vbtn rt'+(cur==='REAL'?' on':'')+'" data-v="REAL"><span class="livedot"></span>リアル</button>';
   for(const a of venues)h+='<button class="vbtn'+(cur===a[0]?' on':'')+'" data-v="'+a[0]+'">'+a[1]+'</button>';
   h+='</div>';
+  if(cur==='REAL')return h+realList(rs);
   rs.forEach((r,gi)=>{
     if(cur!=='ALL'&&cur!==r.c)return;
     if(rs.findIndex(x=>x.c===r.c)===gi)h+='<h3>'+r.v+'<span class="vmeta"><span class="grd'+(r.g&&r.g!=='一般'?' hi':'')+'">'+(r.g||'一般')+'</span>'+(r.day?'第'+r.day+'日':'')+'</span></h3>';
@@ -1546,6 +1622,7 @@ function render(){
     document.querySelectorAll('.dbtn').forEach(b=>b.onclick=()=>{selDate=b.dataset.d;cur='ALL';render();});
     document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{cur=b.dataset.v;render();});
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{sel=+rw.dataset.i;render();});
+    if(cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
   }else{
     document.querySelector('.back').onclick=()=>{sel=null;render();};
   }
