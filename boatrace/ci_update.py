@@ -52,8 +52,18 @@ def push_kv(payload_str):
 
 
 def main():
-    hd = sys.argv[1] if len(sys.argv) > 1 else datetime.date.today().strftime("%Y%m%d")
-    races = serve_odds.collect_update(hd, with_odds=True)
+    import argparse
+    ap = argparse.ArgumentParser(description="当日の展示/結果/EVを取得し update.json を書き出す")
+    ap.add_argument("date", nargs="?", default=None, help="対象日 YYYYMMDD（既定=今日）")
+    ap.add_argument("--window", action="store_true",
+                    help="窓取得: 展示=発走7分前〜/結果=10分後〜だけを取得（中止場/窓外/取得済みはスキップ）。"
+                         "押下時の高速・低負荷な targeted 収集向け。")
+    ap.add_argument("--retries", type=int, default=0,
+                    help="--window時、窓内なのに空だったレースを2分後に再取得する回数（既定0）")
+    args = ap.parse_args()
+    hd = args.date or datetime.date.today().strftime("%Y%m%d")
+    races = serve_odds.collect_update(hd, with_odds=True,
+                                      window=args.window, retries=args.retries)
     out = {
         "date": hd,
         "fetched_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

@@ -77,7 +77,14 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-        run: python ci_update.py
+        run: |
+          # 更新ボタン/手動(workflow_dispatch)=窓取得で高速・低負荷(展示=発走7分前〜/結果=10分後〜・
+          #   窓内が空なら2分後に再取得)。3時間毎(schedule)=全取得スイープで取りこぼしを拾う安全網。
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python ci_update.py --window --retries 2
+          else
+            python ci_update.py
+          fi
 
       # commit（=Cloudflareリビルド・ビルド枠消費）の要否:
       #  ・schedule(3時間毎)は常に commit＝静的 update.json と before-cache を温存。

@@ -197,53 +197,123 @@ def _attach_ev(hd, out, workers=UPDATE_WORKERS):
     print(f"[ev] 鉄板{len(targets)}R オッズ取得 → EV付与{n_ev}R / オッズ{len(rows)}行保存")
 
 
-def collect_update(hd, workers=UPDATE_WORKERS, with_odds=False):
-    """当日の全場・全レースの展示+結果を集める（並列取得）。
-    with_odds=True なら鉄板レースの実オッズも取得し EV を付与する（🎯勝負 点灯用）。
-    その日にこれまで調べた展示・結果を **すべて引き継いで** 返し、ディスクにも保存する
-    （リロード・サーバ再起動・レース終了後でも、朝に取れた展示が消えない）。
-    手順: ①各場R1で開催場を判定（完成済みの場はキャッシュ流用、未完成のみ取得）
-          ②開催場のR2..R12を並列取得（完成＝結果確定＋展示あり はキャッシュ流用）。
-    取得した展示・結果は既存キャッシュにマージして欠損を防ぐ。"""
+def collect_update(hd, workers=UPDATE_WORKERS, with_odds=False,
+                   window=False, now=None, lead=7, lag=10,
+                   retries=0, retry_wait=120):
+    """当日の展示+結果を集める。取得済み（結果確定＋展示）はキャッシュ流用。
+    その日に調べた展示・結果はすべて引き継いで返し、ディスクにも保存する。
+
+    window=False（既定）: 従来の全場スイープ。①各場R1で開催場判定→②開催場R2..R12を並列取得。
+
+    window=True（窓取得・targeted）: 発走時刻（非公式OpenAPI programs）を基準に、
+      ・展示＋天候 ＝ 発走 lead 分前（既定7分）から
+      ・結果＋配当 ＝ 発走 lag 分後（既定10分）から
+      だけ取りに行く。窓外（まだ発走7分前より前）・取得済み・中止場（＝当日番組に無い）はスキップ。
+      retries>0 なら、窓内なのにまだデータが空のレースを retry_wait 秒後（既定120＝2分）に
+      再取得（最大 retries 回）。発走時刻が取れない日は全取得にフォールバック（取りこぼし防止）。
+      ※ 各レースは必要な分（展示のみ／結果のみ）だけ取得し、無駄な HTTP を減らす。"""
+    import time as _time
     cache = _load_cache(hd)
     out = dict(cache)            # その日これまでに調べた情報をすべて引き継ぐ
 
-    def fetch_one(jr):
-        jcd, rno = jr
-        return jcd, rno, fetch_before.fetch_race(jcd, rno, hd)
+    start_times = {}
+    if window:
+        try:
+            import fetch_openapi
+            start_times = fetch_openapi.fetch_start_times(hd)   # {rid:"HH:MM"} 開催レースのみ
+        except Exception as e:
+            print(f"[window] 発走時刻の取得に失敗→全取得にフォールバック: {e}")
 
-    # ① 開催場判定。完成済みR1は流用、それ以外の場だけR1を並列取得。
-    held = set()
-    need_r1 = []
-    for jcd in range(1, 25):
-        rid = f"{jcd:02d}{hd}01"
-        if _complete(out.get(rid)):
-            held.add(jcd)                              # 既に完成→再取得不要・開催場として維持
-        else:
-            need_r1.append((jcd, 1))
-    if need_r1:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for jcd, _rno, d in ex.map(fetch_one, need_r1):
-                rid = f"{jcd:02d}{hd}01"
-                if d["status"] != "none":
-                    held.add(jcd)
-                    out[rid] = _merge(out.get(rid), _rec(d))
-                elif rid in out:                       # 以前開催と判定済みなら維持
-                    held.add(jcd)
+    if window and start_times:
+        def fetch_one(t):
+            jcd, rno, wb, wr = t
+            return jcd, rno, fetch_before.fetch_race(jcd, rno, hd,
+                                                     want_before=wb, want_result=wr)
 
-    # ② 開催場の R2..R12。完成済みは流用、残りを並列取得してマージ。
-    todo = []
-    for jcd in sorted(held):
-        for rno in range(2, 13):
-            rid = f"{jcd:02d}{hd}{rno:02d}"
-            if not _complete(out.get(rid)):
-                todo.append((jcd, rno))
-    if todo:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for jcd, rno, d in ex.map(fetch_one, todo):
+        def scan():
+            """今この瞬間に『窓内かつ未取得』のレース (jcd,rno,want_before,want_result) を列挙。"""
+            cur = now or datetime.datetime.now()
+            todo = []
+            for rid, hm in start_times.items():
+                pr = parse_race_id(rid)
+                if not pr:
+                    continue
+                jcd, rhd, rno = pr
+                if rhd != hd:
+                    continue
+                rec = out.get(rid)
+                if _complete(rec):                       # 結果確定＋展示あり＝もう変わらない
+                    continue
+                try:
+                    h, m = map(int, hm.split(":"))
+                except (ValueError, AttributeError):
+                    continue
+                start = cur.replace(hour=h, minute=m, second=0, microsecond=0)
+                have_ex = bool(rec and rec.get("ex"))
+                have_res = bool(rec and rec.get("result"))
+                need_ex = (not have_ex) and cur >= start - datetime.timedelta(minutes=lead)
+                need_res = (not have_res) and cur >= start + datetime.timedelta(minutes=lag)
+                if need_ex or need_res:
+                    todo.append((jcd, rno, need_ex, need_res))
+            return todo
+
+        for attempt in range(retries + 1):
+            todo = scan()
+            label = datetime.datetime.now().strftime("%H:%M:%S")
+            print(f"[window {label}] 試行{attempt + 1}/{retries + 1} 取得対象 {len(todo)}レース"
+                  f"（開催{len(start_times)}・確定/窓外は流用）")
+            if todo:
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    for jcd, rno, d in ex.map(fetch_one, todo):
+                        rid = f"{jcd:02d}{hd}{rno:02d}"
+                        if d["status"] != "none":
+                            out[rid] = _merge(out.get(rid), _rec(d))
+            # 窓内なのにまだ空のレースが残っていれば retry_wait 秒後に再取得。
+            if attempt < retries and scan():
+                print(f"[window] 未取得が残存→{retry_wait}秒後に再取得")
+                _time.sleep(retry_wait)
+            else:
+                break
+    else:
+        if window:
+            print("[window] 発走時刻が無いため全取得にフォールバック")
+
+        def fetch_one(jr):
+            jcd, rno = jr
+            return jcd, rno, fetch_before.fetch_race(jcd, rno, hd)
+
+        # ① 開催場判定。完成済みR1は流用、それ以外の場だけR1を並列取得。
+        held = set()
+        need_r1 = []
+        for jcd in range(1, 25):
+            rid = f"{jcd:02d}{hd}01"
+            if _complete(out.get(rid)):
+                held.add(jcd)                              # 既に完成→再取得不要・開催場として維持
+            else:
+                need_r1.append((jcd, 1))
+        if need_r1:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for jcd, _rno, d in ex.map(fetch_one, need_r1):
+                    rid = f"{jcd:02d}{hd}01"
+                    if d["status"] != "none":
+                        held.add(jcd)
+                        out[rid] = _merge(out.get(rid), _rec(d))
+                    elif rid in out:                       # 以前開催と判定済みなら維持
+                        held.add(jcd)
+
+        # ② 開催場の R2..R12。完成済みは流用、残りを並列取得してマージ。
+        todo = []
+        for jcd in sorted(held):
+            for rno in range(2, 13):
                 rid = f"{jcd:02d}{hd}{rno:02d}"
-                if d["status"] != "none":
-                    out[rid] = _merge(out.get(rid), _rec(d))
+                if not _complete(out.get(rid)):
+                    todo.append((jcd, rno))
+        if todo:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for jcd, rno, d in ex.map(fetch_one, todo):
+                    rid = f"{jcd:02d}{hd}{rno:02d}"
+                    if d["status"] != "none":
+                        out[rid] = _merge(out.get(rid), _rec(d))
 
     # ③ 鉄板レースの実オッズを取得して EV を付与（🎯勝負 バッジ点灯用）。
     if with_odds:
