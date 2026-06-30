@@ -150,12 +150,58 @@ def crosscheck(date_str):
         print(f"  B-fileのみ: {len(only_bf)}レース {sorted(only_bf)[:5]}")
 
 
+def log_crosscheck(date_str, path="data/openapi_crosscheck_log.csv"):
+    """crosscheck 結果を 1 行 CSV に追記（daily.py から毎日呼び、数日分の一致を自動蓄積）。
+    フォールバック本組込は、このログで n_diff=0 が数日続くのを確認してから有効化する。
+    同じ date の既存行は上書き（再実行で重複しない）。失敗時 None。"""
+    import csv
+    import os
+    progs = fetch_programs(date_str)
+    api = {}
+    for p in progs:
+        api[p["race_id"]] = {b["艇番"]: b["登番"] for b in p["boats"]
+                             if b["艇番"] is not None}
+    n_times = sum(1 for p in progs if p.get("hm"))
+    bf = _bfile_entry(date_str)
+    if not progs:
+        row = {"date": date_str, "n_api": 0, "n_bfile": (len(bf) if bf else 0),
+               "n_common": 0, "n_diff": "", "n_times": 0, "note": "no_openapi"}
+    elif bf is None:
+        row = {"date": date_str, "n_api": len(api), "n_bfile": 0,
+               "n_common": 0, "n_diff": "", "n_times": n_times, "note": "no_bfile"}
+    else:
+        common = set(api) & set(bf)
+        diff = sum(1 for rid in common if api[rid] != bf[rid])
+        ok = diff == 0 and len(api) > 0 and len(common) > 0
+        row = {"date": date_str, "n_api": len(api), "n_bfile": len(bf),
+               "n_common": len(common), "n_diff": diff, "n_times": n_times,
+               "note": "match" if ok else "check"}
+    fn = ["date", "n_api", "n_bfile", "n_common", "n_diff", "n_times", "note"]
+    rows = []
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8", newline="") as f:
+                rows = [r for r in csv.DictReader(f) if r.get("date") != date_str]
+        except OSError:
+            rows = []
+    rows.append(row)
+    rows.sort(key=lambda r: r.get("date", ""))
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fn)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"crosscheck log → {path}: {row}")
+    return row
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="非公式OpenAPI出走表 取得・クロスチェック")
     ap.add_argument("--date", default=datetime.date.today().strftime("%Y%m%d"),
                     help="対象日 YYYYMMDD（既定=今日）")
     ap.add_argument("--times", action="store_true", help="race_id と発走時刻を一覧表示")
+    ap.add_argument("--log", action="store_true",
+                    help="crosscheck 結果を data/openapi_crosscheck_log.csv に追記")
     args = ap.parse_args()
     d = args.date.replace("-", "")
 
@@ -164,5 +210,7 @@ if __name__ == "__main__":
         print(f"date={d}  発走時刻 {len(ts)}レース")
         for rid in sorted(ts):
             print(f"  {rid}: {ts[rid]}")
+    elif args.log:
+        log_crosscheck(d)
     else:
         crosscheck(d)

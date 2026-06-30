@@ -98,6 +98,12 @@ def main():
          "--end", today.isoformat(), "--which", "both"])
     # 2. 変換（未変換のみ）
     run(["convert_all.py"])
+    # 2b. 非公式OpenAPIと公式B-fileの (艇番→登番) クロスチェックを毎日ログ化
+    #     （data/openapi_crosscheck_log.csv に追記）。フォールバック本組込の前提条件＝
+    #     n_diff=0 が数日続くのを自動で蓄積するための観測。OpenAPI today.json は「当日」専用
+    #     なので、対象日がシステム日付と一致するときだけ実行。失敗してもパイプラインは止めない。
+    if today == datetime.date.today():
+        run_optional(["fetch_openapi.py", "--log", "--date", today.strftime("%Y%m%d")])
     # 3. 特徴量（全期間 as-of 再計算）
     run(["features_player_history.py"])
     # 当日の気象は「後で反映する」方針＝中立化（未反映）。場の荒れ度は構造的なので残す。

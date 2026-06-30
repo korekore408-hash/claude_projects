@@ -984,6 +984,13 @@ function tenjiPred(r){
   const order=prob.map((p,i)=>[p,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
   return {prob:prob, order:order, top:order[0]};
 }
+// 買い目スコア: 展示(r.ex)があれば展示反映後の確率(tenjiPred)、無ければ朝の学習モデル p_win(per-mille)。
+// backtest(全K-file展示タイム・27,660R)で買い目を再ランクすると総回収+0.9〜1.3pt(OOSでも正・過適合なし)。
+// ヘッドラインの本命/順位/1着確率は朝予想のまま（直下の exView が展示後本命を別途表示）。
+function betScore(r){
+  const tp=tenjiPred(r);
+  return (tp&&tp.prob)?tp.prob.slice():r.b.map(x=>x[1]);
+}
 function dayRaces(){return D.races.filter(r=>r.d===selDate);}
 function hasResult(r){return r.b.some(x=>x[2]===1);}  // 1着が決まっていれば結果あり（F/失格混在でも可）
 function finishOrder(r){return r.b.map((b,i)=>[i+1,b[2]]).filter(x=>x[1]).sort((a,b)=>a[1]-b[1]).map(x=>x[0]);}
@@ -1081,7 +1088,7 @@ function venueColor(c){return VC[(parseInt(c,10)||0)%VC.length];}
 // 結果ありレースが「的中」か（2連単≤kEx か 3連単買い目に決着が入った）。一覧の的中表示と共通基準。
 function isHit(r){
   if(!hasResult(r))return null;
-  const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
+  const s=betScore(r);const ord=finishOrder(r);   // 買い目＝展示反映後（展示無ければ朝の学習モデル）
   const hon=Math.max(...r.ab)/1000;const nEx=kEx(hon),nTri=kTri(hon);
   const ex=ord.slice(0,2),tri=ord.slice(0,3);
   const exHit=ex.length>=2&&plTop(s,2,nEx).some(c=>eqArr(c[0],ex));
@@ -1158,7 +1165,7 @@ function listView(){
         +(chance?'<span class="chance">&#10024;チャンス</span>':'')
       +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
     if(done){
-      const s=r.b.map(x=>x[1]);const ord=finishOrder(r);      // 買い目＝学習モデル
+      const s=betScore(r);const ord=finishOrder(r);      // 買い目＝展示反映後（展示無ければ朝の学習モデル）
       const hon=Math.max(...r.ab)/1000;const nEx=kEx(hon),nTri=kTri(hon);   // 点数＝API本命確率
       const ex=ord.slice(0,2);const tri=ord.slice(0,3);
       const exHit=ex.length>=2&&plTop(s,2,nEx).some(c=>eqArr(c[0],ex));
@@ -1188,7 +1195,8 @@ function listView(){
 // 回収率バッジ（券種ヘッダー用）。rec=null→非表示, 0→灰, <100→琥珀, ≥100→緑。
 function recBadge(rec){if(rec==null)return '';const c=rec>=100?'rok':(rec>0?'ramb':'rng');return '<span class="recpct '+c+'">回収'+rec+'%</span>';}
 function detailView(r){
-  const ps=r.b.map(x=>x[1]);const s=ps;const mx=Math.max(...ps);   // 本命/順位/買い目/1着確率＝学習モデル
+  const ps=r.b.map(x=>x[1]);const s=ps;const mx=Math.max(...ps);   // 本命/順位/1着確率＝朝の学習モデル（ヘッドライン）
+  const _tp=tenjiPred(r);const sb=_tp?_tp.prob.slice():ps;const exOn=!!_tp;   // 買い目＝展示反映後（exOn=展示あり・backtest+0.9〜1.3pt）
   const honBand=Math.max(...r.ab)/1000;                            // 荒れ度/点数の基準＝API本命確率(backtestでAPI据置)
   const done=hasResult(r);const ord=done?finishOrder(r):null;
   const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
@@ -1269,12 +1277,13 @@ function detailView(r){
     +'<br><span style="font-size:11px;color:#7e8796">※「相手の差」＝非本命5艇の1着確率のばらつき（発走前にモデルから分かる量）。1着の精度は本命確率が決め、相手の差はもっぱら2・3着を絞れるかに効く（検証 OOS 7,862R）。</span></div>';
   // 2連単 上位（予想確率で点数変動・上限5）
   const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
-  const ex=plTop(s,2,nEx);
+  const exTag=exOn?'<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span>':'';
+  const ex=plTop(sb,2,nEx);
   const exYen=allocYen(ex.map(c=>c[1]),2000);
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
   const exHitI=actEx?ex.findIndex(c=>eqArr(c[0],actEx)):-1;
   const exRec=(actEx&&payEx!=null)?(exHitI>=0?Math.round(payEx*exYen[exHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
-  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(exRec)+'</div>';
+  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span>'+exTag+'<span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(exRec)+'</div>';
   ex.forEach((c,i)=>{const hit=actEx&&eqArr(c[0],actEx);
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payEx!=null?'<span class="hitpay">配当¥'+payEx.toLocaleString()+'</span>':''):'')
@@ -1283,9 +1292,9 @@ function detailView(r){
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
   // 3連単 上位（予想確率で点数変動・上限20）。標準帯は本命型/標準型/穴型を明示し穴型を必ず1点含める。
   // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
-  const rankMap=laneRankMap(s);const stdBand=honD>=0.45&&honD<0.65;
+  const rankMap=laneRankMap(sb);const stdBand=honD>=0.45&&honD<0.65;
   if(!triOn(honD)){
-    const refTri=plTop(s,3,200).slice(0,nTri);   // 穴帯：買わないが予想のみ参考表示
+    const refTri=plTop(sb,3,200).slice(0,nTri);   // 穴帯：買わないが予想のみ参考表示
     const refHit=actTri?refTri.some(c=>eqArr(c[0],actTri)):false;
     h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#e0a93b;background:#241c10;border-color:#6f5a2f">穴帯=見送り</span><span class="kbadge">参考'+refTri.length+'点</span>'+(actTri?(refHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
     h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率'+Math.round(honD*100)+'%）は3連単を買いません。穴の3連単は回収率72.9%で資金を溶かす主犯（backtest 27,660R）。停止すると全体回収率が77.4%→78.2%（+0.8pt）に上がり賭け金も減ります。<b>この帯は2連単のみ勝負。</b></div>';
@@ -1296,14 +1305,14 @@ function detailView(r){
        +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
     if(actTri&&!refHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
   }else{
-  const triAll=plTop(s,3,200);
+  const triAll=plTop(sb,3,200);
   const tri=triBuyList(triAll,nTri,honD,rankMap);
   const triYen=allocYen(tri.map(c=>c[1]),2000);
   const anaRef=stdBand?triAnaRef(triAll,rankMap,3):[];   // 穴型＝参考表示（買わない）
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
   const triHitI=actTri?tri.findIndex(c=>eqArr(c[0],actTri)):-1;
   const triRec=(actTri&&payTri!=null)?(triHitI>=0?Math.round(payTri*triYen[triHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
-  h+='<div class="sec">3連単 上位'+tri.length+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(triRec)+'</div>';
+  h+='<div class="sec">3連単 上位'+tri.length+'<span class="kbadge">確率連動</span>'+exTag+'<span class="kbadge bud">計¥2,000</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(triRec)+'</div>';
   tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);const tk=(stdBand&&comboKind(c[0],rankMap)[0]==='本命型')?comboKind(c[0],rankMap):null;
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
      +(tk?'<span class="ctag '+tk[1]+'">'+tk[0]+'</span>':'')
@@ -1520,7 +1529,8 @@ function exView(r){
   }
   h+='<div class="legend">※ 展示＝発走直前の情報（「更新」時に公式サイトから取得）。'
     +'<b style="color:#43c59e">緑</b>＝展示タイム最速、<b style="color:#e0a93b">橙</b>＝展示でイン(1c)進入。'
-    +'「展示後の本命」＝朝のAI予想に展示タイム・展示STを軽く加味した補正（過去検証で本命的中+0.5〜1.4pt）。荒れ度・買い目・点数は朝予想のまま。</div>';
+    +'「展示後の本命」＝朝のAI予想に展示タイム・展示STを軽く加味した補正（過去検証で本命的中+0.5〜1.4pt）。'
+    +'<b style="color:#43c59e">展示があるレースは買い目もこの展示反映後で組みます</b>（backtestで総回収+0.9〜1.3pt）。ヘッドラインの本命/順位/1着確率と荒れ度・点数は朝予想のまま。</div>';
   return h;
 }
 
@@ -1544,18 +1554,20 @@ function applyUpd(o){
   });
   return {nres,nex,nev};
 }
-// 更新データの取得元: まず静的 ./update.json（クラウド配信＝Actionsが40分毎に生成）、
-// 無ければ更新サーバ /update（ローカル serve_odds.py / LAN配信）へフォールバック。
-function fetchUpd(){
+// 更新データの取得元（速度A）: まず /api/update（KV配信＝リビルド不要・即時。404なら未設定）、
+// 次に静的 ./update.json（クラウド静的配信）、最後に更新サーバ /update（ローカル serve_odds.py / LAN）。
+function upJSON(){
   const hd=D.base.replace(/-/g,'');
-  return fetch('update.json',{cache:'no-store'}).then(r=>{if(r.ok)return r.json();throw 0;})
+  return fetch('/api/update',{cache:'no-store'}).then(r=>{if(r.ok)return r.json();throw 0;})
+    .catch(()=>fetch('update.json',{cache:'no-store'}).then(r=>{if(r.ok)return r.json();throw 0;}))
     .catch(()=>fetch('update?date='+hd+'&odds=1').then(r=>{if(!r.ok)throw 0;return r.json();}));
 }
+function fetchUpd(){ return upJSON(); }
 
 // クラウド: update.json を周期取得し、fetched_at が prev から変われば反映。tries回まで20秒間隔。
 function pollUpd(prev,tries){
   if(tries<=0){upBusy=false;upErr=true;upMsg='反映待ちがタイムアウトしました。数分後にページを再読み込みしてください。';render();return;}
-  fetch('update.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
+  upJSON().then(o=>{
     if(o.fetched_at&&o.fetched_at!==prev){
       const n=applyUpd(o); upFetched=o.fetched_at; upBusy=false; upErr=false;
       upMsg='更新 '+o.fetched_at+' ／ 結果 '+n.nres+'・展示 '+n.nex+(n.nev?'・EV '+n.nev:'')+'レースを反映';
@@ -1635,9 +1647,9 @@ if(location.protocol==='file:'){
     .then(()=>{location.replace('http://localhost:8787/today.html');})
     .catch(()=>{});
 }else{
-  // クラウド配信(静的)では、ページ表示時に update.json を自動反映（ボタン押下不要）。
-  // ローカルサーバ等で update.json が無ければ静かに無視（従来どおり手動更新で取得）。
-  fetch('update.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();}).then(o=>{
+  // クラウド配信では、ページ表示時に更新データ(/api/update→update.json)を自動反映（ボタン押下不要）。
+  // どちらも無ければ静かに無視（従来どおり手動更新で取得）。
+  upJSON().then(o=>{
     const n=applyUpd(o); upFetched=o.fetched_at||'';
     upMsg='自動更新 '+(o.fetched_at||'')+' ／ 結果 '+n.nres+'・展示 '+n.nex+(n.nev?'・EV '+n.nev:'')+'レースを反映';
     render();

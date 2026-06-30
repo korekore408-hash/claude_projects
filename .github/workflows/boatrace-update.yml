@@ -68,11 +68,23 @@ jobs:
           fi
 
       - name: collect exhibition / results / EV
+        id: collect
         if: steps.guard.outputs.ok == '1'
         working-directory: boatrace
+        env:
+          # 速度A: 3つ揃えば ci_update.py が update.json を KV へ即時書き込み（リビルド不要）。
+          # 未設定なら何もせず従来どおり commit にフォールバックする（縮退安全）。
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: python ci_update.py
 
+      # commit（=Cloudflareリビルド・ビルド枠消費）の要否:
+      #  ・schedule(3時間毎)は常に commit＝静的 update.json と before-cache を温存。
+      #  ・workflow_dispatch(「更新」ボタン)は KV 書込み成功時は commit を省く＝リビルド0・即時。
+      #    KV 未設定/失敗時のみ commit にフォールバック（従来挙動）。
       - name: commit & push update.json
+        if: github.event_name == 'schedule' || steps.collect.outputs.kv_ok != '1'
         run: |
           git config user.name  "boatrace-bot"
           git config user.email "actions@users.noreply.github.com"
