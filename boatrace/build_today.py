@@ -1073,6 +1073,18 @@ function triBuyList(allCombos,k,hon,rankMap){
 }
 // 標準帯の穴型（購入しない・参考表示用）。確率上位を最大n点。
 function triAnaRef(allCombos,rankMap,n){return allCombos.filter(c=>comboKind(c[0],rankMap)[0]==='穴型').slice(0,n||3);}
+// 穴候補(API4番人気)をアタマに置いた3連単の参考（買わない穴目）。aArr=API per-mille配列。
+// 穴候補→上位3艇(本命/2番手/3番手)の2-3着流し＝6点。
+// backtest(25,017R): 的中3.9%・回収72%(穴帯79%/穴候補API≥12%で80%)・平均配当¥11,000。
+// 軽視艇アタマで当たれば万舟級＝穴の本線。
+function anaCandRef(aArr){
+  const idx=[0,1,2,3,4,5].slice().sort((a,b)=>aArr[b]-aArr[a]);   // API降順index
+  const c=idx[3]+1;                                              // 穴候補=4番人気
+  const T=[idx[0]+1,idx[1]+1,idx[2]+1];                          // 相手=上位3艇(本命/2番手/3番手)
+  const out=[];
+  for(const a of T)for(const b of T)if(a!==b)out.push([c,a,b]);  // 穴候補アタマ 6点
+  return out;
+}
 
 // 相手（非本命5艇）の p_win ばらつき＝2・3着の絞りやすさ。s=per-mille p_win 配列。
 // 検証(OOS 7,862R): 本命の強さを固定しても「差あり」レースは2連単/3連単が高い
@@ -1400,7 +1412,6 @@ function detailView(r){
   const triAll=plTop(sb,3,200);
   const tri=triBuyList(triAll,nTri,honD,rankMap);
   const triYen=allocYen(tri.map(c=>c[1]),2000);
-  const anaRef=stdBand?triAnaRef(triAll,rankMap,3):[];   // 穴型＝参考表示（買わない）
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
   const triHitI=actTri?tri.findIndex(c=>eqArr(c[0],actTri)):-1;
   const triRec=(actTri&&payTri!=null)?(triHitI>=0?Math.round(payTri*triYen[triHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
@@ -1411,15 +1422,18 @@ function detailView(r){
      +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payTri!=null?'<span class="hitpay">配当¥'+payTri.toLocaleString()+'</span>':''):'')
      +'<span class="stake">¥'+triYen[i].toLocaleString()+'</span>'
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
-  if(stdBand&&anaRef.length){
-    h+='<div style="font-size:11px;color:#7e8796;margin:4px 0 1px">参考（穴目・<b>購入しない</b>）：荒れた場合の形。¥配分の対象外です。</div>';
-    anaRef.forEach(c=>{const hit=actTri&&eqArr(c[0],actTri);
-      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.72"><span class="rk">参</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
+  if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
+  }
+  // 穴目（買わない参考）＝穴候補アタマ6点。穴帯＋標準帯（本命<65%）の両方に表示。
+  if(honD<0.65){
+    const candRef=anaCandRef(r.ab);
+    const candHit=actTri?candRef.some(c=>eqArr(c,actTri)):false;
+    h+='<div style="font-size:11px;color:#7e8796;margin:8px 0 1px">参考（穴目・<b>購入しない</b>）：穴候補<b style="color:#e0a93b">'+ha.anaLane+'号</b>をアタマに置いた形（上位3艇へ流し＝6点）。軽視艇アタマで当たれば万舟級。¥配分の対象外です。'+(actTri?(candHit?'<b style="color:#43c59e"> →来た</b>':''):'')+'</div>';
+    candRef.forEach(c=>{const hit=actTri&&eqArr(c,actTri);
+      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.72"><span class="rk" style="font-size:9px;color:#b89a5a">頭</span>'+chip(c[0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[2],'mc')
        +'<span class="ctag tg-ana">穴目</span>'
        +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
-       +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
-  }
-  if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
+       +'</div>';});
   }
   // 実オッズ取得ボタンは一旦非表示（必要オッズ表示のみ残す）
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
@@ -1429,7 +1443,8 @@ function detailView(r){
     +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連単≦5・3連単≦20）＝本命確率'+Math.round(honD*100)+'%で2連単'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
     +'<b>金額は'+(triOn(honD)?'2連単・3連単それぞれ':'2連単に')+'¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
     +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
-    +(stdBand?'標準帯の3連単は穴型（5-6番手絡み）を購入対象から外し、参考としてのみ表示します（¥配分は本命寄りの買い目のみ）。':'')
+    +(stdBand?'標準帯の3連単は穴型（5-6番手絡み）を購入対象から外します。':'')
+    +(honD<0.65?'参考として「穴目＝穴候補（API4番人気）をアタマに置いた6点」を別途表示（買わない・¥配分の対象外。backtest 的中3.9%／回収72%・平均配当¥11,000）。':'')
     +'実オッズはモデル外なので各自で確認し「必要◯倍」と比較してください。</div>';
   return h;
 }
