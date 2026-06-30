@@ -93,6 +93,9 @@
   .cp{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums;color:#9aa3b2;text-align:right}
   .odds{display:block;font-size:11px;color:#e0a93b;font-weight:600}
   .stake{margin-left:8px;font-size:13px;font-weight:800;font-variant-numeric:tabular-nums;color:#43c59e;white-space:nowrap}
+  .hitpay{margin-left:6px;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;color:#43c59e;white-space:nowrap}
+  .recpct{margin-left:8px;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
+  .recpct.rok{color:#43c59e}.recpct.ramb{color:#e0a93b}.recpct.rng{color:#7e8796}
   .kbadge.bud{color:#43c59e;background:#10241c;border-color:#2f6f55}
   .legend{font-size:11px;color:#7e8796;margin:18px 0 0;line-height:1.6}
   .tabs{display:flex;gap:6px;margin:6px 0 10px}
@@ -345,11 +348,14 @@ function listView(){
   return h;
 }
 
+// 回収率バッジ（券種ヘッダー用）。rec=null→非表示, 0→灰, <100→琥珀, ≥100→緑。
+function recBadge(rec){if(rec==null)return '';const c=rec>=100?'rok':(rec>0?'ramb':'rng');return '<span class="recpct '+c+'">回収'+rec+'%</span>';}
 function detailView(r){
   const ps=r.b.map(x=>x[1]);const s=ps;const mx=Math.max(...ps);   // 本命/順位/買い目/1着確率＝学習モデル
   const honBand=Math.max(...r.ab)/1000;                            // 荒れ度/点数の基準＝API本命確率(backtestでAPI据置)
   const done=hasResult(r);const ord=done?finishOrder(r):null;
   const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
+  const payEx=r.po?r.po[0]:null, payTri=r.po?r.po[1]:null;   // 実配当（K-file・100円あたり）。的中行に配当・回収率を表示。
   let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
   let h='<button class="back">&lsaquo; 一覧へ戻る</button>';
   h+='<div class="dh">'+r.v+' '+r.no+'R'+(r.tm?' <span class="dhtm">'+r.tm+' 締切</span>':'')+'</div>';
@@ -429,10 +435,12 @@ function detailView(r){
   const ex=plTop(s,2,nEx);
   const exYen=allocYen(ex.map(c=>c[1]),2000);
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
-  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+  const exHitI=actEx?ex.findIndex(c=>eqArr(c[0],actEx)):-1;
+  const exRec=(actEx&&payEx!=null)?(exHitI>=0?Math.round(payEx*exYen[exHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
+  h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(exRec)+'</div>';
   ex.forEach((c,i)=>{const hit=actEx&&eqArr(c[0],actEx);
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')
-     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
+     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payEx!=null?'<span class="hitpay">配当¥'+payEx.toLocaleString()+'</span>':''):'')
      +'<span class="stake">¥'+exYen[i].toLocaleString()+'</span>'
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actEx[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actEx[1],'mc')+'<span class="cp ng">実際の結果</span></div>';}
@@ -456,11 +464,13 @@ function detailView(r){
   const triYen=allocYen(tri.map(c=>c[1]),2000);
   const anaRef=stdBand?triAnaRef(triAll,rankMap,3):[];   // 穴型＝参考表示（買わない）
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
-  h+='<div class="sec">3連単 上位'+tri.length+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+  const triHitI=actTri?tri.findIndex(c=>eqArr(c[0],actTri)):-1;
+  const triRec=(actTri&&payTri!=null)?(triHitI>=0?Math.round(payTri*triYen[triHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
+  h+='<div class="sec">3連単 上位'+tri.length+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(triRec)+'</div>';
   tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);const tk=(stdBand&&comboKind(c[0],rankMap)[0]==='本命型')?comboKind(c[0],rankMap):null;
     h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
      +(tk?'<span class="ctag '+tk[1]+'">'+tk[0]+'</span>':'')
-     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>':'')
+     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payTri!=null?'<span class="hitpay">配当¥'+payTri.toLocaleString()+'</span>':''):'')
      +'<span class="stake">¥'+triYen[i].toLocaleString()+'</span>'
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(stdBand&&anaRef.length){
