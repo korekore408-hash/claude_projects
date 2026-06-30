@@ -21,7 +21,7 @@ import html
 import itertools
 import json
 
-from build_today import (load, to_float, k_ex, k_tri, bet_exclude,
+from build_today import (load, to_float, k_ex, k_tri,
                          _pl_prob, _pl_rank, load_payouts, VENUE_CODE)
 
 BUDGET = 100_000
@@ -65,9 +65,8 @@ def build_races(date, pred, meta, hist, payout):
             continue
         hon = max(s)
         hm = max(range(6), key=lambda i: s[i]) + 1
-        cls_by_w = {w: rc["b"][w]["cls"] for w in range(1, 7)}
-        xb = bet_exclude(cls_by_w, rc["b"][1]["lane_win"], hon)
-        excl = {e[0] for e in xb}
+        xb = []           # bet_exclude（不振1号艇除外）は撤去済（2026-06-30）
+        excl = set()
         kx, kt = k_ex(hon), k_tri(hon)
         ex2 = gen_topk(s, 2, kx, excl)
         ex3 = gen_topk(s, 3, kt, excl)

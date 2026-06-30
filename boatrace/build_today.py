@@ -77,18 +77,6 @@ def k_tri(hon):    # 3連単（上限20）
             else 14 if hon >= 0.30 else 20)
 
 
-def bet_exclude(cls_by_w, lane_win1, hon):
-    """買い目から除外する枠 [[枠,理由], ...]（検証済ガイドライン）。
-    荒れ帯(本命確率<0.45)で1号艇が成績不振(lane_win_rate<0.40)なら1号艇を除外
-    / 除外後3艇未満になるなら除外しない。
-    ※B2(class_ord==1)の一律除外は廃止（ユーザー要望 2026-06-24）。cls_by_w は
-      シグネチャ維持のため残置（現在は未使用）。"""
-    xb, excl = [], set()
-    if hon < 0.45 and lane_win1 is not None and lane_win1 < 0.40:
-        xb.append([1, "1号艇不振"]); excl.add(1)
-    return [] if 6 - len(excl) < 3 else xb
-
-
 CLASS_LABEL = {4: "A1", 3: "A2", 2: "B1", 1: "B2"}   # class_ord → 公式級別
 # 各コース(枠)の平均1着率の概算。コース毎の特徴は「この平均をどれだけ上回るか」で測る
 # （2〜6コースは構造的に勝率が低いので、絶対値でなく相対で評価しないと不当に低くなる）。
@@ -254,10 +242,9 @@ def _pl_rank(s, kind, actual, excl=None):
 def venue_stats(rel, pred, score_map, hist, payout, since, hon_map=None):
     """since 以降の結果がある全レースから、場別の的中率＋変動回収率を集計。
     score_map={(race_id,枠int):p_win} で予想系統を差し替え（従来モデル/API予想 共用）。
-    hon_map={race_id:本命確率} を渡すと荒れ度・点数・除外をその確率（＝従来モデル基準）で
+    hon_map={race_id:本命確率} を渡すと荒れ度・点数をその確率（＝従来モデル基準）で
     レース共通に固定し、系統別 score は順位付け（どの買い目か）と本命1着判定にのみ使う。
     各場: 本命1着 / 2連単(本命=top1,top3,変動K,変動回収) / 3連単(本命,top3,変動K,変動回収)。
-    変動K列・回収率は当日の買い目と同じ除外（B2/不振1号艇 bet_exclude）を適用。
     回収率 = Σ配当 /(Σ点数×100)×100（変動点数を各100円で実際に買った前提・実配当payout）。"""
     from collections import defaultdict
     races = {}
@@ -299,22 +286,19 @@ def venue_stats(rel, pred, score_map, hist, payout, since, hon_map=None):
         if len(order) < 3 or fins[order[0] - 1] != 1:
             continue
         hm = max(range(6), key=lambda i: s[i]) + 1
-        # 荒れ度・点数・除外はレース固有（API本命確率 hon_map）で共通化。系統別 score は順位付けのみ。
+        # 荒れ度・点数はレース固有（API本命確率 hon_map）で共通化。系統別 score は順位付けのみ。
         hon = hon_map.get(rid) if hon_map is not None else max(s)
         if hon is None:
             continue
         kx, kt = k_ex(hon), k_tri(hon)
-        excl = {e[0] for e in bet_exclude(rc["cl"], rc["lw"].get(1), hon)}
-        er = _pl_rank(s, 2, tuple(order[:2]))                  # 本命/top3=モデル診断(除外なし)
+        er = _pl_rank(s, 2, tuple(order[:2]))                  # 本命/top3=モデル診断
         tr = _pl_rank(s, 3, tuple(order[:3]))
-        erk = _pl_rank(s, 2, tuple(order[:2]), excl)           # 変動K=実買い目(除外あり)
-        trk = _pl_rank(s, 3, tuple(order[:3]), excl)
         a = agg[rc["c"]]
         name[rc["c"]] = rc["v"]
         dmin = rc["d"] if dmin is None or rc["d"] < dmin else dmin
         dmax = rc["d"] if dmax is None or rc["d"] > dmax else dmax
-        # 変動点数（除外後に実際に買える点数）と実配当で回収率を集計。
-        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0 and w not in excl)
+        # 変動点数（実際に買える点数）と実配当で回収率を集計。
+        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0)
         bet2 = min(kx, m * (m - 1))
         bet3 = min(kt, m * (m - 1) * (m - 2))
         po = payout.get(rid, (0, 0))
@@ -324,11 +308,11 @@ def venue_stats(rel, pred, score_map, hist, payout, since, hon_map=None):
         a[5] += tr <= 1; a[6] += tr <= 3
         if bet2 > 0:
             a[8] += bet2
-            if erk <= bet2:                                   # 2連単 変動K(除外後)
+            if er <= bet2:                                     # 2連単 変動K
                 a[4] += 1; a[9] += po[0]
         if bet3 > 0:
             a[10] += bet3
-            if trk <= bet3:                                   # 3連単 変動K(除外後)
+            if tr <= bet3:                                     # 3連単 変動K
                 a[7] += 1; a[11] += po[1]
     pct = lambda x, n: round(x / n * 100) if n else 0
     ret = lambda pay, pts: round(pay / (pts * 100) * 100) if pts else 0
@@ -451,8 +435,7 @@ def regime_result(rel, pred, score_map, hist, payout, since, hon_map=None):
             continue
         gi = 0 if hon >= 0.65 else (2 if hon < 0.45 else 1)
         kx, kt = k_ex(hon), k_tri(hon)
-        excl = {e[0] for e in bet_exclude(rc["cl"], rc["lw"].get(1), hon)}
-        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0 and w not in excl)
+        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0)
         bet2 = min(kx, m * (m - 1))
         bet3 = min(kt, m * (m - 1) * (m - 2))
         po = payout.get(rid, (0, 0))
@@ -463,13 +446,13 @@ def regime_result(rel, pred, score_map, hist, payout, since, hon_map=None):
         if bet2 > 0:
             a["n2"] += 1
             a["pts2"] += bet2
-            if _pl_rank(s, 2, tuple(order[:2]), excl) <= bet2:
+            if _pl_rank(s, 2, tuple(order[:2])) <= bet2:
                 a["h2"] += 1
                 a["p2"] += po[0]
         if len(order) >= 3 and bet3 > 0:
             a["n3"] += 1
             a["pts3"] += bet3
-            if _pl_rank(s, 3, tuple(order[:3]), excl) <= bet3:
+            if _pl_rank(s, 3, tuple(order[:3])) <= bet3:
                 a["h3"] += 1
                 a["p3"] += po[1]
 
@@ -544,7 +527,7 @@ def cause_comment(pm, fin, kr):
 def recent_stats(out, payout, pmkey="b"):
     """前日・前々日（結果のある日）の場別 2連単/3連単 的中率・回収率。
     pmkey で順位付けスコアの系統を切替（"b"=従来モデル / "ab"=API予想）。
-    荒れ度（点数）・除外はレース共通＝API本命確率(r.ab)・共通除外(r.xb)で固定。
+    荒れ度（点数）はレース共通＝API本命確率(r.ab)で固定。
     前提ベット: 予想確率で点数変動（2連単=上位 k_ex≦5 / 3連単=上位 k_tri≦20, 各100円）。
     回収率 = Σ配当 / (Σ点数 × 100)。"""
     ag = {}
@@ -559,11 +542,10 @@ def recent_stats(out, payout, pmkey="b"):
                        key=lambda w: fins[w - 1])
         if fins[order[0] - 1] != 1:
             continue
-        # 荒れ度（点数）・除外はレース共通＝API本命確率・共通除外で固定（系統別は sv の順位のみ）。
+        # 荒れ度（点数）はレース共通＝API本命確率で固定（系統別は sv の順位のみ）。
         hon = max(r["ab"]) / 1000.0
         kx, kt = k_ex(hon), k_tri(hon)
-        excl = {e[0] for e in r.get("xb", [])}
-        m = sum(1 for w in range(1, 7) if sv[w - 1] > 0 and w not in excl)
+        m = sum(1 for w in range(1, 7) if sv[w - 1] > 0)
         bet2 = min(kx, m * (m - 1))
         bet3 = min(kt, m * (m - 1) * (m - 2))
         po = payout.get(r["id"], (0, 0))
@@ -574,13 +556,13 @@ def recent_stats(out, payout, pmkey="b"):
         if len(order) >= 2 and bet2 > 0:
             a["n2"] += 1
             a["pts2"] += bet2
-            if _pl_rank(sv, 2, tuple(order[:2]), excl) <= bet2:
+            if _pl_rank(sv, 2, tuple(order[:2])) <= bet2:
                 a["h2"] += 1
                 a["p2"] += po[0]
         if len(order) >= 3 and bet3 > 0:
             a["n3"] += 1
             a["pts3"] += bet3
-            if _pl_rank(sv, 3, tuple(order[:3]), excl) <= bet3:
+            if _pl_rank(sv, 3, tuple(order[:3])) <= bet3:
                 a["h3"] += 1
                 a["p3"] += po[1]
 
@@ -615,7 +597,7 @@ def main():
     pred = {(r["race_id"], r["枠番"]): r for r in load(args.pred)}
     hist = {(r["race_id"], r["枠番"]): r for r in load(args.hist)}
 
-    # 予想スコア: api_map=API予想(簡易合成・主系統)。荒れ度/割合/穴/点数/除外の基準。
+    # 予想スコア: api_map=API予想(簡易合成・主系統)。荒れ度/割合/穴/点数の基準。
     api_map = build_api_scores(rel)
     # 荒れ度（鉄板/標準/穴）・割合・穴・点数・除外はすべて API本命確率で1回だけ判定し両系統共通化
     # （ユーザー決定 2026-06-27: 割合・帯分けともAPIに統一）。従来モデルは比較用の別系統スコア。
@@ -697,14 +679,10 @@ def main():
         cause = cause_comment([p / 1000 for p in pm], fin, kr) \
             if any(f == 1 for f in fin) else None
         po = payout.get(rid)                          # (2連単配当, 3連単配当)
-        # API予想（簡易合成）の per-mille 配列。割合・荒れ度・点数・除外はこのAPI確率で共通判定。
+        # API予想（簡易合成）の per-mille 配列。割合・荒れ度・点数はこのAPI確率で共通判定。
         ab = [round((api_map.get((rid, w)) or 0) * 1000) for w in range(1, 7)]
-        api_hon = (max(ab) / 1000) if ab and max(ab) > 0 else 0
-        # 買い目から除外する枠（荒れ帯の不振1号艇）。荒れ度＝API本命確率で判定（レース共通）。
-        xb = bet_exclude({w: rc["feat"][w].get("cl") for w in range(1, 7)},
-                         rc["feat"][1].get("lane_win"), api_hon)
         out.append({"id": rid, "d": rc["d"], "c": rc["c"], "v": rc["v"],
-                    "no": rc["no"], "mz": rc["mz"], "xb": xb,
+                    "no": rc["no"], "mz": rc["mz"],
                     "ab": ab,
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
@@ -762,7 +740,7 @@ def main():
     payout_all = load_payouts(sorted({r["日付"] for r in rel
                                       if r["日付"] >= args.stats_from}))
     # 学習モデル（主系統）の全履歴から場別成績・荒れ度別・直近を算出。
-    # 順位付け＝学習モデル(model_map/"b")、荒れ度・点数・除外の基準＝API本命確率(hon_canon)で共通。
+    # 順位付け＝学習モデル(model_map/"b")、荒れ度・点数の基準＝API本命確率(hon_canon)で共通。
     vstats_api = venue_stats(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
     recent_api = recent_stats(out, payout, "b")
     regime_api = regime_result(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
@@ -996,8 +974,7 @@ function dayRaces(){return D.races.filter(r=>r.d===selDate);}
 function hasResult(r){return r.b.some(x=>x[2]===1);}  // 1着が決まっていれば結果あり（F/失格混在でも可）
 function finishOrder(r){return r.b.map((b,i)=>[i+1,b[2]]).filter(x=>x[1]).sort((a,b)=>a[1]-b[1]).map(x=>x[0]);}
 function eqArr(a,b){return a&&b&&a.length===b.length&&a.every((v,i)=>v===b[i]);}
-// excl={枠:1} を渡すとその枠を含む買い目を除外（確率の分母totは全艇のまま＝必要倍は正しい）。
-function plTop(s,kind,k,excl){excl=excl||{};const idx=[0,1,2,3,4,5].filter(i=>s[i]>0&&!excl[i+1]);const tot=s.reduce((a,b)=>a+b,0);const out=[];
+function plTop(s,kind,k){const idx=[0,1,2,3,4,5].filter(i=>s[i]>0);const tot=s.reduce((a,b)=>a+b,0);const out=[];
   if(kind===2){for(const i of idx)for(const j of idx){if(j===i)continue;out.push([[i+1,j+1],s[i]/tot*s[j]/(tot-s[i])]);}}
   else{for(const i of idx)for(const j of idx){if(j===i)continue;for(const l of idx){if(l===i||l===j)continue;out.push([[i+1,j+1,l+1],s[i]/tot*s[j]/(tot-s[i])*s[l]/(tot-s[i]-s[j])]);}}}
   out.sort((a,b)=>b[1]-a[1]);return out.slice(0,k);}
@@ -1104,10 +1081,9 @@ function listView(){
     if(done){
       const s=r.b.map(x=>x[1]);const ord=finishOrder(r);      // 買い目＝学習モデル
       const hon=Math.max(...r.ab)/1000;const nEx=kEx(hon),nTri=kTri(hon);   // 点数＝API本命確率
-      const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
       const ex=ord.slice(0,2);const tri=ord.slice(0,3);
-      const exHit=ex.length>=2&&plTop(s,2,nEx,xset).some(c=>eqArr(c[0],ex));
-      const triBuy=triBuyList(plTop(s,3,200,xset),nTri,hon,laneRankMap(s)); // 標準帯は穴型を購入対象外
+      const exHit=ex.length>=2&&plTop(s,2,nEx).some(c=>eqArr(c[0],ex));
+      const triBuy=triBuyList(plTop(s,3,200),nTri,hon,laneRankMap(s)); // 標準帯は穴型を購入対象外
       const triHit=triOn(hon)&&tri.length>=3&&triBuy.some(c=>eqArr(c[0],tri)); // 穴帯は3連単を買わない
       const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中
       const pay=r.po?r.po[1]:null;const pay2=r.po?r.po[0]:null;
@@ -1132,7 +1108,7 @@ function listView(){
 
 function detailView(r){
   const ps=r.b.map(x=>x[1]);const s=ps;const mx=Math.max(...ps);   // 本命/順位/買い目/1着確率＝学習モデル
-  const honBand=Math.max(...r.ab)/1000;                            // 荒れ度/点数/除外の基準＝API本命確率(backtestでAPI据置)
+  const honBand=Math.max(...r.ab)/1000;                            // 荒れ度/点数の基準＝API本命確率(backtestでAPI据置)
   const done=hasResult(r);const ord=done?finishOrder(r):null;
   const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
   let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
@@ -1154,7 +1130,7 @@ function detailView(r){
   if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
   // 本命確率 / 穴確率
   const ha=honAna(r);
-  h+='<div class="predhdr api">荒れ度の基準＝API簡易合成<span class="psub">勝率＋枠＋機力（鉄板/標準/穴・点数・除外の判定に使用）</span></div>';
+  h+='<div class="predhdr api">荒れ度の基準＝API簡易合成<span class="psub">勝率＋枠＋機力（鉄板/標準/穴・点数の判定に使用）</span></div>';
   h+='<div class="sec">本命確率 / 穴確率</div>';
   h+='<div class="ha"><div class="hacell"><div class="hak">本命確率</div><div class="hav hon">'
     +Math.round(ha.hon*100)+'%</div><div class="hsub">'+chip(ha.hmLane,'mc')+' '+r.b[ha.hmLane-1][0]+'</div></div>'
@@ -1199,13 +1175,6 @@ function detailView(r){
     +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
     +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
     +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
-  // 買い目除外（荒れ帯の不振1号艇）。確率は全艇ベース＝必要倍は不変。
-  const xset={};(r.xb||[]).forEach(e=>xset[e[0]]=1);
-  if(r.xb&&r.xb.length){
-    h+='<div class="cause" style="border-left-color:#7f8896;color:#aab2bf"><span class="h" style="color:#9aa3b2">買い目から除外</span>'
-      +r.xb.map(e=>chip(e[0],'mc')+' '+r.b[e[0]-1][0]+'（'+(e[1]==='B2'?'B2級':'1号艇 成績不振')+'）').join(' ')
-      +'<br><span style="font-size:11px;color:#7e8796">※検証で「回収率を保ったまま賭け金を絞れる」と確認した枠を2連単/3連単の買い目から除外（確率・本命/穴の表示はそのまま）。</span></div>';
-  }
   // 相手（非本命5艇）の差＝2・3着の絞りやすさ。勝負どころ＝本命が強い×相手に差。
   const rd=rivalDiff(r);
   h+='<div class="rdbox'+(rd.prize?' prizebox':'')+'">'
@@ -1218,7 +1187,7 @@ function detailView(r){
     +'<br><span style="font-size:11px;color:#7e8796">※「相手の差」＝非本命5艇の1着確率のばらつき（発走前にモデルから分かる量）。1着の精度は本命確率が決め、相手の差はもっぱら2・3着を絞れるかに効く（検証 OOS 7,862R）。</span></div>';
   // 2連単 上位（予想確率で点数変動・上限5）
   const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
-  const ex=plTop(s,2,nEx,xset);
+  const ex=plTop(s,2,nEx);
   const exYen=allocYen(ex.map(c=>c[1]),2000);
   let exHit=actEx?ex.some(c=>eqArr(c[0],actEx)):false;
   h+='<div class="sec">2連単 上位'+nEx+'<span class="kbadge">確率連動</span><span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
@@ -1232,7 +1201,7 @@ function detailView(r){
   // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
   const rankMap=laneRankMap(s);const stdBand=honD>=0.45&&honD<0.65;
   if(!triOn(honD)){
-    const refTri=plTop(s,3,200,xset).slice(0,nTri);   // 穴帯：買わないが予想のみ参考表示
+    const refTri=plTop(s,3,200).slice(0,nTri);   // 穴帯：買わないが予想のみ参考表示
     const refHit=actTri?refTri.some(c=>eqArr(c[0],actTri)):false;
     h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#e0a93b;background:#241c10;border-color:#6f5a2f">穴帯=見送り</span><span class="kbadge">参考'+refTri.length+'点</span>'+(actTri?(refHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
     h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率'+Math.round(honD*100)+'%）は3連単を買いません。穴の3連単は回収率72.9%で資金を溶かす主犯（backtest 27,660R）。停止すると全体回収率が77.4%→78.2%（+0.8pt）に上がり賭け金も減ります。<b>この帯は2連単のみ勝負。</b></div>';
@@ -1243,7 +1212,7 @@ function detailView(r){
        +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
     if(actTri&&!refHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
   }else{
-  const triAll=plTop(s,3,200,xset);
+  const triAll=plTop(s,3,200);
   const tri=triBuyList(triAll,nTri,honD,rankMap);
   const triYen=allocYen(tri.map(c=>c[1]),2000);
   const anaRef=stdBand?triAnaRef(triAll,rankMap,3):[];   // 穴型＝参考表示（買わない）
@@ -1269,7 +1238,7 @@ function detailView(r){
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
     +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝AI予想確率の逆数）。</div>';
-  h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率・買い目）。割合・荒れ度・点数・除外の基準＝API簡易合成。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
+  h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率・買い目）。割合・荒れ度・点数の基準＝API簡易合成。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連単≦5・3連単≦20）＝本命確率'+Math.round(honD*100)+'%で2連単'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
     +'<b>金額は'+(triOn(honD)?'2連単・3連単それぞれ':'2連単に')+'¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
     +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
@@ -1337,7 +1306,7 @@ function statsView(){
   let h=nav();
   h+='<div class="meta" style="margin-top:6px">'
     +'<b style="color:#7fb2ff">AI予想（学習モデル）</b>の成績。'
-    +'<br><span style="font-size:11px;color:#7e8796">※荒れ度（鉄板/標準/穴）・買目点数・除外はAPI本命確率で判定（順位付けは学習モデル）。</span></div>';
+    +'<br><span style="font-size:11px;color:#7e8796">※荒れ度（鉄板/標準/穴）・買目点数はAPI本命確率で判定（順位付けは学習モデル）。</span></div>';
   if(!V||!V.n){return h+'<div class="meta">結果データがまだありません。</div>';}
   const cell=(v,extra)=>'<td class="num'+(extra?' '+extra:'')+'">'+v+'%</td>';
   const row=(a,all)=>'<tr'+(all?' class="all"':'')+'><td class="k">'+a[0]+'</td>'
@@ -1359,7 +1328,6 @@ function statsView(){
   h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
     +'「変動」=予想確率に応じた点数（2連単≤5/3連単≤20）以内に実際の決着が含まれた割合（その点数を買えば当たる割合）。'
     +'<b>「変動回収」=その変動点数を各100円で実際に買った場合の回収率（Σ配当÷賭け金）。100%超で利益。</b>'
-    +'※「変動」「変動回収」列は荒れ帯の不振1号艇を除外（本命列はモデル診断＝除外なし）。'
     +'※ 4月までは学習期間を含むため的中率・回収率はやや高めに出る（5月以降が純粋な検証）。'
     +'※ 全期間でも回収率は100%未満が基本（控除率約25%の壁）。</div>';
   // 前日・前々日の場別 的中率＋回収率（系統は上のトグルに連動）
@@ -1370,7 +1338,7 @@ function statsView(){
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
     h+='<div class="meta">実践的中＝予想確率連動の点数を実際に買った場合の的中率（2連単≤5/3連単≤20点, 各100円）。回収率100%超で利益。'
-      +'荒れ帯の不振1号艇を買い目から除外したベース（点数=除外後の実点数）。並び替えは回収率基準。</div>';
+      +'並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
     h+='<div class="swrap"><table class="st"><thead><tr>'
@@ -1388,8 +1356,8 @@ function statsView(){
   if(RG&&RG.length&&RG.some(r=>r.n)){
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・標準・穴 別の的中率と回収率（2026年〜）</div>';
     h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本命確率≥65％ ／ <b>標準</b>＝45–65％ ／ <b>穴</b>＝本命確率&lt;45％（波乱含み）。'
-      +'<b>荒れ度・点数・除外はAPI本命確率で判定</b>。'
-      +'買い目＝確率連動の変動点数（2連単≤5／3連単≤20点・各100円, 荒れ帯の不振1号艇は除外）。</div>';
+      +'<b>荒れ度・点数はAPI本命確率で判定</b>。'
+      +'買い目＝確率連動の変動点数（2連単≤5／3連単≤20点・各100円）。</div>';
     h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命1着　'
       +'<span style="color:#43c59e">■</span> 2連単（≤5点）　'
       +'<span style="color:#e0a93b">■</span> 3連単（≤20点）</div>';

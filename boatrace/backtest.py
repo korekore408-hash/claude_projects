@@ -222,7 +222,7 @@ def backtest(races, system, hon_canon, payout, kpol=pol_current, std_builder=bui
             continue
         gi = 0 if hon >= 0.65 else (2 if hon < 0.45 else 1)
         k2, k3 = kpol(hon)
-        excl = {e[0] for e in B.bet_exclude(rc["cl"], rc["lw"].get(1), hon)}
+        excl = set()   # bet_exclude（不振1号艇除外）は撤去済（2026-06-30, 本番基準で逆効果）
         m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0 and w not in excl)
         bet2 = min(k2, m * (m - 1)) if k2 else 0
         bet3 = min(k3, m * (m - 1) * (m - 2)) if k3 else 0

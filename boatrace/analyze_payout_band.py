@@ -6,7 +6,7 @@ import argparse
 import itertools
 
 from build_today import (load, load_payouts, to_float, k_ex, k_tri,
-                         bet_exclude, _pl_prob, _pl_rank)
+                         _pl_prob, _pl_rank)
 from features_player_history import VENUE_CODE
 import glob
 import re
@@ -78,12 +78,11 @@ def main():
         band = band_of(po[1])           # 3連単配当で帯を決める
         hon = max(s)
         reg = "鉄板" if hon >= 0.65 else ("穴" if hon < 0.45 else "標準")
-        excl = {e[0] for e in bet_exclude(rc["cl"], rc["lw"].get(1), hon)}
         kt = k_tri(hon); kx = k_ex(hon)
-        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0 and w not in excl)
+        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0)
         bet3 = min(kt, m * (m - 1) * (m - 2)); bet2 = min(kx, m * (m - 1))
-        h3 = bet3 > 0 and _pl_rank(s, 3, tuple(order[:3]), excl) <= bet3
-        h2 = bet2 > 0 and _pl_rank(s, 2, tuple(order[:2]), excl) <= bet2
+        h3 = bet3 > 0 and _pl_rank(s, 3, tuple(order[:3])) <= bet3
+        h2 = bet2 > 0 and _pl_rank(s, 2, tuple(order[:2])) <= bet2
         a = agg[band]
         a["n"] += 1; tot += 1
         a["hit3"] += h3; a["hit2"] += h2
