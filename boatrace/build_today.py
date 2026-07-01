@@ -1179,8 +1179,16 @@ HTML = r"""<!DOCTYPE html>
   .tjp .tchg{color:#ef7a27;font-weight:700;font-size:12px}
   .tjp .tsame{color:#8ea0ba;font-weight:600;font-size:12px}
   .tjp .tjrk{color:#aebacb;font-size:12px;margin-top:4px}
+  /* 常時 左下に小さく表示する「1番上へ戻る」ボタン */
+  #toTop{position:fixed;left:12px;bottom:14px;z-index:60;display:inline-flex;align-items:center;gap:3px;
+    font-size:11px;font-weight:800;line-height:1;color:#cdd6e2;background:rgba(28,34,44,.86);
+    border:0.5px solid #3a4250;border-radius:16px;padding:8px 11px;cursor:pointer;
+    -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.45)}
+  #toTop:active{background:#2b3441;transform:translateY(1px)}
+  #toTop span{font-size:10px;letter-spacing:.5px}
 </style></head><body>
 <div id="app"></div>
+<button id="toTop" type="button" title="1番上へ戻る" aria-label="1番上へ戻る">▲<span>TOP</span></button>
 <script>
 const D=__DATA__;
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
@@ -1196,6 +1204,11 @@ let upMsg='', upErr=false, upBusy=false, upFetched='';
 // 場別テーブルの並び替え状態（c='e'(2連単)/'t'(3連単), d=1昇順/-1降順, null=既定）。
 let vsort={c:null,d:-1}, rsort={c:null,d:-1};
 const root=document.getElementById('app');
+// 左下「TOP」ボタン: #app の外にあるので再描画で消えない。1回だけ配線。
+// 即時スクロール（smoothは一部環境で無効なため確実な方を使う）。html/body 両対応で0へ。
+{const _tt=document.getElementById('toTop');
+ if(_tt)_tt.addEventListener('click',()=>{try{window.scrollTo(0,0);}catch(e){}
+   document.documentElement.scrollTop=0;document.body.scrollTop=0;});}
 const mmdd=s=>s.slice(5);
 function chip(w,cls){const a=LC[w];return '<span class="'+(cls||'wk')+'" style="background:'+a[0]+';color:'+a[1]+'">'+w+'</span>';}
 // 展示反映後の予想: 朝の p_win(r.b[i][1]/1000) に展示タイム/展示STを軽くブレンド。
