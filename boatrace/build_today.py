@@ -1890,7 +1890,7 @@ function exView(r){
       +(changed?' <span class="tchg">▲ 朝の本命は'+chip(mh+1,'mc')+'</span>':' <span class="tsame">朝と同じ</span>')+'</div>';
     h+='<div class="tjrk">展示後の順位　'+tp.order.map(i=>chip(i+1,'mc')).join(' ')+'</div></div>';
   }
-  h+='<div class="legend">※ 展示＝発走直前の情報（「更新」時に公式サイトから取得）。'
+  h+='<div class="legend">※ 展示＝発走直前の情報（ページを開くと自動取得。公式サイト＋OpenAPI直前フィードを随時反映）。'
     +'<b style="color:#43c59e">緑</b>＝展示タイム最速、<b style="color:#e0a93b">橙</b>＝展示でイン(1c)進入。'
     +'「展示後の本命」＝朝のAI予想に展示タイム・展示STを軽く加味した補正（過去検証で本命的中+0.5〜1.4pt）。'
     +'<b style="color:#43c59e">展示があるレースは買い目もこの展示反映後で組みます</b>（backtestで総回収+0.9〜1.3pt）。ヘッドラインの本命/順位/1着確率と荒れ度・点数は朝予想のまま。</div>';
@@ -1927,6 +1927,57 @@ function upJSON(){
 }
 function fetchUpd(){ return upJSON(); }
 
+// ── 案A: boatraceopenapi の previews フィード（展示/直前情報）をクライアント直読み ──
+// 自前30分バッチ(update.json)より鮮度が高く(CDN約10分)・GitHub Actions枠を消費しない。
+// 提供項目＝展示タイム/展示ST/チルト/進入コース/天候。結果・EVは含まないので update.json 側で補う。
+// CORS: Access-Control-Allow-Origin:* で許可済み。オフライン/失敗時は静かに無視（従来動作）。
+const PREVIEWS_URL='https://boatraceopenapi.github.io/previews/v2/today.json';
+const WX_NUM=[null,'晴','曇り','雨','雪','風','霧'];   // race_weather_number 1..6
+function pad2(n){return (n<10?'0':'')+n;}
+// previews の1レース → r.ex（{time,st,tilt,course,parts,weather}）。展示未計測(タイム全0/欠)なら null。
+function pvToEx(pv){
+  const bo=pv.boats||{};
+  const time=[null,null,null,null,null,null], st=time.slice(), tilt=time.slice(), course=time.slice();
+  let any=false;
+  for(let w=1;w<=6;w++){
+    const b=bo[w]; if(!b)continue;
+    const t=b.racer_exhibition_time;
+    if(t!=null&&t>0){time[w-1]=t; any=true;}                    // 0=未計測 は null 扱い
+    if(b.racer_start_timing!=null)st[w-1]=b.racer_start_timing; // 負=F（既存 tenjiPred が F 扱い）
+    if(b.racer_tilt_adjustment!=null)tilt[w-1]=b.racer_tilt_adjustment;
+    if(b.racer_course_number!=null)course[w-1]=b.racer_course_number;
+  }
+  if(!any)return null;                                          // 展示タイムが1つも無い＝展示前
+  const weather={tenki:WX_NUM[pv.race_weather_number]||null,
+                 winddir:pv.race_wind_direction_number!=null?pv.race_wind_direction_number:null,
+                 wind:pv.race_wind!=null?pv.race_wind:null,
+                 wave:pv.race_wave!=null?pv.race_wave:null,
+                 temp:pv.race_temperature!=null?pv.race_temperature:null};
+  return {time:time,st:st,tilt:tilt,course:course,parts:[null,null,null,null,null,null],weather:weather};
+}
+function fetchPreviews(){
+  return fetch(PREVIEWS_URL,{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();});
+}
+// previews を当日(base)レースへ反映。展示があるレースの r.ex を previews の新鮮版で上書き（previews優先）。
+// 結果・EV には一切触れない。戻り値＝反映した展示レース数。
+function applyPreviews(pj){
+  const arr=(pj&&pj.previews)||[]; if(!arr.length)return 0;
+  const byId={};
+  arr.forEach(pv=>{byId[pad2(pv.race_stadium_number)+String(pv.race_date).replace(/-/g,'')+pad2(pv.race_number)]=pv;});
+  let n=0;
+  D.races.forEach(r=>{
+    if(r.d!==D.base)return;                                     // 反映は当日のみ
+    const pv=byId[r.id]; if(!pv)return;
+    const ex=pvToEx(pv); if(!ex)return;                         // 展示前は上書きしない
+    r.ex=ex; n++;
+  });
+  return n;
+}
+// 手動「更新」時に previews を即取得反映（結果/EVは updateAll 本体が別途取得）。
+function refreshPreviews(){
+  return fetchPreviews().then(pj=>{const n=applyPreviews(pj); if(n)render(); return n;}).catch(()=>0);
+}
+
 // クラウド: update.json を周期取得し、fetched_at が prev から変われば反映。tries回まで20秒間隔。
 function pollUpd(prev,tries){
   if(tries<=0){upBusy=false;upErr=true;upMsg='反映待ちがタイムアウトしました。数分後にページを再読み込みしてください。';render();return;}
@@ -1958,6 +2009,7 @@ function requestRefresh(){
 // 「更新」ボタン：当日(base)の展示＋結果＋EVを取得して D.races へ反映。
 function updateAll(){
   if(upBusy)return;
+  refreshPreviews();                       // 案A: 展示は最新フィードを即反映（結果/EVは以下で取得）
   if(IS_CLOUD){requestRefresh();return;}   // クラウド=Actions起動→ポーリング反映
   // ファイル直開き(file://)では取得不可。更新サーバ版ページへ移動する
   // （サーバ未起動なら接続不可＝ランチャー/常駐サーバで起動が必要）。
@@ -2010,11 +2062,17 @@ if(location.protocol==='file:'){
     .then(()=>{location.replace('http://localhost:8787/today.html');})
     .catch(()=>{});
 }else{
-  // クラウド配信では、ページ表示時に更新データ(/api/update→update.json)を自動反映（ボタン押下不要）。
+  // クラウド/ローカルサーバ配信では、ページ表示時に更新データを自動反映（ボタン押下不要）。
+  //  ・update.json(/api/update) ＝ 結果・EV・展示（自前30分バッチ）
+  //  ・previews フィード（案A） ＝ 展示のみだが鮮度が高い。展示は previews を優先して上書き。
   // どちらも無ければ静かに無視（従来どおり手動更新で取得）。
-  upJSON().then(o=>{
-    const n=applyUpd(o); upFetched=o.fetched_at||'';
-    upMsg='自動更新 '+(o.fetched_at||'')+' ／ 結果 '+n.nres+'・展示 '+n.nex+(n.nev?'・EV '+n.nev:'')+'レースを反映';
+  Promise.allSettled([upJSON(),fetchPreviews()]).then(res=>{
+    const u=res[0], p=res[1]; let n={nres:0,nex:0,nev:0}, npv=0, fa='';
+    if(u.status==='fulfilled'&&u.value){ n=applyUpd(u.value); fa=u.value.fetched_at||''; upFetched=fa; }
+    if(p.status==='fulfilled'&&p.value){ npv=applyPreviews(p.value); }   // 展示は previews で上書き（新鮮）
+    const nexFinal=D.races.filter(r=>r.d===D.base&&r.ex).length;
+    upMsg='自動更新 '+(fa||'')+' ／ 結果 '+n.nres+'・展示 '+nexFinal+(n.nev?'・EV '+n.nev:'')+' レース反映'
+      +(npv?' ・展示は最新フィード('+npv+'R)':'');
     render();
   }).catch(()=>{});
 }
