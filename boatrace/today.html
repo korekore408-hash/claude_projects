@@ -364,19 +364,22 @@ function flySet(r){const f={};r.b.forEach((b,i)=>{if(!b[2])f[i+1]=1;});return f;
 // 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
 // 当日は update.json 反映後の D.races を使うので、なるべく最新状態を表す。
 function daySummary(date){
-  let nDone=0,nHit=0,inv=0,ret=0,nF=0;
+  let nDone=0,nHit=0,inv=0,ret=0,nF=0,invA=0,retA=0,nDoneA=0;   // A=穴（本命確率<0.45）だけを買った場合
   D.races.forEach(r=>{
     if(r.d!==date||!hasResult(r))return;
     nDone++;
     const fly=flySet(r);if(Object.keys(fly).length)nF++;
     const s=betScore(r);const ord=finishOrder(r);
     const hon=Math.max(...r.ab)/1000;
+    const isAna=hon<0.45;if(isAna)nDoneA++;                     // 穴レース＝波乱含み
     const actEx=ord.slice(0,2),actTri=ord.slice(0,3);
     let hit=false;
     const ex=plTop(s,2,kEx(hon));const exYen=allocYen(ex.map(c=>c[1]),2000);
     ex.forEach((c,i)=>{
-      if(!c[0].some(w=>fly[w]))inv+=exYen[i];                 // 返還ぶんは投資から除外
-      if(actEx.length>=2&&eqArr(c[0],actEx)){ret+=r.po?Math.round(r.po[0]*exYen[i]/100):0;hit=true;}
+      const kept=!c[0].some(w=>fly[w]);
+      if(kept)inv+=exYen[i];                                   // 返還ぶんは投資から除外
+      if(kept&&isAna)invA+=exYen[i];
+      if(actEx.length>=2&&eqArr(c[0],actEx)){const pay=r.po?Math.round(r.po[0]*exYen[i]/100):0;ret+=pay;if(isAna)retA+=pay;hit=true;}
     });
     if(triOn(hon)){
       const tri=triBuyList(plTop(s,3,200),kTri(hon),hon,laneRankMap(s));
@@ -388,7 +391,7 @@ function daySummary(date){
     }
     if(hit)nHit++;
   });
-  return {nDone,nHit,inv,ret,nF};
+  return {nDone,nHit,inv,ret,nF,invA,retA,nDoneA};
 }
 // 最上部サマリー: 当日/前日/前々日 の 的中率・投資・回収・回収率 を横並び（当日は最新反映）。
 function summaryBar(){
@@ -412,7 +415,10 @@ function summaryBar(){
   cols.forEach(c=>h+=cellY(c,c.s.ret));
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
+  h+='</tr><tr><td class="rl">穴のみ回収率</td>';
+  cols.forEach(c=>{const rr=pct(c.s.retA,c.s.invA);h+='<td>'+(c.s.invA?'<b class="'+recCls(rr)+'">'+rr+'%</b><small>'+c.s.nDoneA+'R</small>':'–')+'</td>';});
   h+='</tr></tbody></table>';
+  h+='<div class="sumf">「穴のみ回収率」＝本命確率45％未満（波乱含み）のレースだけを買った場合の回収率（投資・回収とも穴レース分のみ）。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
     +'（非完走艇を含む買い目は投資から除外）</div>';
