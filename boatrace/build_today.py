@@ -248,6 +248,40 @@ def _pl_topk(s, kind, k):
     return combos[:k]
 
 
+# ── 以下はサイト本体（JS の laneRankMap/comboKind/triBuyList/allocYen）の Python 版。
+#    場別成績(recent_stats)を「実際に買った場合」＝買い目UI/上部サマリーと同一ポリシーで集計する。
+def _lane_rank_map(s):
+    """枠 -> 予想順位（1=スコア最大）。"""
+    order = sorted(range(6), key=lambda i: s[i], reverse=True)
+    return {i + 1: rk + 1 for rk, i in enumerate(order)}
+
+
+def _tri_buy_list(combos, k, hon, rank_map):
+    """3連単の購入買い目: 標準帯(0.45-0.65)は穴型(含む枠の最下位順位≥5)を除外して上位k。"""
+    if 0.45 <= hon < 0.65:
+        combos = [c for c in combos if max(rank_map[w] for w in c) < 5]
+    return combos[:k]
+
+
+def _alloc_yen(probs, budget=2000, unit=100):
+    """予算を確率比例で配分（各点最低1ユニット＝¥100・合計=budget）。JS allocYen と同一。"""
+    n = len(probs)
+    if not n:
+        return []
+    units = [1] * n
+    rest = round(budget / unit) - n
+    if rest > 0:
+        tot = sum(probs) or 1
+        raw = [p / tot * rest for p in probs]
+        add = [int(x) for x in raw]
+        r = rest - sum(add)
+        order = sorted(range(n), key=lambda i: raw[i] - int(raw[i]), reverse=True)
+        for kk in range(r):
+            add[order[kk % n]] += 1
+        units = [units[i] + add[i] for i in range(n)]
+    return [u * unit for u in units]
+
+
 def venue_stats(rel, pred, score_map, hist, payout, since, hon_map=None):
     """since 以降の結果がある全レースから、場別の的中率＋変動回収率を集計。
     score_map={(race_id,枠int):p_win} で予想系統を差し替え（従来モデル/API予想 共用）。
@@ -536,9 +570,12 @@ def cause_comment(pm, fin, kr):
 def recent_stats(out, payout, pmkey="b"):
     """前日・前々日（結果のある日）の場別 2連単/3連単 的中率・回収率。
     pmkey で順位付けスコアの系統を切替（"b"=従来モデル / "ab"=API予想）。
-    荒れ度（点数）はレース共通＝API本命確率(r.ab)で固定。
-    前提ベット: 予想確率で点数変動（2連単=上位 k_ex≦5 / 3連単=上位 k_tri≦20, 各100円）。
-    回収率 = Σ配当 / (Σ点数 × 100)。"""
+    ★買い目はサイト本体（買い目UI／上部サマリー daySummary）と同一ポリシーで集計＝「実際に買った場合」:
+      - 荒れ度・点数はレース共通＝API本命確率(r.ab)で固定。
+      - 2連単＝確率上位 k_ex（全帯）。3連単＝確率上位 k_tri、ただし
+        **穴帯(本命<0.45)は買わない**・**標準帯(0.45-0.65)は穴型(5-6番手絡み)を除外**(triBuyList)。
+      - 各券種に¥2,000を確率比例配分(allocYen)。**非完走(F等)艇を含む買い目は賭け金を投資から除外(返還)**。
+    回収率 = Σ(配当×賭け金/100) / Σ賭け金 ×100。"""
     ag = {}
     dmin = dmax = None
     for r in out:
@@ -551,47 +588,56 @@ def recent_stats(out, payout, pmkey="b"):
                        key=lambda w: fins[w - 1])
         if fins[order[0] - 1] != 1:
             continue
-        # 荒れ度（点数）はレース共通＝API本命確率で固定（系統別は sv の順位のみ）。
+        # 荒れ度・点数はレース共通＝API本命確率で固定（系統別は sv の順位のみ）。
         hon = max(r["ab"]) / 1000.0
         kx, kt = k_ex(hon), k_tri(hon)
-        m = sum(1 for w in range(1, 7) if sv[w - 1] > 0)
-        bet2 = min(kx, m * (m - 1))
-        bet3 = min(kt, m * (m - 1) * (m - 2))
         po = payout.get(r["id"], (0, 0))
         # 非完走（フライング等）艇＝着順なし。その艇を含む買い目は返還＝賭け金から除外。
         fly = {w for w in range(1, 7) if not fins[w - 1]}
-        a = ag.setdefault(r["c"], {"v": r["v"], "n2": 0, "h2": 0, "p2": 0, "pts2": 0,
-                                   "n3": 0, "h3": 0, "p3": 0, "pts3": 0, "nf": 0})
+        a = ag.setdefault(r["c"], {"v": r["v"], "n2": 0, "h2": 0, "inv2": 0, "ret2": 0,
+                                   "n3": 0, "h3": 0, "inv3": 0, "ret3": 0, "nf": 0})
         dmin = r["d"] if dmin is None or r["d"] < dmin else dmin
         dmax = r["d"] if dmax is None or r["d"] > dmax else dmax
         if fly:
             a["nf"] += 1
-        if len(order) >= 2 and bet2 > 0:
-            ref2 = sum(1 for c in _pl_topk(sv, 2, bet2) if any(w in fly for w in c))
-            a["n2"] += 1
-            a["pts2"] += bet2 - ref2                          # 返還ぶんを賭け金から除外
-            if _pl_rank(sv, 2, tuple(order[:2])) <= bet2:
-                a["h2"] += 1
-                a["p2"] += po[0]
-        if len(order) >= 3 and bet3 > 0:
-            ref3 = sum(1 for c in _pl_topk(sv, 3, bet3) if any(w in fly for w in c))
-            a["n3"] += 1
-            a["pts3"] += bet3 - ref3
-            if _pl_rank(sv, 3, tuple(order[:3])) <= bet3:
-                a["h3"] += 1
-                a["p3"] += po[1]
+        # 2連単（全帯・確率上位 k_ex・¥2,000配分・F返還）
+        if len(order) >= 2:
+            buy2 = _pl_topk(sv, 2, kx)
+            if buy2:
+                yen2 = _alloc_yen([_pl_prob(sv, c) for c in buy2])
+                a["n2"] += 1
+                act2 = tuple(order[:2])
+                for c, y in zip(buy2, yen2):
+                    if not any(w in fly for w in c):
+                        a["inv2"] += y                        # 返還ぶんは投資から除外
+                    if c == act2:
+                        a["ret2"] += round(po[0] * y / 100)
+                        a["h2"] += 1
+        # 3連単（穴帯<0.45は買わない・標準帯は穴型除外・¥2,000配分・F返還）
+        if len(order) >= 3 and hon >= 0.45:
+            buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), kt, hon, _lane_rank_map(sv))
+            if buy3:
+                yen3 = _alloc_yen([_pl_prob(sv, c) for c in buy3])
+                a["n3"] += 1
+                act3 = tuple(order[:3])
+                for c, y in zip(buy3, yen3):
+                    if not any(w in fly for w in c):
+                        a["inv3"] += y
+                    if c == act3:
+                        a["ret3"] += round(po[1] * y / 100)
+                        a["h3"] += 1
 
     def stat(a):
         return [a["v"], a["n2"],
                 round(a["h2"] / a["n2"] * 100) if a["n2"] else 0,
-                round(a["p2"] / (a["pts2"] * 100) * 100) if a["pts2"] else 0,
+                round(a["ret2"] / a["inv2"] * 100) if a["inv2"] else 0,
                 round(a["h3"] / a["n3"] * 100) if a["n3"] else 0,
-                round(a["p3"] / (a["pts3"] * 100) * 100) if a["pts3"] else 0]
+                round(a["ret3"] / a["inv3"] * 100) if a["inv3"] else 0]
 
     rows = [stat(a) for a in ag.values()]
     rows.sort(key=lambda x: x[3], reverse=True)     # 2連単回収率の降順
     T = {k: sum(a[k] for a in ag.values()) for k in
-         ["n2", "h2", "p2", "pts2", "n3", "h3", "p3", "pts3"]}
+         ["n2", "h2", "ret2", "inv2", "n3", "h3", "ret3", "inv3"]}
     T["v"] = "全場"
     nf = sum(a.get("nf", 0) for a in ag.values())
     return {"from": dmin, "to": dmax, "rows": rows, "all": stat(T), "nf": nf}
@@ -1539,8 +1585,9 @@ function statsView(){
       +'<td class="num g2">'+a[2]+'%</td><td class="num g2">'+a[3]+'%</td>'
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
-    h+='<div class="meta">実践的中＝予想確率連動の点数を実際に買った場合の的中率（2連単≤5/3連単≤20点, 各100円）。回収率100%超で利益。'
-      +'並び替えは回収率基準。</div>';
+    h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連単≤5/3連単≤20点）。'
+      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を確率比例配分・穴帯(本命&lt;45%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
+      +'回収率＝Σ(配当×賭け金/100)÷Σ賭け金。100%超で利益。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
     h+='<div class="swrap"><table class="st"><thead><tr>'
