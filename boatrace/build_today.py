@@ -529,6 +529,29 @@ def load_kresult(keep):
     return kres
 
 
+def makuri_rates(glob_pat="data/k*.csv", min_wins=5):
+    """全K-fileから 登番 → まくり率（勝ち星のうち まくり/まくり差し の割合）。
+    「対抗1艇（穴）」の根拠タグ『捲り屋』表示用。検証(残差テスト OOS)では
+    まくり傾向×モーターは p_win に織り込み済み＝的中を超える力は無いが、
+    なぜこの艇が対抗かの説明材料として出す。勝ち星 min_wins 未満は None 扱い。"""
+    win, mak = {}, {}
+    for p in sorted(glob.glob(glob_pat)):
+        try:
+            for r in load(p):
+                if (r.get("着順") or "").strip() != "1":
+                    continue
+                reg = (r.get("登番") or "").strip()
+                if not reg:
+                    continue
+                win[reg] = win.get(reg, 0) + 1
+                if (r.get("決まり手") or "").strip() in ("まくり", "まくり差し"):
+                    mak[reg] = mak.get(reg, 0) + 1
+        except OSError:
+            continue
+    return {reg: round(mak.get(reg, 0) / w, 3)
+            for reg, w in win.items() if w >= min_wins}
+
+
 def cause_comment(pm, fin, kr):
     """予想と結果のズレの原因を1文で説明。kr=load_kresult の1レース分。的中時は順当コメント。"""
     hm = max(range(6), key=lambda i: pm[i]) + 1            # 本命枠
@@ -859,9 +882,11 @@ def main():
             "lane_top3": to_float(h.get("lane_top3_rate")),
             "lane_n": to_float(h.get("lane_n")),
             "vown": to_float(h.get("venue_own_lane_winrate")),
+            "reg": (r.get("登番") or "").strip(),      # 対抗1艇の『捲り屋』タグ用
         }
 
     kres = load_kresult(keep)
+    mk_map = makuri_rates()                          # 登番→まくり率（根拠タグ用）
     payout = load_payouts(keep)
     out = []
     for rid, rc in races.items():
@@ -890,6 +915,9 @@ def main():
                     "ft": [[rc["feat"][w].get("motor_rank"),
                             rc["feat"][w].get("recent"),
                             rc["feat"][w].get("st_rank")]
+                           for w in range(1, 7)],
+                    # 対抗1艇の『捲り屋』タグ用: 枠ごと まくり率（該当なしは null）
+                    "mk": [mk_map.get(rc["feat"][w].get("reg"))
                            for w in range(1, 7)],
                     # 枠ごと [公式級別 A1/A2/B1/B2, AIオリジナル実力ランク S/A/B/C/D]
                     "rk": [[official_rank(rc["feat"][w].get("cl")),
@@ -1063,6 +1091,7 @@ HTML = r"""<!DOCTYPE html>
   .tag{font-size:11px;border-radius:8px;padding:1px 7px}
   .tag.h{background:#10362c;color:#43c59e}.tag.m{background:#3a1f1f;color:#e06b6b}
   .kbadge{font-size:10px;color:#7fb2ff;background:#14233a;border:0.5px solid #2b4a6f;border-radius:7px;padding:1px 7px;margin-left:8px;font-weight:600}
+  .tkt{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;margin:2px 5px 0 0;border-radius:10px;background:#241a33;color:#c9a9f0;border:0.5px solid #4a326e}
   .crow{display:flex;align-items:center;gap:6px;padding:6px 2px;border-bottom:0.5px solid #2a2f3a}
   .crow.hit{background:#10362c;border-radius:5px}
   .crow.evplus{background:#173a1f;border-radius:5px;box-shadow:inset 3px 0 0 #43c59e}
@@ -1231,6 +1260,37 @@ function honAnaS(s){
   return {hon,ana,lvl:lvl[0],lvlcls:lvl[1],hmLane:idx[0]+1,anaLane:idx[3]+1};
 }
 function honAna(r){return honAnaS(r.ab);}            // 主系統＝API（割合・荒れ度・穴の基準）
+// 対抗1艇（穴）＝本命を食う可能性が最も高い1艇＋その根拠タグ。
+// ★検証(残差テスト OOS 6,497R): 隣接艇の弱さ・隣ST・捲り屋×高機は【すべて p_win に織込済】＝残差≈0。
+//   よって対抗の最尤艇＝betScore（展示反映後）の2番手で、追加で当てる力は無い（本命飛び時44%が1着）。
+//   タグは「なぜ対抗か」の説明であって独立した予測力ではない（回収率は本命軸に劣る夢枠）。
+function taikou(r){
+  const s=betScore(r);
+  const order=s.map((p,i)=>[p,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
+  const fav=order[0], ci=order[1];
+  const tot=s.reduce((a,b)=>a+b,0)||1, prob=s[ci]/tot;
+  const tags=[];
+  const ft=r.ft?r.ft[ci]:null;
+  if(ft&&ft[0]!=null&&ft[0]<=2)tags.push(['高機','モーターがレース内'+Math.round(ft[0])+'位']);
+  if(ft&&ft[2]!=null&&ft[2]<=2)tags.push(['ST速','スタート評価がレース内'+Math.round(ft[2])+'位']);
+  // 隣接（枠 ci-1 / ci+1）が両方とも格下（API 1着確率で下位）＝両サイドが弱い
+  const abrank={};r.ab.map((p,i)=>[p,i]).sort((a,b)=>b[0]-a[0]).forEach((x,k)=>{abrank[x[1]]=k+1;});
+  const neigh=[ci-1,ci+1].filter(i=>i>=0&&i<6);
+  if(neigh.length&&neigh.every(i=>abrank[i]>=4))tags.push(['隣弱','両隣が格下（'+neigh.map(i=>(i+1)+'号艇').join('・')+'）']);
+  // 捲り屋（勝ち星の35%以上がまくり系）
+  if(r.mk&&r.mk[ci]!=null&&r.mk[ci]>=0.35)tags.push(['捲り屋','勝ち星の'+Math.round(r.mk[ci]*100)+'%がまくり系']);
+  // 展示（当日 previews のみ）
+  let exUsed=false;
+  if(r.ex&&r.ex.time){
+    const ts=r.ex.time, valid=ts.map((t,i)=>[t,i]).filter(x=>x[0]!=null);
+    if(valid.length>=2){exUsed=true;
+      const trank={};valid.slice().sort((a,b)=>a[0]-b[0]).forEach((x,k)=>{trank[x[1]]=k+1;});
+      if(trank[ci]&&trank[ci]<=2)tags.push(['展示良','展示タイムがレース内'+trank[ci]+'位']);
+    }
+    if(r.ex.tilt&&r.ex.tilt[ci]!=null&&r.ex.tilt[ci]>=0.5)tags.push(['チルト↑','チルト'+r.ex.tilt[ci]+'（跳ね・参考）']);
+  }
+  return {fav:fav+1, lane:ci+1, name:r.b[ci][0], prob:prob, tags:tags, ex:exUsed};
+}
 // 予算budget円を買い目に確率比例で配分（¥100単位・各点最低¥100・合計=budget）。割り振りは自由（確率比例）。
 function allocYen(probs,budget){
   const unit=100,n=probs.length; if(!n)return [];
@@ -1539,6 +1599,16 @@ function detailView(r){
      +'（1着確率'+(r.ab[al-1]/10).toFixed(1)+'%）'
      +(done?' <b style="color:'+(afin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(afin===1?'1着！（穴的中）':(afin?afin+'着':'－'))+'</b>':'')
      +'<br><span style="font-size:11px;color:#9aa3b2">※モデルはモーター・直近を織り込み済み（検証で確率を超える穴シグナルは無し）。材料が揃う穴ほど展開次第で1着の目。本命が弱いレースほど荒れやすい（本命&lt;40%で穴率約20%／≥70%で約8%）。</span></div>';}
+  // 対抗1艇（穴）＝本命を食う筆頭＋根拠タグ。betScore2番手（展示反映後）。
+  {const tk=taikou(r);const tkfin=done?r.b[tk.lane-1][2]:null;
+   h+='<div class="cause" style="border-left-color:#a56be0;color:#d9c8ef"><span class="h" style="color:#b98fe0">🐎 対抗1艇（穴）</span>'
+     +chip(tk.lane,'mc')+' '+tk.name+' … <b>本命'+chip(tk.fav,'mc')+'を食う筆頭</b>'
+     +'（1着確率目安'+(tk.prob*100).toFixed(1)+'%）'
+     +(tk.tags.length
+        ? '<div style="margin-top:5px">'+tk.tags.map(t=>'<span class="tkt" title="'+t[1]+'">'+t[0]+'</span>').join('')+'</div>'
+        : '<div style="margin-top:5px;font-size:11px;color:#9aa3b2">目立った武器なし（地力で予想2番手）</div>')
+     +(done?' <b style="color:'+(tkfin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(tkfin===1?'1着！（対抗的中）':(tkfin?tkfin+'着':'－'))+'</b>':'')
+     +'<br><span style="font-size:11px;color:#9aa3b2">※対抗＝betScore（'+(tk.ex?'展示反映後':'朝の学習')+'）の2番手。検証で隣接・展示・捲り屋は p_win に織込済＝当てる力は本命確率どまり（本命が飛んだ時に44%が1着）。回収率は本命軸に劣る<b>夢枠</b>。チルトは当日データのみ・過去検証不可の参考。</span></div>';}
   if(done){
     h+='<div class="rbar"><span class="rlab">結果</span>';
     ord.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
