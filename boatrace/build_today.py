@@ -1343,12 +1343,21 @@ function daySummary(date){
       if(kept&&isAna)invA+=exYen[i];
       if(actEx.length>=2&&eqArr(c[0],actEx)){const pay=r.po?Math.round(r.po[0]*exYen[i]/100):0;ret+=pay;if(isAna)retA+=pay;hit=true;}
     });
-    if(triOn(hon)){
+    // 3連単: 実際に買うのは triOn(hon)=本命確率45%以上のみ。ただし「穴のみ回収率」には
+    // 実際には見送る穴帯の3連単も含めてフル購入した想定で invA/retA に加える。
+    const doTri=triOn(hon);
+    if(doTri||isAna){
       const tri=triBuyList(plTop(s,3,200),kTri(hon),hon,laneRankMap(s));
       const triYen=allocYen(tri.map(c=>c[1]),2000);
       tri.forEach((c,i)=>{
-        if(!c[0].some(w=>fly[w]))inv+=triYen[i];
-        if(actTri.length>=3&&eqArr(c[0],actTri)){ret+=r.po?Math.round(r.po[1]*triYen[i]/100):0;hit=true;}
+        const kept=!c[0].some(w=>fly[w]);
+        if(kept&&doTri)inv+=triYen[i];                         // 全体投資は実際に買う分だけ
+        if(kept&&isAna)invA+=triYen[i];                        // 穴のみは見送り分も含める
+        if(actTri.length>=3&&eqArr(c[0],actTri)){
+          const pay=r.po?Math.round(r.po[1]*triYen[i]/100):0;
+          if(doTri){ret+=pay;hit=true;}
+          if(isAna)retA+=pay;
+        }
       });
     }
     if(hit)nHit++;
@@ -1380,7 +1389,7 @@ function summaryBar(){
   h+='</tr><tr><td class="rl">穴のみ回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.retA,c.s.invA);h+='<td>'+(c.s.invA?'<b class="'+recCls(rr)+'">'+rr+'%</b><small>'+c.s.nDoneA+'R</small>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">「穴のみ回収率」＝本命確率45％未満（波乱含み）のレースだけを買った場合の回収率（投資・回収とも穴レース分のみ）。</div>';
+  h+='<div class="sumf">「穴のみ回収率」＝本命確率45％未満（波乱含み）のレースだけを、実際には見送る3連単も含めてフル購入した場合の回収率（投資・回収とも穴レース分のみ）。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
     +'（非完走艇を含む買い目は投資から除外）</div>';
