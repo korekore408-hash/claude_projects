@@ -1400,24 +1400,29 @@ function daySummary(date){
     ex.forEach((c,i)=>{
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=exYen[i];                                   // 返還ぶんは投資から除外
-      if(kept&&isAna)invA+=exYen[i];
-      if(actEx.length>=2&&eqArr(c[0],actEx)){const pay=r.po?Math.round(r.po[0]*exYen[i]/100):0;ret+=pay;if(isAna)retA+=pay;hit=true;}
+      if(actEx.length>=2&&eqArr(c[0],actEx)){const pay=r.po?Math.round(r.po[0]*exYen[i]/100):0;ret+=pay;hit=true;}
     });
-    // 3連単: 実際に買うのは triOn(hon)=本命確率45%以上のみ。ただし「穴のみ回収率」には
-    // 実際には見送る穴帯の3連単も含めてフル購入した想定で invA/retA に加える。
+    // 3連単: 実際に買うのは triOn(hon)=本命確率45%以上のみ（穴帯は見送り）。
     const doTri=triOn(hon);
-    if(doTri||isAna){
+    if(doTri){
       const tri=triBuyList(plTop(s,3,200),kTri(hon),hon,laneRankMap(s));
       const triYen=allocYen(tri.map(c=>c[1]),2000);
       tri.forEach((c,i)=>{
         const kept=!c[0].some(w=>fly[w]);
-        if(kept&&doTri)inv+=triYen[i];                         // 全体投資は実際に買う分だけ
-        if(kept&&isAna)invA+=triYen[i];                        // 穴のみは見送り分も含める
+        if(kept)inv+=triYen[i];
         if(actTri.length>=3&&eqArr(c[0],actTri)){
           const pay=r.po?Math.round(r.po[1]*triYen[i]/100):0;
-          if(doTri){ret+=pay;hit=true;}
-          if(isAna)retA+=pay;
+          ret+=pay;hit=true;
         }
+      });
+    }
+    // 穴目回収率（参考シミュレーション）＝穴帯レース（本命<45%）だけを対象に、穴目＝穴候補
+    // アタマ6点を3連単でフル購入した場合の回収率。各¥100均等・F返還・3連単のみ・穴帯×穴目のみで算出。
+    if(isAna){
+      anaCandRef(r.ab).forEach(c=>{
+        const kept=!c.some(w=>fly[w]);
+        if(kept)invA+=100;
+        if(kept&&actTri.length>=3&&eqArr(c,actTri))retA+=(r.po?r.po[1]:0);
       });
     }
     if(hit)nHit++;
@@ -1446,10 +1451,10 @@ function summaryBar(){
   cols.forEach(c=>h+=cellY(c,c.s.ret));
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
-  h+='</tr><tr><td class="rl">穴のみ回収率</td>';
+  h+='</tr><tr><td class="rl">穴目回収率<small>3単</small></td>';
   cols.forEach(c=>{const rr=pct(c.s.retA,c.s.invA);h+='<td>'+(c.s.invA?'<b class="'+recCls(rr)+'">'+rr+'%</b><small>'+c.s.nDoneA+'R</small>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">「穴のみ回収率」＝本命確率45％未満（波乱含み）のレースだけを、実際には見送る3連単も含めてフル購入した場合の回収率（投資・回収とも穴レース分のみ）。</div>';
+  h+='<div class="sumf">「穴目回収率」＝本命確率45％未満（波乱含み）のレースで、穴目＝穴候補（API4番人気）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュレーション・各¥100均等・F返還・穴帯×穴目・3連単のみで算出）。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
     +'（非完走艇を含む買い目は投資から除外）</div>';
@@ -1668,16 +1673,17 @@ function detailView(r){
   // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
   const rankMap=laneRankMap(sb);const stdBand=honD>=0.45&&honD<0.65;
   if(!triOn(honD)){
-    const refTri=plTop(sb,3,200).slice(0,nTri);   // 穴帯：買わないが予想のみ参考表示
-    const refHit=actTri?refTri.some(c=>eqArr(c[0],actTri)):false;
-    h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#e0a93b;background:#241c10;border-color:#6f5a2f">穴帯=見送り</span><span class="kbadge">参考'+refTri.length+'点</span>'+(actTri?(refHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
-    h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率'+Math.round(honD*100)+'%）は3連単を買いません。穴の3連単は回収率72.9%で資金を溶かす主犯（backtest 27,660R）。停止すると全体回収率が77.4%→78.2%（+0.8pt）に上がり賭け金も減ります。<b>この帯は2連単のみ勝負。</b></div>';
-    h+='<div style="font-size:11px;color:#7e8796;margin:4px 0 1px">参考（予想のみ・<b>購入しない</b>）：買うとしたら上位'+refTri.length+'点。¥配分の対象外です。</div>';
-    refTri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);
-      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.72" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
+    // 穴帯（波乱）＝3連単は見送り。3連単スロットは「穴目＝穴候補アタマ6点」に一本化して合体出力（購入しない）。
+    const candRef=anaCandRef(r.ab);
+    const candHit=actTri?candRef.some(c=>eqArr(c,actTri)):false;
+    h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#e0a93b;background:#241c10;border-color:#6f5a2f">穴帯=見送り</span><span class="kbadge">穴目'+candRef.length+'点・参考</span>'+(actTri?(candHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+    h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率'+Math.round(honD*100)+'%）は3連単を買いません（回収72.9%＝資金を溶かす主犯・backtest 27,660R）。<b>この帯は2連単のみ勝負。</b>3連単は参考として「穴目＝穴候補<b style="color:#e0a93b">'+ha.anaLane+'号</b>をアタマに置いた6点」だけ出します（購入しない・¥配分の対象外。軽視艇アタマで当たれば万舟級）。'+(actTri?(candHit?'<b style="color:#43c59e"> →来た</b>':''):'')+'</div>';
+    candRef.forEach(c=>{const hit=actTri&&eqArr(c,actTri);
+      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.72"><span class="rk" style="font-size:9px;color:#b89a5a">頭</span>'+chip(c[0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[2],'mc')
+       +'<span class="ctag tg-ana">穴目</span>'
        +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
-       +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span></div>';});
-    if(actTri&&!refHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
+       +'</div>';});
+    if(actTri&&!candHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（見送り）</span></div>';}
   }else{
   const triAll=plTop(sb,3,200);
   const tri=triBuyList(triAll,nTri,honD,rankMap);
@@ -1694,8 +1700,8 @@ function detailView(r){
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
   }
-  // 穴目（買わない参考）＝穴候補アタマ6点。穴帯＋標準帯（本命<65%）の両方に表示。
-  if(honD<0.65){
+  // 穴目（買わない参考）＝穴候補アタマ6点。標準帯のみ別途表示（穴帯は上の3連単スロットに合体済み）。
+  if(stdBand){
     const candRef=anaCandRef(r.ab);
     const candHit=actTri?candRef.some(c=>eqArr(c,actTri)):false;
     h+='<div style="font-size:11px;color:#7e8796;margin:8px 0 1px">参考（穴目・<b>購入しない</b>）：穴候補<b style="color:#e0a93b">'+ha.anaLane+'号</b>をアタマに置いた形（上位3艇へ流し＝6点）。軽視艇アタマで当たれば万舟級。¥配分の対象外です。'+(actTri?(candHit?'<b style="color:#43c59e"> →来た</b>':''):'')+'</div>';
@@ -1714,7 +1720,7 @@ function detailView(r){
     +'<b>金額は'+(triOn(honD)?'2連単・3連単それぞれ':'2連単に')+'¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
     +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
     +(stdBand?'標準帯の3連単は穴型（5-6番手絡み）を購入対象から外します。':'')
-    +(honD<0.65?'参考として「穴目＝穴候補（API4番人気）をアタマに置いた6点」を別途表示（買わない・¥配分の対象外。backtest 的中3.9%／回収72%・平均配当¥11,000）。':'')
+    +(honD<0.65?'参考として「穴目＝穴候補（API4番人気）をアタマに置いた6点」を'+(triOn(honD)?'別途':'3連単スロットに合体して')+'表示（買わない・¥配分の対象外。backtest 的中3.9%／回収72%・平均配当¥11,000）。':'')
     +'実オッズはモデル外なので各自で確認し「必要◯倍」と比較してください。</div>';
   return h;
 }
