@@ -1979,7 +1979,7 @@ function exView(r){
       +(changed?' <span class="tchg">▲ 朝の本命は'+chip(mh+1,'mc')+'</span>':' <span class="tsame">朝と同じ</span>')+'</div>';
     h+='<div class="tjrk">展示後の順位　'+tp.order.map(i=>chip(i+1,'mc')).join(' ')+'</div></div>';
   }
-  h+='<div class="legend">※ 展示＝発走直前の情報（ページを開くと自動取得。公式サイト＋OpenAPI直前フィードを随時反映）。'
+  h+='<div class="legend">※ 展示＝発走直前の情報（自動取得：締切40分前から公式サイトを直接・約3分毎に反映。それ以外はOpenAPI直前フィード）。'
     +'<b style="color:#43c59e">緑</b>＝展示タイム最速、<b style="color:#e0a93b">橙</b>＝展示でイン(1c)進入。'
     +'「展示後の本命」＝朝のAI予想に展示タイム・展示STを軽く加味した補正（過去検証で本命的中+0.5〜1.4pt）。'
     +'<b style="color:#43c59e">展示があるレースは買い目もこの展示反映後で組みます</b>（backtestで総回収+0.9〜1.3pt）。ヘッドラインの本命/順位/1着確率と荒れ度・点数は朝予想のまま。</div>';
@@ -2017,7 +2017,9 @@ function upJSON(){
 function fetchUpd(){ return upJSON(); }
 
 // ── 案A: boatraceopenapi の previews フィード（展示/直前情報）をクライアント直読み ──
-// 自前30分バッチ(update.json)より鮮度が高く(CDN約10分)・GitHub Actions枠を消費しない。
+// GitHub Actions枠を消費しない広域ソース。ただし実測の更新は1日6〜8回（2〜4時間間隔・
+// README公称は約30分）＋CDN max-age=600 なので発走前に間に合わないことが多い。
+// 締切が近いレースは /api/tenji（公式直取り・下記）が優先して補う。
 // 提供項目＝展示タイム/展示ST/チルト/進入コース/天候。結果・EVは含まないので update.json 側で補う。
 // CORS: Access-Control-Allow-Origin:* で許可済み。オフライン/失敗時は静かに無視（従来動作）。
 const PREVIEWS_URL='https://boatraceopenapi.github.io/previews/v2/today.json';
@@ -2056,6 +2058,7 @@ function applyPreviews(pj){
   let n=0;
   D.races.forEach(r=>{
     if(r.d!==D.base)return;                                     // 反映は当日のみ
+    if(r.exSrc==='official')return;                             // 公式直取り済み＝より新鮮なので previews で戻さない
     const pv=byId[r.id]; if(!pv)return;
     const ex=pvToEx(pv); if(!ex)return;                         // 展示前は上書きしない
     r.ex=ex; n++;
@@ -2067,14 +2070,56 @@ function refreshPreviews(){
   return fetchPreviews().then(pj=>{const n=applyPreviews(pj); if(n)render(); return n;}).catch(()=>0);
 }
 
-// 当日レースの展示タイムの署名。値が変わった時だけ再描画するため（無変化のちらつき防止）。
+// ── 公式サイト直取り（/api/tenji・Cloudflare Pages Function）──
+// previews フィードは実測2〜4時間おきで発走前に間に合わないため、締切が近いレースだけ
+// 公式 beforeinfo を直接取得する（公表後≤3分で反映）。サーバ側90秒キャッシュ・
+// 対象は同時0〜4レース程度なので公式サイトへの負荷は人が見るのと同程度。
+const tenjiLast={};                                   // race_id → 最終取得エポックms（2分スロットル）
+function raceMin(r){                                  // 締切までの分（r.tm='HH:MM'）。不明は null
+  if(!r.tm)return null; const m=String(r.tm).match(/^(\d{1,2}):(\d{2})/); if(!m)return null;
+  const now=new Date();
+  return (new Date(now.getFullYear(),now.getMonth(),now.getDate(),+m[1],+m[2])-now)/60000;
+}
+function hasResult(r){return r.b.some(b=>b&&b[2]===1);}
+function tenjiFetch(r){
+  const now=Date.now();
+  if(tenjiLast[r.id]&&now-tenjiLast[r.id]<120000)return Promise.resolve(false);
+  tenjiLast[r.id]=now;
+  const q='jcd='+r.id.slice(0,2)+'&rno='+(+r.id.slice(10,12))+'&hd='+r.id.slice(2,10);
+  return fetch('/api/tenji?'+q,{cache:'no-store'}).then(x=>{if(!x.ok)throw 0;return x.json();})
+    .then(o=>{ if(!o||!o.ex)return false; r.ex=o.ex; r.exSrc='official'; return true; })
+    .catch(()=>false);                                // 失敗は previews/update.json にフォールバック
+}
+// 締切40分前〜締切後10分・結果未確定の当日レース（＋詳細表示中のレース）を直取り。
+function tenjiSweep(){
+  if(!IS_CLOUD)return Promise.resolve(false);         // /api/tenji はクラウドのみ
+  const targets=[];
+  D.races.forEach(r=>{
+    if(r.d!==D.base||hasResult(r))return;
+    const mn=raceMin(r); if(mn==null)return;
+    if(mn<=40&&mn>=-10)targets.push(r);
+  });
+  if(sel!=null){const r=dayRaces()[sel];
+    if(r&&r.d===D.base&&!hasResult(r)&&targets.indexOf(r)<0)targets.push(r);}
+  if(!targets.length)return Promise.resolve(false);
+  return Promise.all(targets.map(tenjiFetch)).then(a=>a.some(x=>x));
+}
+
+// 当日レースの展示タイム/展示STの署名。値が変わった時だけ再描画するため（無変化のちらつき防止）。
 function exSig(){
   let s='';
-  D.races.forEach(r=>{ if(r.d===D.base&&r.ex&&r.ex.time)s+=r.id+':'+r.ex.time.join(',')+';'; });
+  D.races.forEach(r=>{ if(r.d===D.base&&r.ex&&r.ex.time)s+=r.id+':'+r.ex.time.join(',')+'/'+(r.ex.st||[]).join(',')+';'; });
   return s;
 }
-// 自動更新（案A）: previews と update.json を静かに再取得。展示や結果に変化があった時だけ、
-// スクロール位置・表示中の画面を保ったまま再描画する。GitHub Actions 枠は消費しない。
+// スクロール位置と表示画面を保ったまま再描画（自動更新用）。
+function rerenderKeepScroll(){
+  const y=window.scrollY||document.documentElement.scrollTop||0;
+  render();
+  try{window.scrollTo(0,y);}catch(e){}
+}
+// 自動更新: previews / update.json / 公式直取り(/api/tenji) を静かに再取得。
+// 展示や結果に変化があった時だけ、スクロール位置・表示中の画面を保ったまま再描画する。
+// GitHub Actions 枠は消費しない。
 function autoRefresh(){
   if(upBusy)return;                       // 手動更新中は触らない
   const before=exSig();
@@ -2084,12 +2129,10 @@ function autoRefresh(){
       applyUpd(u.value); upFetched=u.value.fetched_at; changed=true;   // 結果/EVが更新された
     }
     if(p.status==='fulfilled'&&p.value){ applyPreviews(p.value); }     // 展示は previews で上書き
-    if(exSig()!==before)changed=true;                                  // 展示タイムが変わった
-    if(changed){
-      const y=window.scrollY||document.documentElement.scrollTop||0;
-      render();
-      try{window.scrollTo(0,y);}catch(e){}                             // 再描画のスクロールリセットを打消し
-    }
+    return tenjiSweep().then(()=>{                                     // 締切前レースは公式直取り（最優先）
+      if(exSig()!==before)changed=true;                                // 展示が変わった
+      if(changed)rerenderKeepScroll();
+    });
   }).catch(()=>{});
 }
 
@@ -2167,6 +2210,10 @@ function render(){
     if(cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
   }else{
     document.querySelector('.back').onclick=()=>{sel=null;render();};
+    // 詳細を開いたら、そのレースの展示を公式から即取得（2分スロットル・変化時のみ再描画）。
+    const dr=dayRaces()[sel];
+    if(IS_CLOUD&&dr&&dr.d===D.base&&!hasResult(dr))
+      tenjiFetch(dr).then(ch=>{ if(ch&&sel!=null&&dayRaces()[sel]===dr)rerenderKeepScroll(); });
   }
 }
 // file:// で直接開かれ、かつ更新サーバが起動中ならサーバ版へ自動で切替える
@@ -2189,10 +2236,13 @@ if(location.protocol==='file:'){
     upMsg='自動更新 '+(fa||'')+' ／ 結果 '+n.nres+'・展示 '+nexFinal+(n.nev?'・EV '+n.nev:'')+' レース反映'
       +(npv?' ・展示は最新フィード('+npv+'R)':'');
     render();
+    tenjiSweep().then(ch=>{ if(ch)rerenderKeepScroll(); });   // 締切前レースは公式直取りで即最新化
   }).catch(()=>{});
-  // 開いたまま展示公表を待てるよう、3分ごとに自動再取得（案A=previews＋update.json）。
+  // 開いたまま展示公表を待てるよう、3分ごとに自動再取得（previews＋update.json＋公式直取り）。
   // 変化があった時だけ再描画するので、表示を邪魔しない。タブ非表示中はスキップ。
   setInterval(()=>{ if(!document.hidden)autoRefresh(); }, 180000);
+  // スマホでタブ/アプリに戻った瞬間も即時再取得（3分間隔を待たない）。
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden)autoRefresh(); });
 }
 render();
 // サーバ版へ #update 付きで来たら、自動で更新を1回実行（file://から更新を押した導線）。

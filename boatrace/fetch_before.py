@@ -69,9 +69,18 @@ def _get(url):
 
 def _boat_blocks(html):
     """is-boatColor{1..6} の出現位置で本文を 6 ブロックに割る。
-    返り値 {枠: ブロックHTML}（最初に出てくる艇順テーブル＝展示テーブルを優先）。"""
+    返り値 {枠: ブロックHTML}。
+
+    2026-07-03 修正: 展示行の中に「前走情報」の別艇色セル(is-boatColorN・rowspanなし)が
+    混ざるため、「最初の出現＝展示行」の前提が崩れて艇のタイムを取りこぼしていた
+    （例 20260702 jcd04 12R は艇2/5/6が欠落）。行頭セルは rowspan 付き
+    <td class="is-boatColorN ..." rowspan="4"> なので、rowspan 付きだけを行頭に採用する。
+    rowspan 付きが6枠分見つからない（古い/別構造）場合は従来の全出現にフォールバック。"""
     marks = [(m.start(), int(m.group(1)))
-             for m in re.finditer(r"is-boatColor([1-6])", html)]
+             for m in re.finditer(r"is-boatColor([1-6])(?=[^>]*rowspan)", html)]
+    if len({w for _, w in marks}) < 6:
+        marks = [(m.start(), int(m.group(1)))
+                 for m in re.finditer(r"is-boatColor([1-6])", html)]
     # 展示行はほぼ等間隔。最終枠のブロックはEOFまで伸びてページ末尾の凡例
     # (label4 の部品名一覧)を飲み込み部品交換を誤検出するので、典型的な行長で上限を設ける。
     gaps = [marks[i + 1][0] - marks[i][0] for i in range(len(marks) - 1)]
