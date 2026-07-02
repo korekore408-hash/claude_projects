@@ -34,6 +34,23 @@ python app.py --lan
    設定 → ファイアウォール → アプリの許可 で python を追加）
 3. URLのIPが変わっていないか（PC再起動でIPが変わることがある。起動ログのURLを再確認）
 
+## クラウド版（PC不要・外出先からもOK）
+
+PCを起動しなくても、v1 と同じ Cloudflare Pages のサイトで **`/v2.html`** を開けば
+スマホからいつでも見られる（認証はサイト共通パスワード）。仕組み:
+
+- GitHub Actions `boatrace-v2-update` が **30分ごと（10:00〜21:30 JST）** に
+  `scheduler.py --once`（オッズ＋まもなく発走の展示＋発走済みの結果の1パス収集）→
+  `report.py` → `push_kv.py` で Cloudflare KV キー `v2_today` へ配信
+- 予測は朝の `boatrace-daily`（v1）の派生CSVキャッシュを共用。未生成の日はスキップして
+  前回データを温存
+- `/v2.html` は `/api/v2`（functions/api/v2.js・KV読出し）を60秒毎に再取得して描画。
+  **Pages のビルド枠は消費しない**（v1 の update.json / KV と同方式・同じ Secrets を共用）
+
+制約: クラウド版のオッズは最大30分＋cron遅延ぶん古い（画面の鮮度表示で確認できる）。
+**締切5分前ブーストはPC常駐（`app.py`）のみ**なので、実際に買う直前の最終確認は
+PC版を推奨。予想確率・的中率はどちらで見ても同一。
+
 ## v1 との対応（何が変わったか）
 
 | 指摘 | v2 での扱い |
@@ -75,6 +92,7 @@ before.py       展示（直前情報）・当日結果の取得（polite・JSON
 select_features.py  T10 特徴量の貪欲前進選択（リークなしプロトコル）
 ev_picks.py     当日EVピック（compute_picks が UI/CLI 共通コア）
 report.py       today.html / today.json の生成（data/web/。展示・結果・的中も表示）
+push_kv.py      today.json を Cloudflare KV へ配信（クラウド版・Secrets 未設定なら no-op）
 server.py       認証付き配信サーバ（配信は data/web/ のホワイトリストのみ）
 test_v2.py      ユニットテスト（ネットワーク不要・30件）
 data/           v2 の出力（スナップショット・発走時刻・較正曲線・展示結果・web）

@@ -1,0 +1,105 @@
+name: boatrace-v2-update
+
+# Nishio-boooto（boatrace_v2）のクラウド収集・配信。PC不要でスマホから /v2.html を見るための経路。
+#   ・30分ごと（10:00〜21:30 JST）に 1パス収集（scheduler.py --once）:
+#       未発走レースのオッズ snapshot ＋ まもなく発走の展示 ＋ 発走済みの結果
+#   ・report.py で today.json を生成し、push_kv.py が Cloudflare KV キー "v2_today" へ PUT。
+#     /v2.html（Pages）は /api/v2（functions/api/v2.js）経由で読む＝ビルド枠を消費しない。
+#   ・予測（predict_win.csv）は朝の boatrace-daily が作る派生CSVキャッシュを共用する。
+#     キャッシュが無い時（daily未完了/失効）は何もせず終了＝前回のKVデータを温存。
+#   ・当日内の収集状態（オッズsnapshot/展示結果/発走時刻）は actions/cache で持ち回す
+#     （git には commit しない。キーは run_id 付き＝毎回新規保存、restore-keys で当日最新を復元）。
+#
+# GitHub cron は UTC（01:00 UTC = 10:00 JST）。
+on:
+  schedule:
+    - cron: '*/30 1-12 * * *'   # 10:00〜21:30 JST を30分ごと
+  workflow_dispatch:
+
+concurrency:
+  group: boatrace-v2-update
+  cancel-in-progress: false
+
+permissions:
+  contents: read                # commit しない（配信は KV のみ）
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: compute JST day
+        id: day
+        run: echo "d=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: boatrace_v2/requirements.txt
+
+      - name: install deps
+        run: pip install -r boatrace_v2/requirements.txt
+
+      # 朝の boatrace-daily が保存した予測CSVを共用（v2 は読むだけ）
+      - name: restore derived CSV cache (from daily job)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            boatrace/predict_win.csv
+            boatrace/features_race_relative.csv
+            boatrace/features_player_history.csv
+          key: boatrace-derived-${{ steps.day.outputs.d }}
+          restore-keys: |
+            boatrace-derived-
+
+      - name: guard - skip if prediction missing
+        id: guard
+        run: |
+          if [ -f boatrace/predict_win.csv ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::predict_win.csv 無し（朝の boatrace-daily 未完了）→ 今回はスキップ（前回のKVデータを温存）"
+          fi
+
+      # 当日の収集状態（v2 スナップショット・展示結果・発走時刻）を復元
+      - name: restore v2 state
+        if: steps.guard.outputs.ok == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: boatrace_v2/data
+          key: boatrace-v2-state-${{ steps.day.outputs.d }}-${{ github.run_id }}
+          restore-keys: |
+            boatrace-v2-state-${{ steps.day.outputs.d }}-
+
+      - name: collect odds / exhibition / results (single pass)
+        if: steps.guard.outputs.ok == '1'
+        working-directory: boatrace_v2
+        run: python scheduler.py --once
+
+      - name: build today.json
+        if: steps.guard.outputs.ok == '1'
+        working-directory: boatrace_v2
+        run: python report.py
+
+      - name: push to Cloudflare KV (key v2_today)
+        if: steps.guard.outputs.ok == '1'
+        working-directory: boatrace_v2
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: python push_kv.py
+
+      # 収集状態を保存（次回 run が restore-keys で拾う）
+      - name: save v2 state
+        if: steps.guard.outputs.ok == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: boatrace_v2/data
+          key: boatrace-v2-state-${{ steps.day.outputs.d }}-${{ github.run_id }}

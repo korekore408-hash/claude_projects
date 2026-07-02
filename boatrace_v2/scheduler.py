@@ -11,9 +11,10 @@
 backtest.py の「購入時点フィルタ」がこれを参照する。
 
 使い方:
-  python scheduler.py                      # 今日を最終レースまで監視
+  python scheduler.py                      # 今日を最終レースまで監視（常駐）
   python scheduler.py --date 2026-07-01 --lead 5 --sweep-min 30
-  python scheduler.py --once               # 1回だけスイープして終了（cron/CI 用）
+  python scheduler.py --once               # 1パス収集して終了（cron/CI 用）:
+                                           #   未発走のオッズ＋まもなく発走の展示＋発走済みの結果
 """
 import argparse
 import datetime
@@ -68,6 +69,22 @@ def parse_rid(rid):
     return int(rid[:2]), rid[2:10], int(rid[10:12])
 
 
+def _parse_starts(st, hd):
+    """{rid: "HH:MM"} → {rid: datetime}（当日分のみ）。"""
+    starts = {}
+    for rid, hm in st.items():
+        pr = parse_rid(rid)
+        if not pr or pr[1] != hd:
+            continue
+        try:
+            h, m = map(int, hm.split(":"))
+            starts[rid] = datetime.datetime(int(hd[:4]), int(hd[4:6]),
+                                            int(hd[6:8]), h, m)
+        except ValueError:
+            continue
+    return starts
+
+
 def snapshot_races(hd, rids, label):
     if not rids:
         return
@@ -84,8 +101,37 @@ def snapshot_races(hd, rids, label):
           f"{len(rids)}R → {n}行追記")
 
 
-def run(hd, lead, sweep_min, once=False, on_update=None):
-    """on_update: スナップショット追記のたびに呼ぶフック（app.py の画面再生成用）。"""
+def ci_pass(hd, ex_lead=35):
+    """CI cron 用の1パス収集（常駐しない）。30分毎の実行を想定して、
+    未発走レースのオッズ／ex_lead 分以内に発走するレースの展示／
+    発走済みで未確定のレースの結果、をまとめて取得する。"""
+    st = fetch_start_times(hd)
+    if not st:
+        print("[sched] 発走時刻なし → 全場スイープのみ実行")
+        odds.collect(hd, list(range(1, 25)), list(range(1, 13)))
+        return
+    starts = _parse_starts(st, hd)
+    now = datetime.datetime.now()
+    pend = [r for r, s in starts.items() if s > now]
+    snapshot_races(hd, pend, "CIスイープ")
+    soon = [r for r, s in starts.items()
+            if now < s <= now + datetime.timedelta(minutes=ex_lead)]
+    if soon:
+        exs = before.fetch_and_save(hd, soon, want_before=True, want_result=False)
+        print(f"[sched] 展示取得: {len(soon)}R → {len(exs)}件")
+    have = {rid for rid, rec in before.load_day(hd).items() if rec.get("result")}
+    done = [r for r, s in starts.items()
+            if r not in have
+            and s + datetime.timedelta(minutes=RESULT_DELAY_MIN) <= now]
+    if done:
+        recs = before.fetch_and_save(hd, done, want_before=False, want_result=True)
+        got = sum(1 for r in done if recs.get(r, {}).get("result"))
+        print(f"[sched] 結果取得: {len(done)}R → 確定{got}件")
+
+
+def run(hd, lead, sweep_min, on_update=None):
+    """常駐モード。on_update: スナップショット追記のたびに呼ぶフック
+    （app.py の画面再生成用）。"""
     def notify():
         if on_update:
             try:
@@ -99,16 +145,7 @@ def run(hd, lead, sweep_min, once=False, on_update=None):
         odds.collect(hd, list(range(1, 25)), list(range(1, 13)))
         notify()
         return
-    starts = {}
-    for rid, hm in st.items():
-        pr = parse_rid(rid)
-        if not pr or pr[1] != hd:
-            continue
-        try:
-            h, m = map(int, hm.split(":"))
-            starts[rid] = datetime.datetime(int(hd[:4]), int(hd[4:6]), int(hd[6:8]), h, m)
-        except ValueError:
-            continue
+    starts = _parse_starts(st, hd)
     print(f"[sched] 開催 {len(starts)}レース "
           f"(締切ブースト: 発走{lead}分前 / スイープ: {sweep_min}分毎)")
 
@@ -123,8 +160,6 @@ def run(hd, lead, sweep_min, once=False, on_update=None):
             snapshot_races(hd, pend, "定期スイープ")
             notify()
             next_sweep = now + datetime.timedelta(minutes=sweep_min)
-            if once:
-                return
         # 2) 締切直前ブースト（発走 lead 分前を過ぎた未ブーストレース）
         #    オッズに加えて展示（直前情報）も取得する
         due = [r for r, s in starts.items()
@@ -173,9 +208,14 @@ def main():
     ap.add_argument("--date", default=datetime.date.today().strftime("%Y-%m-%d"))
     ap.add_argument("--lead", type=int, default=5, help="発走何分前にブースト取得するか")
     ap.add_argument("--sweep-min", type=int, default=30, help="定期スイープ間隔（分）")
-    ap.add_argument("--once", action="store_true", help="スイープ1回で終了（CI cron 用）")
+    ap.add_argument("--once", action="store_true",
+                    help="1パス収集で終了（CI cron 用: オッズ＋展示＋結果）")
     args = ap.parse_args()
-    run(args.date.replace("-", ""), args.lead, args.sweep_min, once=args.once)
+    hd = args.date.replace("-", "")
+    if args.once:
+        ci_pass(hd)
+    else:
+        run(hd, args.lead, args.sweep_min)
 
 
 if __name__ == "__main__":

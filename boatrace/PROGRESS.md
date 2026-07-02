@@ -13,8 +13,12 @@
   - 展示・当日結果のv2化: `before.py`（polite取得・JSON保存・v1フォールバック）。
     scheduler が締切前に展示・発走後に結果を自動取得し、画面に展示・結果・的中を表示
   - T10: `select_features.py`（選定期間固定＋期間内時系列分割の貪欲前進選択＝リークなし）
-  - ユニットテスト28件。残: T10 のバッチ実行（v1特徴量CSVが必要）と walk-forward 再評価。
+  - ユニットテスト30件。残: T10 のバッチ実行（v1特徴量CSVが必要）と walk-forward 再評価。
   v1 は特徴量・予測CSVの生成元として当面併用する。
+- クラウド版（2026-07-02）: PC不要でスマホから閲覧可能に。
+  GitHub Actions `boatrace-v2-update`（30分毎）→ Cloudflare KV `v2_today` →
+  Pages の `/v2.html`（/api/v2 経由・60秒毎再取得）。既存の CF Secrets・認証を共用。
+  締切5分前ブーストが必要な最終確認のみ PC の `app.py` を使う二段構え。
 
 ## コードレビュー指摘・修正タスクリスト（2026-07-01 実施）
 
