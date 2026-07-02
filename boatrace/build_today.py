@@ -2067,6 +2067,32 @@ function refreshPreviews(){
   return fetchPreviews().then(pj=>{const n=applyPreviews(pj); if(n)render(); return n;}).catch(()=>0);
 }
 
+// 当日レースの展示タイムの署名。値が変わった時だけ再描画するため（無変化のちらつき防止）。
+function exSig(){
+  let s='';
+  D.races.forEach(r=>{ if(r.d===D.base&&r.ex&&r.ex.time)s+=r.id+':'+r.ex.time.join(',')+';'; });
+  return s;
+}
+// 自動更新（案A）: previews と update.json を静かに再取得。展示や結果に変化があった時だけ、
+// スクロール位置・表示中の画面を保ったまま再描画する。GitHub Actions 枠は消費しない。
+function autoRefresh(){
+  if(upBusy)return;                       // 手動更新中は触らない
+  const before=exSig();
+  Promise.allSettled([upJSON(),fetchPreviews()]).then(res=>{
+    const u=res[0], p=res[1]; let changed=false;
+    if(u.status==='fulfilled'&&u.value&&u.value.fetched_at&&u.value.fetched_at!==upFetched){
+      applyUpd(u.value); upFetched=u.value.fetched_at; changed=true;   // 結果/EVが更新された
+    }
+    if(p.status==='fulfilled'&&p.value){ applyPreviews(p.value); }     // 展示は previews で上書き
+    if(exSig()!==before)changed=true;                                  // 展示タイムが変わった
+    if(changed){
+      const y=window.scrollY||document.documentElement.scrollTop||0;
+      render();
+      try{window.scrollTo(0,y);}catch(e){}                             // 再描画のスクロールリセットを打消し
+    }
+  }).catch(()=>{});
+}
+
 // クラウド: update.json を周期取得し、fetched_at が prev から変われば反映。tries回まで20秒間隔。
 function pollUpd(prev,tries){
   if(tries<=0){upBusy=false;upErr=true;upMsg='反映待ちがタイムアウトしました。数分後にページを再読み込みしてください。';render();return;}
@@ -2164,6 +2190,9 @@ if(location.protocol==='file:'){
       +(npv?' ・展示は最新フィード('+npv+'R)':'');
     render();
   }).catch(()=>{});
+  // 開いたまま展示公表を待てるよう、3分ごとに自動再取得（案A=previews＋update.json）。
+  // 変化があった時だけ再描画するので、表示を邪魔しない。タブ非表示中はスキップ。
+  setInterval(()=>{ if(!document.hidden)autoRefresh(); }, 180000);
 }
 render();
 // サーバ版へ #update 付きで来たら、自動で更新を1回実行（file://から更新を押した導線）。
