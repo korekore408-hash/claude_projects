@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+"""当日画面の生成 — ev_picks.compute_picks の結果を today.html / today.json に書き出す。
+
+server.py は data/web/ のホワイトリストだけを配信し、app.py がオッズ更新のたびに
+ここを再生成する（v1 の build_today.py のような集計は行わない。
+回収率の話は backtest.py の CI 付きレポートに委ねる — T1/T4）。
+
+使い方:
+  python report.py                      # 今日の today.html / today.json を生成
+  python report.py --date 2026-07-02 --ev-min 1.2
+"""
+import argparse
+import datetime
+import html
+import json
+import os
+
+try:
+    from . import config, ev_picks
+except ImportError:
+    import config
+    import ev_picks
+
+_CSS = """
+:root{--bg:#f5f6f8;--card:#fff;--ink:#1c2530;--sub:#5b6b7c;--line:#e3e8ee;
+--acc:#0f6ab4;--warn:#b45309;--hit:#0a7d55}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;line-height:1.55}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
+header{display:flex;justify-content:space-between;align-items:baseline;
+flex-wrap:wrap;gap:4px;margin-bottom:4px}
+h1{font-size:22px;margin:0}
+h1 small{font-size:12px;color:var(--sub);font-weight:normal;margin-left:8px}
+.meta{font-size:12px;color:var(--sub)}
+.note{font-size:12px;color:var(--sub);margin:6px 0 14px}
+.warn{color:var(--warn)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:12px 14px;margin-bottom:12px}
+.card h2{font-size:15px;margin:0 0 8px;display:flex;gap:10px;align-items:baseline}
+.card h2 .hon{font-size:12px;color:var(--acc);font-weight:normal}
+.card h2 .st{font-size:12px;color:var(--sub);font-weight:normal}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--sub);font-weight:normal;text-align:left;padding:2px 6px;
+border-bottom:1px solid var(--line)}
+td{padding:3px 6px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.ev{color:var(--hit);font-weight:600}
+.stale{color:var(--warn)}
+.empty{padding:26px;text-align:center;color:var(--sub)}
+footer{font-size:11px;color:var(--sub);margin:18px 0 8px}
+"""
+
+
+def render_html(hd, races, meta, ev_min, hon_min, generated_at):
+    d = f"{hd[:4]}-{hd[4:6]}-{hd[6:8]}"
+    warns = []
+    if meta.get("no_pred"):
+        warns.append("当日の予測がありません（v1 daily.py を先に実行してください）")
+    if meta.get("no_snaps"):
+        warns.append("オッズスナップショット未取得（app.py / scheduler.py が収集します）")
+    if meta.get("no_curve"):
+        warns.append("較正曲線なし（calibration.py 未実行）→ 生の p_win を使用中")
+    if meta.get("legacy"):
+        warns.append("v1形式オッズ（取得履歴なし）を使用中")
+    out = [
+        "<!DOCTYPE html><html lang='ja'><head><meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+        "<meta http-equiv='refresh' content='60'>",
+        f"<title>{html.escape(config.APP_TITLE)} {d}</title>",
+        f"<style>{_CSS}</style></head><body><div class='wrap'>",
+        "<header>",
+        f"<h1>{html.escape(config.APP_TITLE)}<small>v2</small></h1>",
+        f"<div class='meta'>{d} ／ 更新 {generated_at}（60秒毎に自動再読込）</div>",
+        "</header>",
+        f"<div class='note'>較正後確率 × 最新オッズで EV≥{ev_min:g}・"
+        f"本命確率≥{hon_min*100:.0f}% の買い目のみ表示。",
+    ]
+    for w in warns:
+        out.append(f"<div class='note warn'>⚠ {html.escape(w)}</div>")
+    out.append("</div>")
+    if not races:
+        out.append("<div class='card empty'>条件に合致する買い目なし"
+                   "（無理に張らないのが正解）</div>")
+    for race in races:
+        st = f"<span class='st'>発走 {html.escape(race['start'])}</span>" \
+            if race.get("start") else ""
+        out.append(
+            f"<div class='card'><h2>{html.escape(race['venue'])} "
+            f"{race['rno']}R {st}"
+            f"<span class='hon'>較正後本命 {race['hon']*100:.0f}%</span></h2>")
+        out.append("<table><tr><th>式別</th><th>買い目</th>"
+                   "<th class='num'>p</th><th class='num'>オッズ</th>"
+                   "<th class='num'>EV</th><th class='num'>鮮度</th></tr>")
+        for r in race["rows"]:
+            if r["age"] is None:
+                age = "<td class='num'>-</td>"
+            else:
+                cls = " class='num stale'" if r["age"] > 15 else " class='num'"
+                mark = " ⚠" if r["age"] > 15 else ""
+                age = f"<td{cls}>{r['age']:.0f}分前{mark}</td>"
+            out.append(
+                f"<tr><td>{'2連単' if r['bt'] == '2t' else '3連単'}</td>"
+                f"<td>{html.escape(r['combo'])}</td>"
+                f"<td class='num'>{r['p']:.3f}</td>"
+                f"<td class='num'>{r['odds']:.1f}</td>"
+                f"<td class='num ev'>{r['ev']:.2f}</td>{age}</tr>")
+        out.append("</table></div>")
+    out.append(
+        "<footer>EV=較正後確率×オッズ。オッズは発走直前に変動します（締切5分前に"
+        "自動再取得）。検証期間の回収率95%CIが100%を跨ぐ限り優位性は未実証です — "
+        "少点・高分散を前提に。</footer></div></body></html>")
+    return "".join(out)
+
+
+def build(hd=None, ev_min=1.5, hon_min=0.60, max_age=None):
+    """today.html / today.json を data/web/ に生成。返り値=htmlパス。"""
+    config.ensure_dirs()
+    hd = hd or datetime.date.today().strftime("%Y%m%d")
+    generated_at = datetime.datetime.now().strftime("%H:%M:%S")
+    races, meta = ev_picks.compute_picks(hd, ev_min=ev_min, hon_min=hon_min,
+                                         max_age=max_age)
+    jp = os.path.join(config.WEB_DIR, "today.json")
+    with open(jp, "w", encoding="utf-8") as f:
+        json.dump({"app": config.APP_TITLE, "date": hd,
+                   "generated_at": generated_at, "ev_min": ev_min,
+                   "hon_min": hon_min, "meta": meta, "races": races},
+                  f, ensure_ascii=False)
+    hp = os.path.join(config.WEB_DIR, "today.html")
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(render_html(hd, races, meta, ev_min, hon_min, generated_at))
+    return hp
+
+
+def main():
+    ap = argparse.ArgumentParser(description="today.html / today.json の生成")
+    ap.add_argument("--date", default=datetime.date.today().strftime("%Y-%m-%d"))
+    ap.add_argument("--ev-min", type=float, default=1.5)
+    ap.add_argument("--hon-min", type=float, default=0.60)
+    ap.add_argument("--max-age", type=float, default=None)
+    args = ap.parse_args()
+    hp = build(args.date.replace("-", ""), args.ev_min, args.hon_min, args.max_age)
+    print(f"○ 生成: {hp}")
+
+
+if __name__ == "__main__":
+    main()

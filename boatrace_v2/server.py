@@ -25,7 +25,7 @@ except ImportError:
     import odds
 
 TOKEN = os.environ.get("SERVE_TOKEN", "")
-ALLOW_FILES = {"/index.html", "/today.html", "/update.json"}
+ALLOW_FILES = {"/today.html", "/today.json"}   # 配信は data/web/ のこの2つだけ
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
@@ -49,8 +49,8 @@ class Handler(SimpleHTTPRequestHandler):
         p = u.path.rstrip("/") or "/"
         if p == "/odds":
             return self._odds(u)
-        if p == "/":
-            p = "/index.html"
+        if p in ("/", "/index.html"):
+            p = "/today.html"
         if p not in ALLOW_FILES or not os.path.exists(p.lstrip("/")):
             return self._json({"error": "not found"}, 404)
         self.path = p          # ホワイトリスト内のみ静的配信
@@ -83,24 +83,35 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="v2 配信サーバ（認証・ホワイトリスト付き）")
-    ap.add_argument("--port", type=int, default=8788)
-    ap.add_argument("--bind", default="127.0.0.1")
-    args = ap.parse_args()
-    if args.bind not in LOOPBACK and not TOKEN:
+def check_bind(bind):
+    """LAN公開（loopback 以外へのバインド）はトークン必須 — T6。"""
+    if bind not in LOOPBACK and not TOKEN:
         raise SystemExit(
             "エラー: LAN公開（--bind が localhost 以外）には環境変数 SERVE_TOKEN が必須です。\n"
             "例: SERVE_TOKEN=$(python -c 'import secrets;print(secrets.token_urlsafe(16))') "
             "python server.py --bind 0.0.0.0")
-    os.chdir(config.V2_DIR)
-    srv = ThreadingHTTPServer((args.bind, args.port), Handler)
-    print(f"配信中: http://{args.bind}:{args.port}/  "
+
+
+def serve(bind="127.0.0.1", port=8788):
+    """配信を開始（ブロッキング）。app.py からも呼ばれる。"""
+    check_bind(bind)
+    config.ensure_dirs()
+    os.chdir(config.WEB_DIR)      # 配信ルート＝生成物ディレクトリのみ
+    srv = ThreadingHTTPServer((bind, port), Handler)
+    print(f"[{config.APP_TITLE}] 配信中: http://{bind}:{port}/  "
           f"(認証: {'token必須' if TOKEN else 'なし=ローカルのみ'})")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\n停止しました。")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="v2 配信サーバ（認証・ホワイトリスト付き）")
+    ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--bind", default="127.0.0.1")
+    args = ap.parse_args()
+    serve(args.bind, args.port)
 
 
 if __name__ == "__main__":

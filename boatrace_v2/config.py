@@ -11,6 +11,8 @@ v2 の原則（v1 コードレビュー指摘を設計に織り込む）:
 """
 import os
 
+APP_TITLE = "西をポーターズ"   # アプリ名（変更はここ1箇所）
+
 V2_DIR = os.path.dirname(os.path.abspath(__file__))
 V1_DIR = os.path.normpath(os.path.join(V2_DIR, "..", "boatrace"))
 V1_DATA = os.path.join(V1_DIR, "data")          # K-file / B-file（読み取りのみ）
@@ -20,6 +22,7 @@ DATA_DIR = os.path.join(V2_DIR, "data")
 ODDS_SNAP_DIR = os.path.join(DATA_DIR, "odds")             # v2 スナップショット
 START_TIMES_DIR = os.path.join(DATA_DIR, "start_times")    # {rid: "HH:MM"} 日別JSON
 CALIBRATION_PATH = os.path.join(DATA_DIR, "calibration.json")
+WEB_DIR = os.path.join(DATA_DIR, "web")                    # 生成HTML/JSONの配信元
 
 # v1 が生成する予測CSV（walk-forward OOS が v2 バックテストの唯一の入力）
 PRED_OOS = os.path.join(V1_DIR, "predict_win_oos.csv")
@@ -50,8 +53,9 @@ VENUE_CODE = {
     "宮島": "17", "徳山": "18", "下関": "19", "若松": "20",
     "芦屋": "21", "福岡": "22", "唐津": "23", "大村": "24",
 }
+VENUE_NAME = {v: k for k, v in VENUE_CODE.items()}
 
 
 def ensure_dirs():
-    for d in (DATA_DIR, ODDS_SNAP_DIR, START_TIMES_DIR):
+    for d in (DATA_DIR, ODDS_SNAP_DIR, START_TIMES_DIR, WEB_DIR):
         os.makedirs(d, exist_ok=True)

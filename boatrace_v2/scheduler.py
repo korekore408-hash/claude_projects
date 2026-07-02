@@ -79,11 +79,20 @@ def snapshot_races(hd, rids, label):
           f"{len(rids)}R → {n}行追記")
 
 
-def run(hd, lead, sweep_min, once=False):
+def run(hd, lead, sweep_min, once=False, on_update=None):
+    """on_update: スナップショット追記のたびに呼ぶフック（app.py の画面再生成用）。"""
+    def notify():
+        if on_update:
+            try:
+                on_update()
+            except Exception as e:
+                print(f"[sched] on_update 失敗: {e}")
+
     st = fetch_start_times(hd)
     if not st:
         print("[sched] 発走時刻なし → 全場スイープのみ実行")
         odds.collect(hd, list(range(1, 25)), list(range(1, 13)))
+        notify()
         return
     starts = {}
     for rid, hm in st.items():
@@ -106,6 +115,7 @@ def run(hd, lead, sweep_min, once=False):
         if now >= next_sweep:
             pend = [r for r, s in starts.items() if s > now]
             snapshot_races(hd, pend, "定期スイープ")
+            notify()
             next_sweep = now + datetime.timedelta(minutes=sweep_min)
             if once:
                 return
@@ -115,6 +125,7 @@ def run(hd, lead, sweep_min, once=False):
                s - datetime.timedelta(minutes=lead) <= now < s]
         if due:
             snapshot_races(hd, due, f"締切{lead}分前ブースト")
+            notify()
             boosted |= set(due)
         # 3) 終了判定と次イベントまで sleep
         future = [s for s in starts.values() if s > now]

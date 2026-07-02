@@ -11,6 +11,9 @@ import pl
 import calibration
 import results
 import backtest
+import config
+import ev_picks
+import report
 
 
 def synth_html(n_cells, value="5.0"):
@@ -147,6 +150,61 @@ class TestBacktest(unittest.TestCase):
         self.assertEqual(pr, [(100, 360)])
         st0, _ = backtest.aggregate(race_bets, 0.0)
         self.assertEqual(st0["bets"], 3)
+
+
+class TestPicksAndReport(unittest.TestCase):
+    RID = "012026070201"       # 桐生 2026-07-02 1R
+
+    def _fixture(self):
+        preds = {self.RID: [0.60, 0.20, 0.10, 0.05, 0.03, 0.02]}
+        snaps = {(self.RID, "2t", "1-2"): [("2026-07-02 09:00:00", 9.0),
+                                           ("2026-07-02 10:00:00", 3.0)],
+                 (self.RID, "3t", "1-2-3"): [("2026-07-02 10:00:00", 8.0)]}
+        starts = {self.RID: "10:30"}
+        now = datetime.datetime(2026, 7, 2, 10, 5)
+        return preds, snaps, starts, now
+
+    def test_compute_picks_structure(self):
+        preds, snaps, starts, now = self._fixture()
+        races, meta = ev_picks.compute_picks(
+            "20260702", ev_min=0.5, hon_min=0.5, now=now,
+            preds=preds, snaps=snaps, curve=[], legacy=False, starts=starts)
+        self.assertEqual(len(races), 1)
+        race = races[0]
+        self.assertEqual((race["venue"], race["rno"], race["start"]),
+                         ("桐生", 1, "10:30"))
+        combos = {r["combo"]: r for r in race["rows"]}
+        self.assertIn("1-2", combos)
+        self.assertEqual(combos["1-2"]["odds"], 3.0)     # 最新スナップショットを採用
+        self.assertAlmostEqual(combos["1-2"]["age"], 5.0, places=1)
+        evs = [r["ev"] for r in race["rows"]]
+        self.assertEqual(evs, sorted(evs, reverse=True)) # EV降順
+        self.assertEqual(meta["n_picks"], len(race["rows"]))
+
+    def test_compute_picks_hon_min_filters_race(self):
+        preds, snaps, starts, now = self._fixture()
+        races, meta = ev_picks.compute_picks(
+            "20260702", ev_min=0.5, hon_min=0.99, now=now,
+            preds=preds, snaps=snaps, curve=[], legacy=False, starts=starts)
+        self.assertEqual(races, [])
+        self.assertEqual(meta["n_picks"], 0)
+
+    def test_render_html_contains_title_and_picks(self):
+        preds, snaps, starts, now = self._fixture()
+        races, meta = ev_picks.compute_picks(
+            "20260702", ev_min=0.5, hon_min=0.5, now=now,
+            preds=preds, snaps=snaps, curve=[], legacy=False, starts=starts)
+        html_out = report.render_html("20260702", races, meta, 0.5, 0.5, "10:05:00")
+        self.assertIn(config.APP_TITLE, html_out)
+        self.assertIn("桐生", html_out)
+        self.assertIn("1-2", html_out)
+
+    def test_render_html_empty_and_warnings(self):
+        meta = {"no_pred": True, "no_snaps": True, "no_curve": True,
+                "legacy": False, "n_picks": 0}
+        html_out = report.render_html("20260702", [], meta, 1.5, 0.6, "10:05:00")
+        self.assertIn("買い目なし", html_out)
+        self.assertIn("予測がありません", html_out)
 
 
 if __name__ == "__main__":

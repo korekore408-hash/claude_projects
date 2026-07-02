@@ -18,12 +18,13 @@ import datetime
 from collections import defaultdict
 
 try:
-    from . import config, odds, calibration, pl
+    from . import config, odds, calibration, pl, backtest
 except ImportError:
     import config
     import odds
     import calibration
     import pl
+    import backtest
 
 
 def load_today_pred(hd, path=None):
@@ -51,37 +52,34 @@ def age_min(fetched_at, now):
         return None
 
 
-def main():
-    ap = argparse.ArgumentParser(description="当日のEVピック（較正確率×実オッズ）")
-    ap.add_argument("--date", default=datetime.date.today().strftime("%Y-%m-%d"))
-    ap.add_argument("--ev-min", type=float, default=1.5)
-    ap.add_argument("--hon-min", type=float, default=0.60,
-                    help="較正後の本命確率下限（0で無効）")
-    ap.add_argument("--max-age", type=float, default=None,
-                    help="オッズ取得からの経過分の上限（超過は除外）")
-    args = ap.parse_args()
-    hd = args.date.replace("-", "")
-    now = datetime.datetime.now()
+def compute_picks(hd, ev_min=1.5, hon_min=0.60, max_age=None, now=None,
+                  preds=None, snaps=None, curve=None, legacy=None, starts=None):
+    """当日EVピックを構造化して返す（CLI表示と UI 生成の共通コア）。
 
-    preds = load_today_pred(hd)
-    snaps, legacy = odds.load_snapshots(hd)
-    curve = calibration.load_curve()
-    if not preds:
-        print("当日の予測がありません（v1 daily.py を先に実行）")
-        return
-    if not snaps:
-        print("当日のオッズスナップショットがありません（scheduler.py / odds.py で取得）")
-        return
-    if not curve:
-        print("⚠ 較正曲線なし（calibration.py 未実行）→ 生の p_win を使用")
-    if legacy:
-        print("⚠ v1形式オッズ（取得履歴なし）を使用")
-
-    n_pick = 0
+    返り値 (races, meta):
+      races = [{"rid","venue","rno","start","hon",
+                "rows":[{"bt","combo","p","odds","ev","age"}]}]  # ev降順
+      meta  = {"legacy","n_picks","no_pred","no_snaps","no_curve"}
+    preds/snaps/curve/starts はテスト・再利用のため注入可能（None なら読込）。"""
+    now = now or datetime.datetime.now()
+    if preds is None:
+        try:
+            preds = load_today_pred(hd)
+        except OSError:
+            preds = {}
+    if snaps is None:
+        snaps, legacy = odds.load_snapshots(hd)
+    if curve is None:
+        curve = calibration.load_curve()
+    if starts is None:
+        starts = backtest.load_start_times(hd)
+    meta = {"legacy": bool(legacy), "n_picks": 0,
+            "no_pred": not preds, "no_snaps": not snaps, "no_curve": not curve}
+    races = []
     for rid in sorted(preds):
         strengths = calibration.calibrate_race(preds[rid], curve)
         hon = max(strengths)
-        if hon < args.hon_min:
+        if hon < hon_min:
             continue
         cands = [("2t", c, p) for c, p in pl.pl_top(strengths, 2, config.TOP_2T)]
         cands += [("3t", c, p) for c, p in pl.pl_top(strengths, 3, config.TOP_3T)]
@@ -93,26 +91,64 @@ def main():
                 continue
             fa, o = hist[-1]
             ev = p * o
-            if ev < args.ev_min:
+            if ev < ev_min:
                 continue
             age = age_min(fa, now)
-            if args.max_age is not None and age is not None and age > args.max_age:
+            if max_age is not None and age is not None and age > max_age:
                 continue
-            rows.append((ev, bt, cs, p, o, age))
+            rows.append({"bt": bt, "combo": cs, "p": round(p, 4),
+                         "odds": o, "ev": round(ev, 3),
+                         "age": round(age, 1) if age is not None else None})
         if rows:
-            rows.sort(reverse=True)
-            print(f"\n{rid[:2]}場 {int(rid[10:]):2d}R（較正後本命 {hon*100:.0f}%）")
-            for ev, bt, cs, p, o, age in rows:
-                a = f"{age:.0f}分前" if age is not None else "取得時刻不明"
-                stale = " ⚠古い" if (age or 0) > 15 else ""
-                print(f"  {'2連単' if bt=='2t' else '3連単'} {cs:7s} "
-                      f"p={p:.3f} × {o:5.1f}倍 = EV {ev:.2f}（オッズ{a}{stale}）")
-            n_pick += len(rows)
-    if n_pick == 0:
+            rows.sort(key=lambda r: r["ev"], reverse=True)
+            races.append({"rid": rid,
+                          "venue": config.VENUE_NAME.get(rid[:2], rid[:2]),
+                          "rno": int(rid[10:]),
+                          "start": starts.get(rid, ""),
+                          "hon": round(hon, 4), "rows": rows})
+            meta["n_picks"] += len(rows)
+    return races, meta
+
+
+def main():
+    ap = argparse.ArgumentParser(description="当日のEVピック（較正確率×実オッズ）")
+    ap.add_argument("--date", default=datetime.date.today().strftime("%Y-%m-%d"))
+    ap.add_argument("--ev-min", type=float, default=1.5)
+    ap.add_argument("--hon-min", type=float, default=0.60,
+                    help="較正後の本命確率下限（0で無効）")
+    ap.add_argument("--max-age", type=float, default=None,
+                    help="オッズ取得からの経過分の上限（超過は除外）")
+    args = ap.parse_args()
+    hd = args.date.replace("-", "")
+
+    races, meta = compute_picks(hd, ev_min=args.ev_min, hon_min=args.hon_min,
+                                max_age=args.max_age)
+    if meta["no_pred"]:
+        print("当日の予測がありません（v1 daily.py を先に実行）")
+        return
+    if meta["no_snaps"]:
+        print("当日のオッズスナップショットがありません（scheduler.py / odds.py で取得）")
+        return
+    if meta["no_curve"]:
+        print("⚠ 較正曲線なし（calibration.py 未実行）→ 生の p_win を使用")
+    if meta["legacy"]:
+        print("⚠ v1形式オッズ（取得履歴なし）を使用")
+
+    for race in races:
+        st = f" 発走{race['start']}" if race["start"] else ""
+        print(f"\n{race['venue']} {race['rno']:2d}R{st}"
+              f"（較正後本命 {race['hon']*100:.0f}%）")
+        for r in race["rows"]:
+            a = f"{r['age']:.0f}分前" if r["age"] is not None else "取得時刻不明"
+            stale = " ⚠古い" if (r["age"] or 0) > 15 else ""
+            print(f"  {'2連単' if r['bt']=='2t' else '3連単'} {r['combo']:7s} "
+                  f"p={r['p']:.3f} × {r['odds']:5.1f}倍 = EV {r['ev']:.2f}"
+                  f"（オッズ{a}{stale}）")
+    if meta["n_picks"] == 0:
         print(f"\nEV>={args.ev_min}・本命>={args.hon_min} に合致する買い目なし"
               f"（無理に張らないのが正解）")
     else:
-        print(f"\n計 {n_pick} 点。※検証では優位性のCIは100%を跨いでいます。"
+        print(f"\n計 {meta['n_picks']} 点。※検証では優位性のCIは100%を跨いでいます。"
               f"少点・高分散を前提に。")
 
 
