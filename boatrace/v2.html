@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<!-- Nishio-boooto（boatrace_v2）クラウド版ビューア。
+     GET /api/v2（Cloudflare KV・GitHub Actions が30分毎に更新）を読み、
+     boatrace_v2/report.py と同じ見た目でクライアント側描画する。
+     認証は _middleware.js（サイト共通パスワード）に任せる。
+     置き場所が boatrace/ なのは Cloudflare Pages のルートがこのディレクトリのため。 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nishio-boooto</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--ink:#1c2530;--sub:#5b6b7c;--line:#e3e8ee;
+--acc:#0f6ab4;--warn:#b45309;--hit:#0a7d55}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;line-height:1.55}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
+header{display:flex;justify-content:space-between;align-items:baseline;
+flex-wrap:wrap;gap:4px;margin-bottom:4px}
+h1{font-size:22px;margin:0}
+h1 small{font-size:12px;color:var(--sub);font-weight:normal;margin-left:8px}
+.meta{font-size:12px;color:var(--sub)}
+.note{font-size:12px;color:var(--sub);margin:6px 0 14px}
+.warn{color:var(--warn)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:12px 14px;margin-bottom:12px}
+.card h2{font-size:15px;margin:0 0 8px;display:flex;gap:10px;align-items:baseline;
+flex-wrap:wrap}
+.card h2 .hon{font-size:12px;color:var(--acc);font-weight:normal}
+.card h2 .st{font-size:12px;color:var(--sub);font-weight:normal}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--sub);font-weight:normal;text-align:left;padding:2px 6px;
+border-bottom:1px solid var(--line)}
+td{padding:3px 6px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.ev{color:var(--hit);font-weight:600}
+.stale{color:var(--warn)}
+.res{font-size:12px;color:var(--ink);background:#eef6f1;border:1px solid #cfe5d8;
+border-radius:6px;padding:1px 8px}
+.exrow{font-size:12px;color:var(--sub);margin-top:8px;line-height:1.7}
+.exrow b{color:var(--ink)}
+tr.hit td{background:#f0faf5}
+td.hitmark{color:var(--hit);font-weight:700}
+td.missmark{color:var(--sub)}
+.empty{padding:26px;text-align:center;color:var(--sub)}
+.sum{background:#eef4fb;border-color:#cdddf0}
+.sum .big{font-size:15px;font-weight:600}
+.sum .plus{color:var(--hit)}
+.sum .minus{color:#b0453a}
+footer{font-size:11px;color:var(--sub);margin:18px 0 8px}
+@media (max-width:480px){
+.wrap{padding:10px}
+h1{font-size:19px}
+table{font-size:12px}
+td,th{padding:3px 4px}
+.card{padding:10px 10px}
+}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="card empty">読み込み中…</div></div>
+<script>
+"use strict";
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function jstToday() {
+  // 端末のタイムゾーンに依らず JST の今日を得る
+  const t = new Date(Date.now() + 9 * 3600 * 1000);
+  return t.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+function extraMinutes(d) {
+  // 生成時刻(JST)からの経過分。オッズ鮮度の表示に足し込む
+  if (!d.date || !d.generated_at) return 0;
+  const [h, m, s] = d.generated_at.split(":").map(Number);
+  const gen = Date.UTC(+d.date.slice(0,4), +d.date.slice(4,6)-1, +d.date.slice(6,8),
+                       h - 9, m, s);   // JST→UTC
+  return Math.max(0, (Date.now() - gen) / 60000);
+}
+
+function summarize(races, before) {
+  let nres=0, bets=0, hits=0, stake=0, ret=0;
+  for (const race of races) {
+    const res = (before[race.rid] || {}).result;
+    if (!res || !res.order) continue;
+    nres++;
+    for (const r of race.rows) {
+      const k = r.bt === "2t" ? 2 : 3;
+      if (res.order.length < k) continue;
+      bets++; stake += 100;
+      if (r.combo === res.order.slice(0, k).join("-")) {
+        hits++;
+        ret += (k === 2 ? res.po2 : res.po3) || 0;
+      }
+    }
+  }
+  return nres ? {races:nres, bets, hits, stake, ret, roi: stake ? ret/stake*100 : 0} : null;
+}
+
+function exLine(ex) {
+  const parts = [];
+  const times = ex.time || [];
+  if (times.some(t => t != null)) {
+    const best = Math.min(...times.filter(t => t != null));
+    parts.push("展示 " + times.map(t => t == null ? "-" :
+      (t === best ? `<b>${t.toFixed(2)}★</b>` : t.toFixed(2))).join(" / "));
+  }
+  const course = ex.course || [];
+  if (course.some(c => c != null)) {
+    const entry = course.map((c, i) => [c, i + 1]).filter(x => x[0] != null)
+                        .sort((a, b) => a[0] - b[0]).map(x => x[1]);
+    parts.push("進入 " + entry.join("-"));
+  }
+  const w = ex.weather || {};
+  const ws = [w.tenki || "",
+              w.wind != null ? `風${w.wind}m` : "",
+              w.wave != null ? `波${w.wave}cm` : ""].filter(Boolean).join(" ");
+  if (ws) parts.push(ws);
+  return parts.join(" ／ ");
+}
+
+function render(d) {
+  const out = [];
+  const dd = d.date ? `${d.date.slice(0,4)}-${d.date.slice(4,6)}-${d.date.slice(6,8)}` : "";
+  const before = d.before || {};
+  const extra = extraMinutes(d);
+  out.push(`<header><h1>${esc(d.app || "Nishio-boooto")}<small>v2 cloud</small></h1>
+    <div class="meta">${dd} ／ 更新 ${esc(d.generated_at || "-")} JST（60秒毎に自動再取得）</div></header>`);
+  out.push(`<div class="note">較正後確率 × 最新オッズで EV≥${d.ev_min}・` +
+           `本命確率≥${Math.round((d.hon_min || 0) * 100)}% の買い目のみ表示。` +
+           `クラウド版はGitHub Actionsが30分毎に収集（オッズ鮮度は下表参照）。`);
+  const m = d.meta || {};
+  const warns = [];
+  if (d.date && d.date !== jstToday())
+    warns.push(`これは ${dd} のデータです（本日分は朝の予測完了後、10:00 JST 以降に自動更新）`);
+  if (m.no_pred) warns.push("当日の予測がありません（朝の boatrace-daily 未完了）");
+  if (m.no_snaps) warns.push("オッズ未取得（10:00〜21:30 JST の30分毎に自動収集）");
+  if (m.no_curve) warns.push("較正曲線なし → 生の p_win を使用中");
+  if (m.legacy) warns.push("v1形式オッズを使用中");
+  for (const w of warns) out.push(`<div class="note warn">⚠ ${esc(w)}</div>`);
+  out.push("</div>");
+
+  const races = d.races || [];
+  const sm = summarize(races, before);
+  if (sm) {
+    const cls = sm.ret >= sm.stake ? "plus" : "minus";
+    out.push(`<div class="card sum"><div class="big">本日の途中経過` +
+      `（結果確定 ${sm.races}R分）: ${sm.bets}点中 ${sm.hits}的中 ／ ` +
+      `100円換算 投資 ${sm.stake.toLocaleString()}円 → 回収 ${sm.ret.toLocaleString()}円 ` +
+      `<span class="${cls}">（回収率 ${Math.round(sm.roi)}%）</span></div>` +
+      `<div class="note" style="margin:4px 0 0">※ 表示中の買い目を各100円購入したと` +
+      `仮定した参考値</div></div>`);
+  }
+  if (!races.length)
+    out.push(`<div class="card empty">条件に合致する買い目なし（無理に張らないのが正解）</div>`);
+
+  for (const race of races) {
+    const bf = before[race.rid] || {};
+    const res = bf.result;
+    const st = race.start ? `<span class="st">発走 ${esc(race.start)}</span>` : "";
+    let badge = "";
+    if (res && res.order) {
+      const pays = [];
+      if (res.po2 != null) pays.push(`2連単 ¥${res.po2.toLocaleString()}`);
+      if (res.po3 != null) pays.push(`3連単 ¥${res.po3.toLocaleString()}`);
+      badge = `<span class="res">結果 ${res.order.slice(0,3).join("-")}` +
+              (pays.length ? `（${pays.join("・")}）` : "") + `</span>`;
+    }
+    out.push(`<div class="card"><h2>${esc(race.venue)} ${race.rno}R ${st}` +
+      `<span class="hon">較正後本命 ${Math.round(race.hon * 100)}%</span>${badge}</h2>`);
+    const resCol = !!(res && res.order);
+    out.push(`<table><tr><th>式別</th><th>買い目</th><th class="num">p</th>` +
+      `<th class="num">オッズ</th><th class="num">EV</th><th class="num">鮮度</th>` +
+      (resCol ? "<th>結果</th>" : "") + `</tr>`);
+    for (const r of race.rows) {
+      let age = `<td class="num">-</td>`;
+      if (r.age != null) {
+        const a = r.age + extra;
+        const stale = a > 15;
+        age = `<td class="num${stale ? " stale" : ""}">${Math.round(a)}分前${stale ? " ⚠" : ""}</td>`;
+      }
+      let hitcell = "", rowcls = "";
+      if (resCol) {
+        const k = r.bt === "2t" ? 2 : 3;
+        const win = res.order.length >= k ? res.order.slice(0, k).join("-") : "";
+        if (r.combo === win) { hitcell = `<td class="hitmark">○的中</td>`; rowcls = ` class="hit"`; }
+        else hitcell = `<td class="missmark">×</td>`;
+      }
+      out.push(`<tr${rowcls}><td>${r.bt === "2t" ? "2連単" : "3連単"}</td>` +
+        `<td>${esc(r.combo)}</td><td class="num">${r.p.toFixed(3)}</td>` +
+        `<td class="num">${r.odds.toFixed(1)}</td>` +
+        `<td class="num ev">${r.ev.toFixed(2)}</td>${age}${hitcell}</tr>`);
+    }
+    out.push(`</table>`);
+    if (bf.ex) {
+      const line = exLine(bf.ex);
+      if (line) out.push(`<div class="exrow">${line}</div>`);
+    }
+    out.push(`</div>`);
+  }
+  out.push(`<footer>EV=較正後確率×オッズ。クラウド版のオッズは最大30分＋cron遅延ぶん古い
+（締切直前の最終確認は PC の app.py 推奨）。検証期間の回収率95%CIが100%を跨ぐ限り
+優位性は未実証です — 少点・高分散を前提に。</footer>`);
+  document.getElementById("app").innerHTML = out.join("");
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/v2", { cache: "no-store" });
+    if (!r.ok) {
+      document.getElementById("app").innerHTML =
+        `<div class="card empty">まだデータがありません（${r.status}）。<br>` +
+        `GitHub Actions「boatrace-v2-update」の初回実行後に表示されます。<br>` +
+        `<span class="note">KV未設定の場合は GitHub Secrets（CF_ACCOUNT_ID /` +
+        ` CF_KV_NAMESPACE_ID / CF_API_TOKEN）を確認してください。</span></div>`;
+      return;
+    }
+    render(await r.json());
+  } catch (e) {
+    document.getElementById("app").innerHTML =
+      `<div class="card empty">読み込みエラー: ${esc(String(e))}</div>`;
+  }
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

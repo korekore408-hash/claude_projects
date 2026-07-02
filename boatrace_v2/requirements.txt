@@ -1,0 +1,2 @@
+# boatrace_v2 の依存は requests のみ（他はすべて標準ライブラリ）。
+requests==2.32.4
