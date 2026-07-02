@@ -14,6 +14,8 @@ import backtest
 import config
 import ev_picks
 import report
+import before
+import select_features
 
 
 def synth_html(n_cells, value="5.0"):
@@ -205,6 +207,138 @@ class TestPicksAndReport(unittest.TestCase):
         html_out = report.render_html("20260702", [], meta, 1.5, 0.6, "10:05:00")
         self.assertIn("買い目なし", html_out)
         self.assertIn("予測がありません", html_out)
+
+
+def synth_beforeinfo():
+    """beforeinfo 相当の最小HTML（展示タイム・チルト・スタ展・天候）。"""
+    rows = []
+    times = [6.71, 6.65, 6.78, 6.80, 6.69, 6.75]
+    for w in range(1, 7):
+        rows.append(f'<td class="is-boatColor{w}">{w}</td>'
+                    f'<td>{times[w-1]:.2f}</td><td>-0.5</td>' + "x" * 40)
+    stex = "".join(f'<span class="table1_boatImage1Number">{w}</span>'
+                   f'<span class="table1_boatImage1Time">.0{w}</span>'
+                   for w in range(1, 7))
+    weather = ('<div class="weather1_body">'
+               '<span class="weather1_bodyUnitLabelTitle">曇り</span>'
+               '4.0m 2cm 22.0℃ <p class="is-wind12"></p></div>')
+    return "".join(rows) + stex + weather
+
+
+def synth_result():
+    """raceresult 相当の最小HTML（着順 2-1-5…・決まり手・配当）。"""
+    fin = {1: "２", 2: "１", 3: "６", 4: "５", 5: "３", 6: "４"}
+    tds = "".join(f'<td class="is-fs14">{fin[w]}</td>'
+                  f'<td class="is-fs14 is-boatColor{w}">{w}</td>'
+                  for w in (2, 1, 5, 6, 4, 3))
+    pay = ('<div class="numberSet1_row">'
+           '<span class="numberSet1_number is-type2">2</span>'
+           '<span class="numberSet1_number is-type1">1</span>'
+           '<span class="numberSet1_number is-type5">5</span></div>'
+           '<td><span class="is-payout1">&yen;1,810</span></td>'
+           '<div class="numberSet1_row">'
+           '<span class="numberSet1_number is-type2">2</span>'
+           '<span class="numberSet1_number is-type1">1</span></div>'
+           '<td><span class="is-payout1">&yen;640</span></td>')
+    return tds + " 差し " + pay
+
+
+class TestBeforeParse(unittest.TestCase):
+    def test_parse_st(self):
+        self.assertEqual(before._parse_st(".09"), 0.09)
+        self.assertEqual(before._parse_st("F.01"), -0.01)
+        self.assertIsNone(before._parse_st("L"))
+        self.assertIsNone(before._parse_st("-"))
+
+    def test_parse_beforeinfo(self):
+        ex = before.parse_beforeinfo(synth_beforeinfo())
+        self.assertIsNotNone(ex)
+        self.assertEqual(ex["time"][1], 6.65)          # 2号艇が最速
+        self.assertEqual(ex["tilt"][0], -0.5)
+        self.assertEqual(ex["course"], [1, 2, 3, 4, 5, 6])
+        self.assertAlmostEqual(ex["st"][0], 0.01)
+        self.assertEqual(ex["weather"]["tenki"], "曇り")
+        self.assertEqual(ex["weather"]["wind"], 4.0)
+        self.assertEqual(ex["weather"]["winddir"], 12)
+
+    def test_parse_beforeinfo_empty_page(self):
+        self.assertIsNone(before.parse_beforeinfo(""))
+        self.assertIsNone(before.parse_beforeinfo("<html>no data</html>"))
+
+    def test_parse_result(self):
+        res = before.parse_result(synth_result())
+        self.assertIsNotNone(res)
+        self.assertEqual(res["order"][:3], [2, 1, 5])
+        self.assertEqual(res["km"], "差し")
+        self.assertEqual(res["po2"], 640)
+        self.assertEqual(res["po3"], 1810)
+
+    def test_parse_result_unconfirmed(self):
+        self.assertIsNone(before.parse_result("<html></html>"))
+
+
+class TestSelectFeatures(unittest.TestCase):
+    def _synth_races(self):
+        """good が勝敗を決め noise は無関係な合成データ（10日×40R）。"""
+        import random
+        rnd = random.Random(7)
+        races, winner = {}, {}
+        for day in range(10):
+            date = f"2026-01-{day+1:02d}"
+            for k in range(40):
+                rid = f"01202601{day+1:02d}{k:02d}"
+                boats, sc = [], []
+                for lane in range(1, 7):
+                    g = rnd.gauss(0, 1)
+                    boats.append({"lane": lane,
+                                  "cont": {"good": g, "noise": rnd.gauss(0, 1)}})
+                    sc.append(1.5 * g)
+                mx = max(sc)
+                ws = [pow(2.718281828, s - mx) for s in sc]
+                tot = sum(ws)
+                r = rnd.random() * tot
+                acc = 0.0
+                for i, wgt in enumerate(ws):
+                    acc += wgt
+                    if r <= acc:
+                        winner[rid] = i + 1
+                        break
+                races[rid] = {"date": date, "boats": boats}
+        return races, winner
+
+    def test_greedy_picks_informative_feature(self):
+        races, winner = self._synth_races()
+        train_ids, valid_ids = select_features.split_days(races, "2026-12-31", 0.7)
+        self.assertTrue(train_ids and valid_ids)
+        sel, hist = select_features.greedy_select(
+            races, train_ids, valid_ids, winner, ["good", "noise"],
+            iters=60, min_gain=0.003, verbose=False)
+        self.assertEqual(sel[0], "good")               # 情報のある特徴を先に選ぶ
+        self.assertLess(hist[-1][1], hist[0][1])       # ベースラインより改善
+        self.assertNotIn("noise", sel)                 # 無情報特徴は追加しない
+
+
+class TestReportWithResult(unittest.TestCase):
+    def test_result_and_exhibition_rendered(self):
+        rid = "012026070201"
+        races = [{"rid": rid, "venue": "桐生", "rno": 1, "start": "10:30",
+                  "hon": 0.62,
+                  "rows": [{"bt": "2t", "combo": "2-1", "p": 0.2,
+                            "odds": 4.0, "ev": 0.8, "age": 3.0},
+                           {"bt": "2t", "combo": "1-2", "p": 0.3,
+                            "odds": 3.0, "ev": 0.9, "age": 3.0}]}]
+        meta = {"legacy": False, "n_picks": 2, "no_pred": False,
+                "no_snaps": False, "no_curve": False}
+        bf = {rid: {"ex": before.parse_beforeinfo(synth_beforeinfo()),
+                    "result": before.parse_result(synth_result()),
+                    "status": "result"}}
+        out = report.render_html("20260702", races, meta, 0.5, 0.5,
+                                 "10:35:00", bf)
+        self.assertIn("結果 2-1-5", out)
+        self.assertIn("○的中", out)                    # 2-1 が的中
+        self.assertIn("¥640", out)
+        self.assertIn("展示", out)
+        self.assertIn("進入 1-2-3-4-5-6", out)
 
 
 if __name__ == "__main__":

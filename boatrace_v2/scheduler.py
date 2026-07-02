@@ -24,10 +24,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from . import config, odds
+    from . import config, odds, before
 except ImportError:
     import config
     import odds
+    import before
+
+RESULT_DELAY_MIN = 6      # 発走から結果取得を試み始めるまで（分）
+RESULT_RETRY_MIN = 5      # 未確定時の再試行間隔（分）
+RESULT_GIVEUP_MIN = 60    # 発走からこの分数を過ぎたら諦める
 
 
 def fetch_start_times(hd):
@@ -108,6 +113,7 @@ def run(hd, lead, sweep_min, once=False, on_update=None):
           f"(締切ブースト: 発走{lead}分前 / スイープ: {sweep_min}分毎)")
 
     boosted = set()
+    resulted, res_next = set(), {}
     next_sweep = datetime.datetime.now()
     while True:
         now = datetime.datetime.now()
@@ -120,17 +126,40 @@ def run(hd, lead, sweep_min, once=False, on_update=None):
             if once:
                 return
         # 2) 締切直前ブースト（発走 lead 分前を過ぎた未ブーストレース）
+        #    オッズに加えて展示（直前情報）も取得する
         due = [r for r, s in starts.items()
                if r not in boosted and
                s - datetime.timedelta(minutes=lead) <= now < s]
         if due:
             snapshot_races(hd, due, f"締切{lead}分前ブースト")
+            exs = before.fetch_and_save(hd, due, want_before=True, want_result=False)
+            print(f"[sched {datetime.datetime.now():%H:%M:%S}] 展示取得: "
+                  f"{len(due)}R → {len(exs)}件")
             notify()
             boosted |= set(due)
-        # 3) 終了判定と次イベントまで sleep
+        # 3) 発走後の結果取得（未確定なら間隔をあけて再試行）
+        due_res = [r for r, s in starts.items()
+                   if r not in resulted
+                   and now >= s + datetime.timedelta(minutes=RESULT_DELAY_MIN)
+                   and now >= res_next.get(r, now)]
+        if due_res:
+            recs = before.fetch_and_save(hd, due_res,
+                                         want_before=False, want_result=True)
+            got = {r for r in due_res if recs.get(r, {}).get("result")}
+            resulted |= got
+            for r in set(due_res) - got:
+                if now >= starts[r] + datetime.timedelta(minutes=RESULT_GIVEUP_MIN):
+                    resulted.add(r)          # 中止等で確定しないレースは諦める
+                else:
+                    res_next[r] = now + datetime.timedelta(minutes=RESULT_RETRY_MIN)
+            print(f"[sched {datetime.datetime.now():%H:%M:%S}] 結果取得: "
+                  f"{len(due_res)}R → 確定{len(got)}件")
+            if got:
+                notify()
+        # 4) 終了判定と次イベントまで sleep
         future = [s for s in starts.values() if s > now]
-        if not future:
-            print("[sched] 全レース発走済み → 終了")
+        if not future and len(resulted) == len(starts):
+            print("[sched] 全レース発走済み・結果取得完了 → 終了")
             return
         events = [next_sweep] + [s - datetime.timedelta(minutes=lead)
                                  for r, s in starts.items() if r not in boosted

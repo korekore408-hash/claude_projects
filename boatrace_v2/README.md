@@ -1,4 +1,4 @@
-# 西をポーターズ（boatrace_v2）— 予想・EV・回収率パイプライン v2
+# Nishio-boooto（boatrace_v2）— 予想・EV・回収率パイプライン v2
 
 v1（`../boatrace`）のコードレビュー指摘（`../boatrace/PROGRESS.md` T1〜T13）を
 **修正パッチではなく設計に織り込んだ新規実装**。v1 は当面そのまま動かし、
@@ -32,9 +32,15 @@ LAN公開は `SERVE_TOKEN=xxxx python app.py --bind 0.0.0.0`。
 | T12 依存未固定 | 依存は requests のみ（`requirements.txt` でピン止め） |
 | T13 モデル系統不明示 | バックテストは使用した予測ファイルを常に表示 |
 
-残課題（フェーズ2続き）: T10 特徴量再選定（モデルはv1を利用中）、
-展示・結果取得のv2化（現状は結果=K-file、展示は未対応）。
-UI（today.html 相当）は `app.py` + `report.py` で対応済み。
+フェーズ2（対応済み）:
+- **UI**: `app.py` + `report.py`（当日画面・60秒自動更新・的中/結果表示）
+- **展示・当日結果のv2化**: `before.py`（polite取得・fetched_at付きJSON保存・
+  v1形式フォールバック読込）。scheduler が締切前に展示・発走後に結果を自動取得
+- **T10 特徴量再選定**: `select_features.py`（選定期間を `--select-until` より前に固定し、
+  期間内 train/valid 時系列分割で貪欲前進選択＝testリークなし。実行には
+  v1 の特徴量CSVが必要）
+
+残課題: T10 の実行と選択結果での walk-forward 再評価（ユーザー環境でのバッチ実行）。
 
 ## 構成
 
@@ -47,12 +53,14 @@ results.py      K-file 実配当・公式組合ローダ（決済用）
 calibration.py  PAV校正 + Brier/キャリブ表（CLIあり）
 pl.py           Plackett-Luce 展開
 backtest.py     EVバックテスト（honest・実配当・購入時点フィルタ・95%CI）
-scheduler.py    締切優先オッズ収集（定期スイープ＋直前ブースト）
+scheduler.py    締切優先オッズ収集（定期スイープ＋直前ブースト＋展示・結果取得）
+before.py       展示（直前情報）・当日結果の取得（polite・JSON保存・v1フォールバック）
+select_features.py  T10 特徴量の貪欲前進選択（リークなしプロトコル）
 ev_picks.py     当日EVピック（compute_picks が UI/CLI 共通コア）
-report.py       today.html / today.json の生成（data/web/）
+report.py       today.html / today.json の生成（data/web/。展示・結果・的中も表示）
 server.py       認証付き配信サーバ（配信は data/web/ のホワイトリストのみ）
-test_v2.py      ユニットテスト（ネットワーク不要・21件）
-data/           v2 の出力（スナップショット・発走時刻・較正曲線・web）
+test_v2.py      ユニットテスト（ネットワーク不要・28件）
+data/           v2 の出力（スナップショット・発走時刻・較正曲線・展示結果・web）
 ```
 
 ## 使い方（日次フロー）
@@ -78,6 +86,10 @@ python ev_picks.py --ev-min 1.5
 
 # 5) バックテスト（選定/検証分離・95%CI付き）
 python backtest.py --dates 20260604-20260617
+
+# 6) T10: 特徴量の再選定（リークなし。v1特徴量CSVが必要・数十分〜数時間）
+python select_features.py --select-until 2026-05-01
+#    → 選ばれた特徴で v1 の walk-forward を回すコマンドが最後に表示される
 ```
 
 ## 設計メモ
