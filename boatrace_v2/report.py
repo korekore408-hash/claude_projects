@@ -57,8 +57,43 @@ tr.hit td{background:#f0faf5}
 td.hitmark{color:var(--hit);font-weight:700}
 td.missmark{color:var(--sub)}
 .empty{padding:26px;text-align:center;color:var(--sub)}
+.sum{background:#eef4fb;border-color:#cdddf0}
+.sum .big{font-size:15px;font-weight:600}
+.sum .plus{color:var(--hit)}
+.sum .minus{color:#b0453a}
 footer{font-size:11px;color:var(--sub);margin:18px 0 8px}
+@media (max-width:480px){
+.wrap{padding:10px}
+h1{font-size:19px}
+table{font-size:12px}
+td,th{padding:3px 4px}
+.card{padding:10px 10px}
+}
 """
+
+
+def summarize(races, before_data):
+    """結果が確定したレース分の「表示買い目を各100円購入した場合」の途中集計。"""
+    n_res = bets = hits = stake = ret = 0
+    for race in races:
+        res = (before_data.get(race["rid"]) or {}).get("result")
+        if not res or not res.get("order"):
+            continue
+        n_res += 1
+        for r in race["rows"]:
+            k = 2 if r["bt"] == "2t" else 3
+            if len(res["order"]) < k:
+                continue
+            bets += 1
+            stake += 100
+            if r["combo"] == "-".join(map(str, res["order"][:k])):
+                hits += 1
+                po = res.get("po2") if k == 2 else res.get("po3")
+                ret += po or 0
+    if not n_res:
+        return None
+    return {"races": n_res, "bets": bets, "hits": hits, "stake": stake,
+            "ret": ret, "roi": ret / stake * 100 if stake else 0.0}
 
 
 def _ex_line(ex):
@@ -115,6 +150,17 @@ def render_html(hd, races, meta, ev_min, hon_min, generated_at, before_data=None
     for w in warns:
         out.append(f"<div class='note warn'>⚠ {html.escape(w)}</div>")
     out.append("</div>")
+    sm = summarize(races, before_data)
+    if sm:
+        cls = "plus" if sm["ret"] >= sm["stake"] else "minus"
+        out.append(
+            f"<div class='card sum'><div class='big'>本日の途中経過"
+            f"（結果確定 {sm['races']}R分）: {sm['bets']}点中 {sm['hits']}的中 ／ "
+            f"100円換算 投資 {sm['stake']:,}円 → 回収 {sm['ret']:,}円 "
+            f"<span class='{cls}'>（回収率 {sm['roi']:.0f}%）</span></div>"
+            f"<div class='note' style='margin:4px 0 0'>※ 表示中の買い目を各100円"
+            f"購入したと仮定した参考値（実際の購入・オッズ変動とは異なります）</div>"
+            f"</div>")
     if not races:
         out.append("<div class='card empty'>条件に合致する買い目なし"
                    "（無理に張らないのが正解）</div>")

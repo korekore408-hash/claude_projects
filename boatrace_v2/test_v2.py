@@ -318,6 +318,26 @@ class TestSelectFeatures(unittest.TestCase):
         self.assertNotIn("noise", sel)                 # 無情報特徴は追加しない
 
 
+class TestSummarize(unittest.TestCase):
+    def test_summary_counts_hits_and_payout(self):
+        rid = "012026070201"
+        races = [{"rid": rid, "venue": "桐生", "rno": 1, "start": "", "hon": 0.6,
+                  "rows": [{"bt": "2t", "combo": "2-1", "p": .2, "odds": 4.0,
+                            "ev": .8, "age": 1.0},
+                           {"bt": "3t", "combo": "2-1-5", "p": .1, "odds": 9.0,
+                            "ev": .9, "age": 1.0},
+                           {"bt": "3t", "combo": "1-2-3", "p": .1, "odds": 9.0,
+                            "ev": .9, "age": 1.0}]}]
+        bf = {rid: {"result": {"order": [2, 1, 5], "po2": 640, "po3": 1810}}}
+        sm = report.summarize(races, bf)
+        self.assertEqual((sm["races"], sm["bets"], sm["hits"]), (1, 3, 2))
+        self.assertEqual((sm["stake"], sm["ret"]), (300, 640 + 1810))
+
+    def test_summary_none_without_results(self):
+        races = [{"rid": "x", "rows": []}]
+        self.assertIsNone(report.summarize(races, {}))
+
+
 class TestReportWithResult(unittest.TestCase):
     def test_result_and_exhibition_rendered(self):
         rid = "012026070201"

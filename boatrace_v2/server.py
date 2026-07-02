@@ -7,6 +7,11 @@ v1 serve_odds.py からのセキュリティ改善:
   - 静的配信は ALLOW_FILES のホワイトリストのみ（data/ のCSV・ログは配信しない）
   - /odds は race_id を厳格検証し、取得結果はスナップショットにも追記保存
 
+スマホ対応:
+  - 一度 ?token=xxxx でアクセスすると Cookie に保存され、以後はトークンなしのURLでも
+    開ける（ブックマーク可）
+  - LAN内での自分のIPは lan_ip() で検出（app.py --lan がURLを表示する）
+
 使い方:
   python server.py                                  # localhost:8788（トークン不要）
   SERVE_TOKEN=xxxx python server.py --bind 0.0.0.0  # LAN公開（?token=xxxx 必須）
@@ -15,7 +20,8 @@ import argparse
 import datetime
 import json
 import os
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+import socket
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 try:
@@ -25,8 +31,21 @@ except ImportError:
     import odds
 
 TOKEN = os.environ.get("SERVE_TOKEN", "")
+COOKIE_NAME = "nb_token"
 ALLOW_FILES = {"/today.html", "/today.json"}   # 配信は data/web/ のこの2つだけ
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def lan_ip():
+    """LAN内で他端末から見える自分のIP（UDP connect は実送信なし）。"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "<PCのIPアドレス>"
+    finally:
+        s.close()
 
 
 def parse_race_id(rid):
@@ -38,14 +57,25 @@ def parse_race_id(rid):
     return jcd, rid[2:10], int(rid[10:12])
 
 
-class Handler(SimpleHTTPRequestHandler):
+class Handler(BaseHTTPRequestHandler):
+    def _cookie_token(self):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE_NAME:
+                return v
+        return ""
+
     def do_GET(self):
         u = urlparse(self.path)
+        set_cookie = False
         if TOKEN:
-            q = parse_qs(u.query)
-            given = (q.get("token") or [""])[0] or self.headers.get("X-Auth-Token", "")
+            q_token = (parse_qs(u.query).get("token") or [""])[0]
+            given = (q_token or self.headers.get("X-Auth-Token", "")
+                     or self._cookie_token())
             if given != TOKEN:
-                return self._json({"error": "unauthorized"}, 401)
+                return self._json({"error": "unauthorized",
+                                   "hint": "?token=... を付けてアクセス"}, 401)
+            set_cookie = bool(q_token)      # 正しいトークンをCookieに保存（スマホ用）
         p = u.path.rstrip("/") or "/"
         if p == "/odds":
             return self._odds(u)
@@ -53,8 +83,22 @@ class Handler(SimpleHTTPRequestHandler):
             p = "/today.html"
         if p not in ALLOW_FILES or not os.path.exists(p.lstrip("/")):
             return self._json({"error": "not found"}, 404)
-        self.path = p          # ホワイトリスト内のみ静的配信
-        return super().do_GET()
+        return self._file(p, set_cookie)
+
+    def _file(self, p, set_cookie):
+        with open(p.lstrip("/"), "rb") as f:
+            data = f.read()
+        ctype = ("text/html; charset=utf-8" if p.endswith(".html")
+                 else "application/json; charset=utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        if set_cookie:
+            self.send_header("Set-Cookie",
+                             f"{COOKIE_NAME}={TOKEN}; Path=/; Max-Age=2592000; HttpOnly")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _odds(self, u):
         rid = (parse_qs(u.query).get("id") or [""])[0]
@@ -98,8 +142,13 @@ def serve(bind="127.0.0.1", port=8788):
     config.ensure_dirs()
     os.chdir(config.WEB_DIR)      # 配信ルート＝生成物ディレクトリのみ
     srv = ThreadingHTTPServer((bind, port), Handler)
-    print(f"[{config.APP_TITLE}] 配信中: http://{bind}:{port}/  "
-          f"(認証: {'token必須' if TOKEN else 'なし=ローカルのみ'})")
+    if bind in LOOPBACK:
+        print(f"[{config.APP_TITLE}] 配信中: http://127.0.0.1:{port}/ （このPCのみ）")
+    else:
+        print(f"[{config.APP_TITLE}] LAN公開中。スマホ・他端末はこのURLを開く:")
+        print(f"  http://{lan_ip()}:{port}/?token={TOKEN}")
+        print("  （一度開けばCookieに保存され、以後は ?token なしでもOK。"
+              "つながらない場合はPC側ファイアウォールで Python の受信を許可）")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

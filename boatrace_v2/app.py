@@ -10,15 +10,18 @@
 較正曲線（calibration.py）が無い場合は生の p_win で動き、画面に警告を出す。
 
 使い方:
-  python app.py                          # 今日を最終レースまで
+  python app.py                          # 今日を最終レースまで（PC内のみ・ブラウザ自動起動）
+  python app.py --lan                    # ★スマホ・他端末から見る（トークン自動発行＋URL表示）
   python app.py --ev-min 1.2 --hon-min 0
   python app.py --no-fetch               # 収集せず配信のみ（取得済みデータの閲覧）
-  SERVE_TOKEN=xxxx python app.py --bind 0.0.0.0   # LAN公開
+  SERVE_TOKEN=xxxx python app.py --bind 0.0.0.0   # LAN公開（トークン自分で指定）
 """
 import argparse
 import datetime
+import secrets
 import threading
 import time
+import webbrowser
 
 try:
     from . import config, report, scheduler, server
@@ -39,7 +42,14 @@ def main():
     ap.add_argument("--lead", type=int, default=5, help="締切ブースト（発走何分前）")
     ap.add_argument("--sweep-min", type=int, default=30, help="定期スイープ間隔（分）")
     ap.add_argument("--no-fetch", action="store_true", help="収集せず配信のみ")
+    ap.add_argument("--lan", action="store_true",
+                    help="スマホ・他端末から見る（0.0.0.0で公開・トークン自動発行）")
+    ap.add_argument("--no-open", action="store_true", help="ブラウザを自動で開かない")
     args = ap.parse_args()
+    if args.lan:
+        args.bind = "0.0.0.0"
+        if not server.TOKEN:
+            server.TOKEN = secrets.token_urlsafe(8)   # このURLを知る人だけ閲覧可能
     server.check_bind(args.bind)          # トークン無しのLAN公開は起動前に拒否
     config.ensure_dirs()
     hd = args.date.replace("-", "")
@@ -66,6 +76,10 @@ def main():
                 print(f"[app] 画面再生成失敗: {e}")
 
     threading.Thread(target=ticker, daemon=True, name="report-ticker").start()
+
+    if args.bind in server.LOOPBACK and not args.no_open:
+        threading.Timer(1.0, lambda: webbrowser.open(
+            f"http://127.0.0.1:{args.port}/")).start()
 
     server.serve(args.bind, args.port)     # ブロッキング（Ctrl+C で終了）
 
