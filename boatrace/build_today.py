@@ -2105,6 +2105,41 @@ function tenjiSweep(){
   return Promise.all(targets.map(tenjiFetch)).then(a=>a.some(x=>x));
 }
 
+// ── 結果の公式直取り（/api/result・Cloudflare Pages Function）──
+// results フィード(boatraceopenapi)も実測2〜4時間おきで確定直後に間に合わないため、
+// 締切を過ぎた未確定レースだけ公式 raceresult を直接取得（確定後≤数分で反映）。
+// applyUpd と同じく着順/決まり手/配当を D.races へ入れる。サーバ側120秒キャッシュ。
+const resLast={};                                     // race_id → 最終取得エポックms（2分スロットル）
+function resultFetch(r){
+  const now=Date.now();
+  if(resLast[r.id]&&now-resLast[r.id]<120000)return Promise.resolve(false);
+  resLast[r.id]=now;
+  const q='jcd='+r.id.slice(0,2)+'&rno='+(+r.id.slice(10,12))+'&hd='+r.id.slice(2,10);
+  return fetch('/api/result?'+q,{cache:'no-store'}).then(x=>{if(!x.ok)throw 0;return x.json();})
+    .then(o=>{
+      const rs=o&&o.result; if(!rs||!rs.fin)return false;
+      const fin=rs.fin; for(let w=1;w<=6;w++)r.b[w-1][2]=fin[w-1];   // 着順→結果表示に切替
+      if(rs.km)r.km=rs.km;
+      if(rs.po2!=null||rs.po3!=null)r.po=[rs.po2,rs.po3];
+      r.resSrc='official'; return true;
+    })
+    .catch(()=>false);                                // 失敗は update.json にフォールバック
+}
+// 締切後2分〜締切後90分・未確定の当日レース（＋詳細表示中）を直取り。確定したら以後スキップ。
+function resultSweep(){
+  if(!IS_CLOUD)return Promise.resolve(false);         // /api/result はクラウドのみ
+  const targets=[];
+  D.races.forEach(r=>{
+    if(r.d!==D.base||hasResult(r))return;
+    const mn=raceMin(r); if(mn==null)return;
+    if(mn<=-2&&mn>=-90)targets.push(r);               // 締切2分後〜90分後（大幅遅延も拾う）
+  });
+  if(sel!=null){const r=dayRaces()[sel]; const mn=r?raceMin(r):null;
+    if(r&&r.d===D.base&&!hasResult(r)&&mn!=null&&mn<=-2&&targets.indexOf(r)<0)targets.push(r);}
+  if(!targets.length)return Promise.resolve(false);
+  return Promise.all(targets.map(resultFetch)).then(a=>a.some(x=>x));
+}
+
 // 当日レースの展示タイム/展示STの署名。値が変わった時だけ再描画するため（無変化のちらつき防止）。
 function exSig(){
   let s='';
@@ -2129,8 +2164,9 @@ function autoRefresh(){
       applyUpd(u.value); upFetched=u.value.fetched_at; changed=true;   // 結果/EVが更新された
     }
     if(p.status==='fulfilled'&&p.value){ applyPreviews(p.value); }     // 展示は previews で上書き
-    return tenjiSweep().then(()=>{                                     // 締切前レースは公式直取り（最優先）
+    return Promise.all([tenjiSweep(),resultSweep()]).then(sw=>{        // 締切前=展示・締切後=結果を公式直取り
       if(exSig()!==before)changed=true;                                // 展示が変わった
+      if(sw[1])changed=true;                                           // 結果が確定した
       if(changed)rerenderKeepScroll();
     });
   }).catch(()=>{});
@@ -2210,10 +2246,12 @@ function render(){
     if(cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
   }else{
     document.querySelector('.back').onclick=()=>{sel=null;render();};
-    // 詳細を開いたら、そのレースの展示を公式から即取得（2分スロットル・変化時のみ再描画）。
+    // 詳細を開いたら、そのレースを公式から即取得（締切後は結果・締切前は展示。2分スロットル）。
     const dr=dayRaces()[sel];
-    if(IS_CLOUD&&dr&&dr.d===D.base&&!hasResult(dr))
-      tenjiFetch(dr).then(ch=>{ if(ch&&sel!=null&&dayRaces()[sel]===dr)rerenderKeepScroll(); });
+    if(IS_CLOUD&&dr&&dr.d===D.base&&!hasResult(dr)){
+      const mn=raceMin(dr), fn=(mn!=null&&mn<=-2)?resultFetch:tenjiFetch;
+      fn(dr).then(ch=>{ if(ch&&sel!=null&&dayRaces()[sel]===dr)rerenderKeepScroll(); });
+    }
   }
 }
 // file:// で直接開かれ、かつ更新サーバが起動中ならサーバ版へ自動で切替える
@@ -2236,7 +2274,7 @@ if(location.protocol==='file:'){
     upMsg='自動更新 '+(fa||'')+' ／ 結果 '+n.nres+'・展示 '+nexFinal+(n.nev?'・EV '+n.nev:'')+' レース反映'
       +(npv?' ・展示は最新フィード('+npv+'R)':'');
     render();
-    tenjiSweep().then(ch=>{ if(ch)rerenderKeepScroll(); });   // 締切前レースは公式直取りで即最新化
+    Promise.all([tenjiSweep(),resultSweep()]).then(sw=>{ if(sw[0]||sw[1])rerenderKeepScroll(); });   // 締切前=展示・締切後=結果を公式直取りで即最新化
   }).catch(()=>{});
   // 開いたまま展示公表を待てるよう、3分ごとに自動再取得（previews＋update.json＋公式直取り）。
   // 変化があった時だけ再描画するので、表示を邪魔しない。タブ非表示中はスキップ。
