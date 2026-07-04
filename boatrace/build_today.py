@@ -1295,6 +1295,11 @@ HTML = r"""<!DOCTYPE html>
   .ok{color:#43c59e;font-weight:700}.ng{color:#e06b6b}
   .chev{color:#5b6472;font-size:16px}
   .back{display:inline-flex;align-items:center;gap:4px;font-size:14px;color:#6ea8fe;background:transparent;border:none;cursor:pointer;padding:8px 0}
+  .dnav{position:sticky;top:0;z-index:30;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#0f1115;padding:4px 0 6px;margin-bottom:2px;border-bottom:1px solid #1c2029}
+  .dnav-r{display:flex;gap:6px;flex:none}
+  .pnav{font-size:13px;color:#cdd6e2;background:#1a1f28;border:1px solid #2a2f3a;border-radius:8px;padding:6px 11px;cursor:pointer;white-space:nowrap}
+  .pnav:not(:disabled):active{background:#232935}
+  .pnav:disabled{opacity:.32;cursor:default}
   .dh{font-size:19px;font-weight:700;margin:2px 0}
   .warn{font-size:12px;color:#f0c674;background:#2a2015;border:1px solid #6b5a1a;border-radius:8px;padding:7px 10px;margin:6px 0;line-height:1.5}
   .cmt{font-size:13px;color:#cdd6e2;background:#141a1f;border-left:3px solid #3b82f6;border-radius:0 6px 6px 0;padding:9px 12px;margin:8px 0;line-height:1.7}
@@ -1814,7 +1819,13 @@ function detailView(r){
   const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
   const payEx=r.po?r.po[0]:null, payTri=r.po?r.po[1]:null;   // 実配当（K-file・100円あたり）。的中行に配当・回収率を表示。
   let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
-  let h='<button class="back">&lsaquo; 一覧へ戻る</button>';
+  const _nR=dayRaces().length;   // 前/次レース＝同じ日付内をインデックス移動（締切順）
+  let h='<div class="dnav">'
+    +'<button class="back">&lsaquo; 一覧へ戻る</button>'
+    +'<div class="dnav-r">'
+    +'<button class="pnav prev"'+(sel<=0?' disabled':'')+'>&lsaquo; 前のレース</button>'
+    +'<button class="pnav next"'+(sel>=_nR-1?' disabled':'')+'>次のレース &rsaquo;</button>'
+    +'</div></div>';
   h+='<div class="dh">'+r.v+' '+r.no+'R'+(r.tm?' <span class="dhtm">'+r.tm+' 締切</span>':'')+'</div>';
   h+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
   // 気象（K-file実況）。当日は中立化＝空なので「天候は当日未反映」と表示。
@@ -2603,6 +2614,8 @@ function render(){
     if(cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
   }else{
     document.querySelector('.back').onclick=()=>{sel=null;render();};
+    const _pv=document.querySelector('.pnav.prev'); if(_pv&&!_pv.disabled)_pv.onclick=()=>{sel--;render();};
+    const _nx=document.querySelector('.pnav.next'); if(_nx&&!_nx.disabled)_nx.onclick=()=>{sel++;render();};
     // 詳細を開いたら、そのレースを公式から即取得（締切後は結果・締切前は展示。2分スロットル）。
     const dr=dayRaces()[sel];
     if(IS_CLOUD&&dr&&dr.d===D.base&&!hasResult(dr)){
