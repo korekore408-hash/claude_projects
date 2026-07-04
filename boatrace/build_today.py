@@ -282,6 +282,15 @@ def _alloc_yen(probs, budget=2000, unit=100):
     return [u * unit for u in units]
 
 
+def _ana_cand_ref(ab):
+    """穴目（買わない参考）＝穴候補(API4番人気)アタマ×上位3艇の2-3着流し6点。JS anaCandRef と同一。
+    ab=API per-mille 配列（長さ6）。"""
+    idx = sorted(range(6), key=lambda i: ab[i], reverse=True)
+    c = idx[3] + 1
+    T = [idx[0] + 1, idx[1] + 1, idx[2] + 1]
+    return [(c, a, b) for a in T for b in T if a != b]
+
+
 def venue_stats(rel, pred, score_map, hist, payout, since, hon_map=None):
     """since 以降の結果がある全レースから、場別の的中率＋変動回収率を集計。
     score_map={(race_id,枠int):p_win} で予想系統を差し替え（従来モデル/API予想 共用）。
@@ -800,6 +809,216 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
             "from": start_date}
 
 
+def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays=30):
+    """今日から ndays 日さかのぼる「日別」回収率の時系列（券種別）。
+    ★買い目＝サイト本体／上部サマリー(daySummary)と同一ポリシー（順位付け＝学習モデル、
+      荒れ度・点数＝API本命確率）。折れ線グラフ用に各日の 2連単／3連単／穴目 を集計。
+      - 2連単＝確率上位 k_ex（全帯）・各¥2,000確率比例配分・F返還。
+      - 3連単＝triOn(hon≥0.45)のみ・確率上位 k_tri（標準帯は穴型除外）・¥2,000配分・F返還。
+      - 穴目＝**買わない参考**。穴帯(hon<0.45)で穴候補アタマ6点(anaCandRef)を各¥100フル。
+        購入はしないが「的中していれば穴予想的中」が分かるよう的中率／回収率を出す。
+    各券種 [n(対象R), hit(的中R), inv(投資円), ret(払戻円)]。回収率＝ret/inv。"""
+    from collections import defaultdict
+    races = {}
+    for r in rel:
+        rid = r["race_id"]
+        try:
+            w = int(r["枠番"])
+        except (ValueError, TypeError):
+            continue
+        pr = pred.get((rid, r["枠番"]), {})
+        try:
+            fin = int(pr.get("finish_rank"))
+        except (TypeError, ValueError):
+            fin = None
+        rc = races.setdefault(rid, {"d": r["日付"], "b": {}, "ab": {}})
+        rc["b"][w] = (model_map.get((rid, w)), fin)
+        rc["ab"][w] = api_map.get((rid, w))
+    # 日別 [n,hit,inv,ret]
+    day = defaultdict(lambda: {"ex": [0, 0, 0, 0], "tri": [0, 0, 0, 0], "ana": [0, 0, 0, 0]})
+    for rid, rc in races.items():
+        if len(rc["b"]) != 6:
+            continue
+        sv = [rc["b"][w][0] for w in range(1, 7)]
+        fins = [rc["b"][w][1] for w in range(1, 7)]
+        ab = [round((rc["ab"].get(w) or 0) * 1000) for w in range(1, 7)]
+        if any(x is None for x in sv):
+            continue
+        order = sorted([w for w in range(1, 7)
+                        if fins[w - 1] is not None and fins[w - 1] >= 1],
+                       key=lambda w: fins[w - 1])
+        if len(order) < 2 or fins[order[0] - 1] != 1:
+            continue
+        hon = hon_canon.get(rid)
+        if hon is None:
+            continue
+        po = payout.get(rid, (0, 0))
+        fly = {w for w in range(1, 7) if not fins[w - 1]}
+        act2 = tuple(order[:2])
+        act3 = tuple(order[:3]) if len(order) >= 3 else None
+        D = day[rc["d"]]
+        # 2連単（全帯）
+        buy2 = _pl_topk(sv, 2, k_ex(hon))
+        if buy2:
+            yen2 = _alloc_yen([_pl_prob(sv, c) for c in buy2])
+            D["ex"][0] += 1
+            for c, y in zip(buy2, yen2):
+                if not any(w in fly for w in c):
+                    D["ex"][2] += y
+                if c == act2:
+                    D["ex"][3] += round(po[0] * y / 100)
+                    D["ex"][1] += 1
+        # 3連単（triOn＝hon≥0.45のみ・標準帯は穴型除外）
+        if act3 and hon >= 0.45:
+            buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), k_tri(hon), hon, _lane_rank_map(sv))
+            if buy3:
+                yen3 = _alloc_yen([_pl_prob(sv, c) for c in buy3])
+                D["tri"][0] += 1
+                for c, y in zip(buy3, yen3):
+                    if not any(w in fly for w in c):
+                        D["tri"][2] += y
+                    if c == act3:
+                        D["tri"][3] += round(po[1] * y / 100)
+                        D["tri"][1] += 1
+        # 穴目（穴帯のみ・買わない参考・穴候補アタマ6点×各¥100）
+        if act3 and hon < 0.45:
+            D["ana"][0] += 1
+            for c in _ana_cand_ref(ab):
+                if not any(w in fly for w in c):
+                    D["ana"][2] += 100
+                if c == act3:
+                    D["ana"][3] += po[1]
+                    D["ana"][1] += 1
+    days = [d for d in sorted(day) if d <= base][-ndays:]
+
+    def pack(a):
+        return {"n": a[0], "h": a[1], "inv": a[2], "ret": a[3]}
+    ser = [{"d": d, "ex": pack(day[d]["ex"]), "tri": pack(day[d]["tri"]),
+            "ana": pack(day[d]["ana"])} for d in days]
+    tot = {"ex": [0, 0, 0, 0], "tri": [0, 0, 0, 0], "ana": [0, 0, 0, 0]}
+    for d in days:
+        for k in ("ex", "tri", "ana"):
+            for i in range(4):
+                tot[k][i] += day[d][k][i]
+    return {"days": ser, "tot": {k: pack(v) for k, v in tot.items()},
+            "from": days[0] if days else None, "to": days[-1] if days else None}
+
+
+def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date,
+                    start_balance=1_000_000, base=None):
+    """仮想100万円チャレンジ【穴帯バージョン】: 穴帯(本命確率<0.45)レースだけを狙い、
+    穴目＝穴候補(API4番人気)アタマ6点(anaCandRef)を3連単でフル購入して残高を転がす実験。
+    ★本家(鉄板)との対比＝『穴を追い続けたら100万はどうなるか』。
+      - 対象＝その日の穴帯レース全て。1レースあたり残高の約 F_RACE を6点に均等配分(¥100単位)。
+      - 1日の投票上限＝残高（最大 start_balance）。超過時は比例縮小。実配当で精算・F返還。残高<¥100で終了。
+    ★ステートレス（毎ビルド再計算）。base当日は結果待ち＝残高不変のプレビュー。"""
+    from collections import defaultdict
+    F_RACE = 0.01                      # 穴は高分散・対象レースが多い→1レース控えめ
+    HON_ANA = 0.45
+    races = {}
+    for r in rel:
+        d = r["日付"]
+        if d < start_date:
+            continue
+        rid = r["race_id"]
+        try:
+            w = int(r["枠番"])
+        except (ValueError, TypeError):
+            continue
+        pr = pred.get((rid, r["枠番"]), {})
+        try:
+            fin = int(pr.get("finish_rank"))
+        except (TypeError, ValueError):
+            fin = None
+        rc = races.setdefault(rid, {"d": d, "b": {}, "ab": {}})
+        rc["b"][w] = (model_map.get((rid, w)), fin)
+        rc["ab"][w] = api_map.get((rid, w))
+    by_date = defaultdict(list)
+    for rid, rc in races.items():
+        by_date[rc["d"]].append((rid, rc))
+
+    def ana_picks(day_races):
+        out = []
+        for rid, rc in day_races:
+            if len(rc["b"]) != 6:
+                continue
+            sv = [rc["b"][w][0] for w in range(1, 7)]
+            fins = [rc["b"][w][1] for w in range(1, 7)]
+            ab = [round((rc["ab"].get(w) or 0) * 1000) for w in range(1, 7)]
+            if any(x is None for x in sv):
+                continue
+            hon = hon_canon.get(rid)
+            if hon is None or hon >= HON_ANA:
+                continue
+            settled = any(f == 1 for f in fins)
+            out.append((rid, ab, fins, settled))
+        return out
+
+    bal = float(start_balance)
+    peak = float(start_balance)
+    rows = []
+    busted = False
+    for d in sorted(by_date):
+        if d == base:
+            continue
+        if bal < 100:
+            busted = True
+            break
+        picks = [p for p in ana_picks(by_date[d]) if p[3]]
+        if not picks:
+            continue
+        day_cap = min(bal, start_balance)
+        raw = [bal * F_RACE for _ in picks]
+        tot = sum(raw) or 1
+        scale = min(1.0, day_cap / tot)
+        staked = returned = 0.0
+        nbet = nhit = 0
+        for (rid, ab, fins, _), rb in zip(picks, raw):
+            rbud = rb * scale
+            order = sorted([w for w in range(1, 7)
+                            if fins[w - 1] and fins[w - 1] >= 1],
+                           key=lambda w: fins[w - 1])
+            if len(order) < 3 or fins[order[0] - 1] != 1:
+                continue
+            fly = {w for w in range(1, 7) if not fins[w - 1]}
+            po = payout.get(rid, (0, 0))
+            cand = _ana_cand_ref(ab)
+            per = round(rbud / len(cand) / 100) * 100      # 6点に均等・¥100単位
+            if per < 100:
+                continue
+            act3 = tuple(order[:3])
+            hit = False
+            for c in cand:
+                if any(w in fly for w in c):
+                    continue                                # 返還
+                staked += per
+                if c == act3:
+                    returned += round(po[1] * per / 100)
+                    hit = True
+            nbet += 1
+            nhit += 1 if hit else 0
+        bal = bal - staked + returned
+        peak = max(peak, bal)
+        rows.append({"d": d, "n": len(picks), "nbet": nbet, "nhit": nhit,
+                     "stake": round(staked), "ret": round(returned),
+                     "pl": round(returned - staked), "bal": round(bal)})
+        if bal < 100:
+            busted = True
+            break
+
+    pending = None
+    if base and not busted and bal >= 100 and base in by_date:
+        bp = ana_picks(by_date[base])
+        if bp:
+            n = len(bp)
+            stake = min(n * bal * F_RACE, min(bal, start_balance))
+            pending = {"d": base, "n": n, "stake": round(stake)}
+
+    return {"start": start_balance, "bal": round(bal), "peak": round(peak),
+            "busted": busted, "rows": rows, "pending": pending,
+            "from": start_date}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pred", default="predict_win.csv")
@@ -975,9 +1194,19 @@ def main():
                        "2026-07-01", 1_000_000, base)
     print(f"  100万円チャレンジ: 残高 ¥{game['bal']:,} "
           f"（精算 {len(game['rows'])}日・{'BUST' if game['busted'] else 'OK'}）")
+    game_ana = game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout_all,
+                               "2026-07-01", 1_000_000, base)
+    print(f"  100万円チャレンジ【穴】: 残高 ¥{game_ana['bal']:,} "
+          f"（精算 {len(game_ana['rows'])}日・{'BUST' if game_ana['busted'] else 'OK'}）")
+    # 直近30日の日別回収率（券種別：2連単／3連単／穴目）。折れ線グラフ用。
+    daily_rec = daily_recovery(rel, pred, model_map, api_map, hon_canon,
+                               payout_all, base, 30)
+    print(f"  日別回収率: {daily_rec['from']}〜{daily_rec['to']}"
+          f"（{len(daily_rec['days'])}日）")
     payload = {"labels": labels, "base": base, "races": out,
                "vstats_api": vstats_api, "recent_api": recent_api,
-               "regime_api": regime_api, "rsp": rsp, "game": game}
+               "regime_api": regime_api, "rsp": rsp, "game": game,
+               "game_ana": game_ana, "daily_rec": daily_rec}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
@@ -1109,6 +1338,7 @@ HTML = r"""<!DOCTYPE html>
   .hitpay{margin-left:6px;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;color:#43c59e;white-space:nowrap}
   .recpct{margin-left:8px;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
   .recpct.rok{color:#43c59e}.recpct.ramb{color:#e0a93b}.recpct.rng{color:#7e8796}
+  .st b.rok{color:#43c59e}.st b.ramb{color:#e0a93b}.st b.rng{color:#7e8796}
   .kbadge.bud{color:#43c59e;background:#10241c;border-color:#2f6f55}
   .legend{font-size:11px;color:#7e8796;margin:18px 0 0;line-height:1.6}
   .tabs{display:flex;gap:6px;margin:6px 0 10px}
@@ -1841,6 +2071,104 @@ function gameView(){
   h+='</div>';
   return h;
 }
+// 仮想100万円チャレンジ【穴帯バージョン】パネル。本家(鉄板)の下に対比表示。
+function gameViewAna(){
+  const G=D.game_ana; if(!G)return '';
+  const yen=v=>'¥'+Math.round(v).toLocaleString('en-US');
+  const start=G.start, bal=G.bal, pl=bal-start, up=pl>=0, col=up?'#43c59e':'#e06b6b';
+  let h='<div style="margin-top:12px;border:1px solid #3a2a50;border-radius:12px;padding:14px;background:linear-gradient(180deg,#1c1430,#140f22)">';
+  h+='<div style="font-size:16px;font-weight:700;color:#c79bff">🕳️ 仮想100万円チャレンジ【穴帯】 <span style="font-size:12px;color:#9a8bb8;font-weight:500">（7/1〜7/31・穴だけ追う実験）</span></div>';
+  if(G.busted)h+='<div style="margin:10px 0;padding:10px;border-radius:8px;background:#3a1420;color:#ff8a8a;text-align:center;font-weight:700;font-size:15px">💀 GAME OVER ― 残高が尽きました</div>';
+  h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:8px 0 2px">'
+    +'<span style="font-size:30px;font-weight:800;color:'+col+'">'+yen(bal)+'</span>'
+    +'<span style="font-size:14px;font-weight:700;color:'+col+'">'+(up?'+':'')+yen(pl)+'（'+(up?'+':'')+Math.round(pl/start*100)+'%）</span></div>';
+  h+='<div style="font-size:11px;color:#9a8bb8">スタート '+yen(start)+' ／ 最高 '+yen(G.peak)+'</div>';
+  if(G.pending&&G.pending.n)
+    h+='<div style="font-size:12px;color:#c79bff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：穴帯 '+G.pending.n+'レースに約 '+yen(G.pending.stake)+' を投票予定（結果は翌朝反映）</div>';
+  h+=gameChart(G);
+  if(G.rows.length){
+    h+='<div class="swrap"><table class="st"><thead><tr>'
+      +'<th class="k">日付</th><th>穴帯R</th><th>賭け金</th><th>払戻</th><th>損益</th><th>残高</th></tr></thead><tbody>';
+    for(const r of G.rows){const rp=r.pl>=0;
+      h+='<tr><td class="k">'+r.d.slice(5)+'</td><td class="num scol">'+r.n+'</td>'
+        +'<td class="num">'+yen(r.stake)+'</td><td class="num">'+yen(r.ret)+'</td>'
+        +'<td class="num" style="color:'+(rp?'#43c59e':'#e06b6b')+'">'+(rp?'+':'')+yen(r.pl)+'</td>'
+        +'<td class="num" style="font-weight:700">'+yen(r.bal)+'</td></tr>';}
+    h+='</tbody></table></div>';
+  }else{
+    h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
+  }
+  h+='<div class="legend">穴狙いルール（実験）：<b>穴帯レース（本命確率45％未満）だけ</b>を対象に、1レースあたり残高の約1％を<b>穴目＝穴候補（API4番人気）アタマ6点</b>（3連単）に均等投票。'
+    +'1日の投票上限は残高。実際の配当で精算し、フライングは返還。<b>残高が¥100を切ったら終了。</b>'
+    +'※穴目は的中3.9％・回収約72％（控除率＋当てにくさ）＝<b>「穴を追い続けると溶ける」を可視化する実験</b>。本家（鉄板）と見比べてください。</div>';
+  h+='</div>';
+  return h;
+}
+// 直近30日の日別回収率 折れ線（2連単／3連単／穴目 の3系統）。
+function recoveryChart(days,series){
+  if(!days||!days.length)return '';
+  const W=340,padL=34,padR=10,padT=14,padB=26,H=padT+150+padB;
+  const rec=(o)=>o&&o.inv>0?o.ret/o.inv*100:null;    // 回収率（投資0は点なし）
+  let mx=100;
+  days.forEach(d=>series.forEach(s=>{const v=rec(d[s.k]);if(v!=null&&v>mx)mx=v;}));
+  mx=Math.min(mx,400);                                // 上限クリップ（読みやすさ）
+  const step=mx>300?100:mx>150?50:mx>100?40:20;
+  const M=Math.ceil(mx/step)*step;
+  const n=days.length;
+  const x=i=>padL+(n<=1?(W-padL-padR)/2:i*(W-padL-padR)/(n-1));
+  const y=v=>padT+(H-padT-padB)*(1-Math.min(v,M)/M);
+  let s='<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="max-width:520px;display:block;margin:6px auto">';
+  for(let g=0;g<=M;g+=step){const yy=y(g).toFixed(1);
+    s+='<line x1="'+padL+'" y1="'+yy+'" x2="'+(W-padR)+'" y2="'+yy+'" stroke="#232c42" stroke-width="1"/>';
+    s+='<text x="'+(padL-4)+'" y="'+(+yy+3)+'" fill="#6b7488" font-size="9" text-anchor="end">'+g+'</text>';}
+  const y100=y(100).toFixed(1);                        // 100%損益分岐
+  s+='<line x1="'+padL+'" y1="'+y100+'" x2="'+(W-padR)+'" y2="'+y100+'" stroke="#d9745c" stroke-dasharray="4 3" stroke-width="1"/>';
+  series.forEach(se=>{
+    let dp='',started=false;const pts=[];
+    days.forEach((d,i)=>{const v=rec(d[se.k]);
+      if(v==null){started=false;return;}
+      dp+=(started?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)+' ';started=true;pts.push([i,v]);});
+    s+='<path d="'+dp+'" fill="none" stroke="'+se.col+'" stroke-width="1.8" stroke-linejoin="round"/>';
+    pts.forEach(p=>{s+='<circle cx="'+x(p[0]).toFixed(1)+'" cy="'+y(p[1]).toFixed(1)+'" r="1.7" fill="'+se.col+'"/>';});
+  });
+  // X軸ラベル（最初/中間/最後）
+  const ticks=n<=1?[0]:[0,Math.floor((n-1)/2),n-1];
+  ticks.forEach(i=>{const mm=days[i].d.slice(5).replace('-','/');
+    s+='<text x="'+x(i).toFixed(1)+'" y="'+(H-8)+'" fill="#6b7488" font-size="9" text-anchor="middle">'+mm+'</text>';});
+  s+='</svg>';
+  return s;
+}
+// 【直近回収率結果】＝直近30日の日別回収率グラフ＋券種別（2連単/3連単/穴目）の累計成績。
+function recentRecoveryView(){
+  const R=D.daily_rec; if(!R||!R.days||!R.days.length)return '';
+  const series=[{k:'ex',col:'#43c59e',lab:'2連単'},{k:'tri',col:'#e0a93b',lab:'3連単'},{k:'ana',col:'#c79bff',lab:'穴目'}];
+  const pct=(a,b)=>b?Math.round(a/b*100):0;
+  const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
+  let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
+  h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を確率比例配分・穴帯は3連単を買わない・フライングは返還）。'
+    +'折れ線＝日別の回収率（％）。<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
+  // 凡例
+  h+='<div class="meta" style="text-align:center">'
+    +series.map(s=>'<span style="color:'+s.col+'">■</span> '+s.lab).join('　')+'</div>';
+  h+=recoveryChart(R.days,series);
+  // 券種別 累計（的中率／投資／回収／回収率）
+  h+='<div class="swrap"><table class="st"><thead><tr>'
+    +'<th class="k">券種</th><th>的中率</th><th>投資</th><th>回収</th><th>回収率</th></tr></thead><tbody>';
+  const yfmt=v=>'¥'+Math.round(v).toLocaleString();
+  series.forEach(s=>{const t=R.tot[s.k];const rr=pct(t.ret,t.inv);
+    h+='<tr><td class="k"><span style="color:'+s.col+'">■</span> '+s.lab
+      +(s.k==='ana'?'<small style="color:#9a8bb8"> 買わない参考</small>':'')+'</td>'
+      +'<td class="num">'+pct(t.h,t.n)+'%<small>'+t.h+'/'+t.n+'</small></td>'
+      +'<td class="num">'+yfmt(t.inv)+'</td>'
+      +'<td class="num">'+yfmt(t.ret)+'</td>'
+      +'<td class="num"><b class="'+recCls(rr)+'">'+rr+'%</b></td></tr>';});
+  h+='</tbody></table></div>';
+  h+='<div class="legend"><b>2連単・3連単</b>＝実際にサイトが買う買い目の回収率（購入対象）。'
+    +'<b style="color:#c79bff">穴目</b>＝穴帯（本命確率45％未満）で穴候補（API4番人気）アタマ6点を3連単で買った場合の<b>参考シミュレーション（実際は購入しない）</b>。'
+    +'的中していれば「穴予想的中」＝万舟級の的中ですが、的中率3.9％・回収約72％で長期では負けます。'
+    +'※日別のため高配当1本で大きく振れます。控除率約25％の壁で、いずれの券種も長期回収率は100％未満が基本です。</div>';
+  return h;
+}
 function statsView(){
   // 場別成績は Python 側で全期間（2026年〜）集計済み（学習モデル＝主系統で順位付け）。
   const V=D.vstats_api;
@@ -1848,6 +2176,8 @@ function statsView(){
   const RG=D.regime_api;
   let h=nav();
   h+=gameView();
+  h+=gameViewAna();
+  h+=recentRecoveryView();
   h+='<div class="meta" style="margin-top:6px">'
     +'<b style="color:#7fb2ff">AI予想（学習モデル）</b>の成績。'
     +'<br><span style="font-size:11px;color:#7e8796">※荒れ度（鉄板/標準/穴）・買目点数はAPI本命確率で判定（順位付けは学習モデル）。</span></div>';
