@@ -291,6 +291,16 @@ def _ana_cand_ref(ab):
     return [(c, a, b) for a in T for b in T if a != b]
 
 
+def _taikou_ref(sv):
+    """穴予想（波乱帯・帯別方式）＝対抗(2番手)アタマ×本命/3番手/4番手の2-3着流し6点。
+    JS taikouRef と同一（展示反映が無い履歴では betScore=学習モデル score）。
+    sv=学習モデル score 配列（長さ6）。backtest 波乱帯 対抗6点=回収88.2%（穴候補79.7%より上位）。"""
+    idx = sorted(range(6), key=lambda i: sv[i], reverse=True)
+    head = idx[1] + 1
+    T = [idx[0] + 1, idx[2] + 1, idx[3] + 1]
+    return [(head, a, b) for a in T for b in T if a != b]
+
+
 def venue_stats(rel, pred, score_map, hist, payout, since, hon_map=None):
     """since 以降の結果がある全レースから、場別の的中率＋変動回収率を集計。
     score_map={(race_id,枠int):p_win} で予想系統を差し替え（従来モデル/API予想 共用）。
@@ -815,7 +825,7 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
       荒れ度・点数＝API本命確率）。折れ線グラフ用に各日の 2連単／3連単／穴目 を集計。
       - 2連単＝確率上位 k_ex（全帯）・各¥2,000確率比例配分・F返還。
       - 3連単＝triOn(hon≥0.45)のみ・確率上位 k_tri（標準帯は穴型除外）・¥2,000配分・F返還。
-      - 穴目＝**買わない参考**。穴帯(hon<0.45)で穴候補アタマ6点(anaCandRef)を各¥100フル。
+      - 穴目＝**買わない参考**。穴帯(hon<0.45)で対抗アタマ6点(_taikou_ref／帯別方式・波乱帯)を各¥100フル。
         購入はしないが「的中していれば穴予想的中」が分かるよう的中率／回収率を出す。
     各券種 [n(対象R), hit(的中R), inv(投資円), ret(払戻円)]。回収率＝ret/inv。"""
     from collections import defaultdict
@@ -880,10 +890,10 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
                     if c == act3:
                         D["tri"][3] += round(po[1] * y / 100)
                         D["tri"][1] += 1
-        # 穴目（穴帯のみ・買わない参考・穴候補アタマ6点×各¥100）
+        # 穴目（穴帯のみ・買わない参考・対抗アタマ6点×各¥100＝帯別方式・波乱帯）
         if act3 and hon < 0.45:
             D["ana"][0] += 1
-            for c in _ana_cand_ref(ab):
+            for c in _taikou_ref(sv):
                 if not any(w in fly for w in c):
                     D["ana"][2] += 100
                 if c == act3:
@@ -907,7 +917,8 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
 def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date,
                     start_balance=1_000_000, base=None):
     """仮想100万円チャレンジ【穴帯バージョン】: 穴帯(本命確率<0.45)レースだけを狙い、
-    穴目＝穴候補(API4番人気)アタマ6点(anaCandRef)を3連単でフル購入して残高を転がす実験。
+    穴予想＝対抗(学習モデル2番手)アタマ6点(_taikou_ref／帯別方式・波乱帯)を3連単でフル購入して
+    残高を転がす実験。※backtest 波乱帯 対抗6点=回収88.2%（穴候補6点79.7%より上位）で統一。
     ★本家(鉄板)との対比＝『穴を追い続けたら100万はどうなるか』。
       - 対象＝その日の穴帯レース全て。1レースあたり残高の約 F_RACE を6点に均等配分(¥100単位)。
       - 1日の投票上限＝残高（最大 start_balance）。超過時は比例縮小。実配当で精算・F返還。残高<¥100で終了。
@@ -951,7 +962,7 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
             if hon is None or hon >= HON_ANA:
                 continue
             settled = any(f == 1 for f in fins)
-            out.append((rid, ab, fins, settled))
+            out.append((rid, ab, sv, fins, settled))
         return out
 
     bal = float(start_balance)
@@ -964,7 +975,7 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         if bal < 100:
             busted = True
             break
-        picks = [p for p in ana_picks(by_date[d]) if p[3]]
+        picks = [p for p in ana_picks(by_date[d]) if p[4]]
         if not picks:
             continue
         day_cap = min(bal, start_balance)
@@ -973,7 +984,7 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         scale = min(1.0, day_cap / tot)
         staked = returned = 0.0
         nbet = nhit = 0
-        for (rid, ab, fins, _), rb in zip(picks, raw):
+        for (rid, ab, sv, fins, _), rb in zip(picks, raw):
             rbud = rb * scale
             order = sorted([w for w in range(1, 7)
                             if fins[w - 1] and fins[w - 1] >= 1],
@@ -982,7 +993,7 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
                 continue
             fly = {w for w in range(1, 7) if not fins[w - 1]}
             po = payout.get(rid, (0, 0))
-            cand = _ana_cand_ref(ab)
+            cand = _taikou_ref(sv)
             per = round(rbud / len(cand) / 100) * 100      # 6点に均等・¥100単位
             if per < 100:
                 continue
@@ -1241,6 +1252,11 @@ HTML = r"""<!DOCTYPE html>
   .sumt tr+tr td{border-top:0.5px solid #20262f}
   .sumt b.rok{color:#43c59e}.sumt b.ramb{color:#e0a93b}.sumt b.rng{color:#7e8796}
   .sumf{font-size:10.5px;color:#8a93a3;margin:6px 0 0}
+  .sumf b{color:#cdd6e2;font-weight:700}
+  .anascope{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#9aa3b2;margin:8px 0 0}
+  .asb{font-size:12px;padding:4px 12px;border-radius:7px;border:0.5px solid #39404d;
+       background:#171b23;color:#cdd6e2;cursor:pointer}
+  .asb.on{background:#2a2415;border-color:#5a4a23;color:#e8c08a;font-weight:700}
   .dsel{display:flex;gap:6px;margin:0 0 10px}
   .dbtn{flex:1;font-size:14px;padding:8px 6px;border-radius:8px;border:0.5px solid #39404d;
         background:transparent;color:#cdd6e2;cursor:pointer;text-align:center}
@@ -1428,6 +1444,7 @@ HTML = r"""<!DOCTYPE html>
 const D=__DATA__;
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
 let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
+let anaScope='all';   // 穴目回収率の対象: 'all'=合算 / 'haran'=波乱帯 / 'std'=標準帯
 // ライブ更新サーバ(serve_odds.py)がある環境か。file://(→サーバへ誘導)・localhost・LANはtrue。
 // クラウド配信(pages.dev等)はfalse＝/updateが無いので「更新」ボタンは隠す（毎朝の自動更新のみ）。
 const IS_LIVE=location.protocol==='file:'||/^(localhost$|127\.|0\.0\.0\.0$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
@@ -1646,14 +1663,17 @@ function flySet(r){const f={};r.b.forEach((b,i)=>{if(!b[2])f[i+1]=1;});return f;
 // 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
 // 当日は update.json 反映後の D.races を使うので、なるべく最新状態を表す。
 function daySummary(date){
-  let nDone=0,nHit=0,inv=0,ret=0,nF=0,invA=0,retA=0,nDoneA=0;   // A=穴（本命確率<0.45）だけを買った場合
+  let nDone=0,nHit=0,inv=0,ret=0,nF=0;
+  // 穴予想（帯別方式・参考シミュ・各¥100フル・F返還・3連単のみ）:
+  //   標準帯(0.45-0.65)=穴候補6点(anaCandRef) / 波乱帯(<0.45)=対抗6点(taikouRef)。詳細画面と一致。
+  let sN=0,sInv=0,sRet=0;   // 標準帯（穴候補6点）
+  let hN=0,hInv=0,hRet=0;   // 波乱帯（対抗6点）
   D.races.forEach(r=>{
     if(r.d!==date||!hasResult(r))return;
     nDone++;
     const fly=flySet(r);if(Object.keys(fly).length)nF++;
     const s=betScore(r);const ord=finishOrder(r);
     const hon=Math.max(...r.ab)/1000;
-    const isAna=hon<0.45;if(isAna)nDoneA++;                     // 穴レース＝波乱含み
     const actEx=ord.slice(0,2),actTri=ord.slice(0,3);
     let hit=false;
     const ex=plTop(s,2,kEx(hon));const exYen=allocYen(ex.map(c=>c[1]),2000);
@@ -1676,18 +1696,18 @@ function daySummary(date){
         }
       });
     }
-    // 穴目回収率（参考シミュレーション）＝穴帯レース（本命<45%）だけを対象に、穴目＝穴候補
-    // アタマ6点を3連単でフル購入した場合の回収率。各¥100均等・F返還・3連単のみ・穴帯×穴目のみで算出。
-    if(isAna){
-      anaCandRef(r.ab).forEach(c=>{
-        const kept=!c.some(w=>fly[w]);
-        if(kept)invA+=100;
-        if(kept&&actTri.length>=3&&eqArr(c,actTri))retA+=(r.po?r.po[1]:0);
-      });
-    }
+    // 穴予想（帯別方式・参考シミュ）＝標準帯は穴候補6点／波乱帯は対抗6点をアタマ3連単で
+    // フル購入した場合の回収率。各¥100均等・F返還・3連単のみ。詳細画面の穴予想と同じ買い方。
+    const tally=(combos,onInv,onRet)=>combos.forEach(c=>{
+      const kept=!c.some(w=>fly[w]);
+      if(kept)onInv(100);
+      if(kept&&actTri.length>=3&&eqArr(c,actTri))onRet(r.po?r.po[1]:0);
+    });
+    if(hon>=0.45&&hon<0.65){sN++;tally(anaCandRef(r.ab),v=>sInv+=v,v=>sRet+=v);}
+    else if(hon<0.45){hN++;tally(taikouRef(r),v=>hInv+=v,v=>hRet+=v);}
     if(hit)nHit++;
   });
-  return {nDone,nHit,inv,ret,nF,invA,retA,nDoneA};
+  return {nDone,nHit,inv,ret,nF, sN,sInv,sRet, hN,hInv,hRet};
 }
 // 最上部サマリー: 当日/前日/前々日 の 的中率・投資・回収・回収率 を横並び（当日は最新反映）。
 function summaryBar(){
@@ -1711,10 +1731,21 @@ function summaryBar(){
   cols.forEach(c=>h+=cellY(c,c.s.ret));
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
+  // 穴目回収率（選択式: 合算/波乱帯/標準帯）。帯別方式＝標準帯 穴候補6点 / 波乱帯 対抗6点。
+  const scopeOf=s=>anaScope==='haran'?{inv:s.hInv,ret:s.hRet,n:s.hN}
+                  :anaScope==='std'?{inv:s.sInv,ret:s.sRet,n:s.sN}
+                  :{inv:s.sInv+s.hInv,ret:s.sRet+s.hRet,n:s.sN+s.hN};
+  const scLab={all:'合算',haran:'波乱帯',std:'標準帯'};
   h+='</tr><tr><td class="rl">穴目回収率<small>3単</small></td>';
-  cols.forEach(c=>{const rr=pct(c.s.retA,c.s.invA);h+='<td>'+(c.s.invA?'<b class="'+recCls(rr)+'">'+rr+'%</b><small>'+c.s.nDoneA+'R</small>':'–')+'</td>';});
+  cols.forEach(c=>{const a=scopeOf(c.s);const rr=pct(a.ret,a.inv);h+='<td>'+(a.inv?'<b class="'+recCls(rr)+'">'+rr+'%</b><small>'+a.n+'R</small>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">「穴目回収率」＝本命確率45％未満（波乱含み）のレースで、穴目＝穴候補（API4番人気）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュレーション・各¥100均等・F返還・穴帯×穴目・3連単のみで算出）。</div>';
+  h+='<div class="anascope">穴予想の対象：'
+    +['all','haran','std'].map(k=>'<button class="asb'+(anaScope===k?' on':'')+'" data-as="'+k+'">'+scLab[k]+'</button>').join('')+'</div>';
+  const foot={
+    all:'「穴目回収率」＝標準帯(本命45-65%)は穴候補6点／波乱帯(本命45%未満)は対抗6点をアタマに置いた3連単6点をフル購入した場合の<b>合算</b>回収率（参考シミュ・各¥100均等・F返還・3連単のみ・詳細画面の穴予想と同じ買い方）。',
+    haran:'「穴目回収率／波乱帯」＝本命45%未満のレースで穴予想＝<b>対抗</b>（betScore2番手）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュ・各¥100均等・F返還・3連単のみ）。',
+    std:'「穴目回収率／標準帯」＝本命45-65%のレースで穴予想＝<b>穴候補</b>（API4番人気）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュ・各¥100均等・F返還・3連単のみ）。'};
+  h+='<div class="sumf">'+foot[anaScope]+'</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
     +'（非完走艇を含む買い目は投資から除外）</div>';
@@ -2125,9 +2156,9 @@ function gameViewAna(){
   }else{
     h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
   }
-  h+='<div class="legend">穴狙いルール（実験）：<b>穴帯レース（本命確率45％未満）だけ</b>を対象に、1レースあたり残高の約1％を<b>穴目＝穴候補（API4番人気）アタマ6点</b>（3連単）に均等投票。'
+  h+='<div class="legend">穴狙いルール（実験）：<b>穴帯レース（本命確率45％未満）だけ</b>を対象に、1レースあたり残高の約1％を<b>穴予想＝対抗（予想2番手）アタマ6点</b>（3連単・帯別方式）に均等投票。'
     +'1日の投票上限は残高。実際の配当で精算し、フライングは返還。<b>残高が¥100を切ったら終了。</b>'
-    +'※穴目は的中3.9％・回収約72％（控除率＋当てにくさ）＝<b>「穴を追い続けると溶ける」を可視化する実験</b>。本家（鉄板）と見比べてください。</div>';
+    +'※波乱帯の穴予想は対抗6点でbacktest回収88.2％（穴候補6点79.7％より上位）だが高分散＝<b>「穴を追い続けるとどうなるか」を可視化する実験</b>。本家（鉄板）と見比べてください。</div>';
   h+='</div>';
   return h;
 }
@@ -2218,8 +2249,8 @@ function recentRecoveryView(){
       +'<td class="num"><b class="'+recCls(rr)+'">'+rr+'%</b></td></tr>';});
   h+='</tbody></table></div>';
   h+='<div class="legend"><b>2連単・3連単</b>＝実際にサイトが買う買い目の回収率（購入対象）。'
-    +'<b style="color:#c79bff">穴目</b>＝穴帯（本命確率45％未満）で穴候補（API4番人気）アタマ6点を3連単で買った場合の<b>参考シミュレーション（実際は購入しない）</b>。'
-    +'的中していれば「穴予想的中」＝万舟級の的中ですが、的中率3.9％・回収約72％で長期では負けます。'
+    +'<b style="color:#c79bff">穴目</b>＝穴帯（本命確率45％未満）で穴予想＝対抗（予想2番手）アタマ6点を3連単で買った場合の<b>参考シミュレーション（実際は購入しない）</b>（帯別方式・波乱帯）。'
+    +'的中していれば「穴予想的中」＝万舟級の的中。波乱帯 対抗6点はbacktest回収88.2％だが高分散で日別は大きく振れます。'
     +'※日別のため高配当1本で大きく振れます。控除率約25％の壁で、いずれの券種も長期回収率は100％未満が基本です。</div>';
   return h;
 }
@@ -2626,6 +2657,7 @@ function render(){
     document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
     document.querySelectorAll('.dbtn').forEach(b=>b.onclick=()=>{selDate=b.dataset.d;cur='ALL';render();});
     document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{cur=b.dataset.v;render();});
+    document.querySelectorAll('.asb').forEach(b=>b.onclick=()=>{anaScope=b.dataset.as;render();});
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{sel=+rw.dataset.i;render();});
     if(cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
   }else{
