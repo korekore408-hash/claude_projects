@@ -2144,6 +2144,7 @@ function recentRecoveryView(){
   const series=[{k:'ex',col:'#43c59e',lab:'2連単'},{k:'tri',col:'#e0a93b',lab:'3連単'},{k:'ana',col:'#c79bff',lab:'穴目'}];
   const pct=(a,b)=>b?Math.round(a/b*100):0;
   const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
+  const yfmt=v=>'¥'+Math.round(v).toLocaleString();
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
   h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を確率比例配分・穴帯は3連単を買わない・フライングは返還）。'
     +'折れ線＝日別の回収率（％）。<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
@@ -2151,10 +2152,36 @@ function recentRecoveryView(){
   h+='<div class="meta" style="text-align:center">'
     +series.map(s=>'<span style="color:'+s.col+'">■</span> '+s.lab).join('　')+'</div>';
   h+=recoveryChart(R.days,series);
+  // ── 当日・前日・前々日（券種別 的中率／投資／回収／回収率）──────────────
+  // 直近3日を新しい順に 当日／前日／前々日 として券種別に並べる。
+  const cols=R.days.slice(-3).reverse();
+  const labs=['当日','前日','前々日'];
+  function tbl3(k,lab,isAna){
+    let t='<div class="swrap"><table class="st"><thead><tr><th class="k">'
+      +'<span style="color:'+series.find(s=>s.k===k).col+'">■</span> '+lab+'</th>';
+    cols.forEach((c,i)=>{t+='<th>'+labs[i]+'<br><small>'+c.d.slice(5)+'</small></th>';});
+    t+='</tr></thead><tbody>';
+    t+='<tr><td class="k">的中率</td>'+cols.map(c=>{const o=c[k];
+      return '<td class="num">'+(o.n?pct(o.h,o.n)+'%':'–')+'<small>'+o.h+'/'+o.n+'</small></td>';}).join('')+'</tr>';
+    t+='<tr><td class="k">投資</td>'+cols.map(c=>'<td class="num">'+yfmt(c[k].inv)+'</td>').join('')+'</tr>';
+    t+='<tr><td class="k">回収</td>'+cols.map(c=>'<td class="num">'+yfmt(c[k].ret)+'</td>').join('')+'</tr>';
+    t+='<tr><td class="k">回収率</td>'+cols.map(c=>{const o=c[k];const rr=pct(o.ret,o.inv);
+      return '<td class="num"><b class="'+recCls(rr)+'">'+(o.inv?rr+'%':'–')+'</b></td>';}).join('')+'</tr>';
+    if(isAna)  // 穴目は買わないので「的中していれば穴予想的中」を明示
+      t+='<tr><td class="k">穴目判定</td>'+cols.map(c=>{const o=c[k];
+        return '<td class="num">'+(o.n===0?'<small style="color:#7e8796">対象なし</small>'
+          :o.h>0?'<b style="color:#c79bff">🎯的中'+o.h+'R</b>'
+          :'<small style="color:#7e8796">不的中</small>')+'</td>';}).join('')+'</tr>';
+    t+='</tbody></table></div>';
+    return t;
+  }
+  if(cols.length){
+    h+='<div class="meta" style="margin-top:12px;color:#cdd6e2;font-weight:600">当日・前日・前々日（券種別）</div>';
+    h+=series.map(s=>tbl3(s.k,s.lab,s.k==='ana')).join('');
+  }
   // 券種別 累計（的中率／投資／回収／回収率）
   h+='<div class="swrap"><table class="st"><thead><tr>'
     +'<th class="k">券種</th><th>的中率</th><th>投資</th><th>回収</th><th>回収率</th></tr></thead><tbody>';
-  const yfmt=v=>'¥'+Math.round(v).toLocaleString();
   series.forEach(s=>{const t=R.tot[s.k];const rr=pct(t.ret,t.inv);
     h+='<tr><td class="k"><span style="color:'+s.col+'">■</span> '+s.lab
       +(s.k==='ana'?'<small style="color:#9a8bb8"> 買わない参考</small>':'')+'</td>'
