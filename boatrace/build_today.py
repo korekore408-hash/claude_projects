@@ -845,7 +845,8 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         rc["b"][w] = (model_map.get((rid, w)), fin)
         rc["ab"][w] = api_map.get((rid, w))
     # 日別 [n,hit,inv,ret]
-    day = defaultdict(lambda: {"ex": [0, 0, 0, 0], "tri": [0, 0, 0, 0], "ana": [0, 0, 0, 0]})
+    day = defaultdict(lambda: {"ex": [0, 0, 0, 0], "tri": [0, 0, 0, 0],
+                               "ana_h": [0, 0, 0, 0], "ana_s": [0, 0, 0, 0]})
     for rid, rc in races.items():
         if len(rc["b"]) != 6:
             continue
@@ -890,24 +891,33 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
                     if c == act3:
                         D["tri"][3] += round(po[1] * y / 100)
                         D["tri"][1] += 1
-        # 穴目（穴帯のみ・買わない参考・対抗アタマ6点×各¥100＝帯別方式・波乱帯）
+        # 穴目（買わない参考・帯別方式・各¥100フル）。波乱帯(<0.45)=対抗6点／標準帯(0.45-0.65)=穴候補6点。
+        # グラフ・券種別テーブルで 波乱/標準/合算 を選択表示できるよう帯別に分けて集計。
         if act3 and hon < 0.45:
-            D["ana"][0] += 1
+            D["ana_h"][0] += 1
             for c in _taikou_ref(sv):
                 if not any(w in fly for w in c):
-                    D["ana"][2] += 100
+                    D["ana_h"][2] += 100
                 if c == act3:
-                    D["ana"][3] += po[1]
-                    D["ana"][1] += 1
+                    D["ana_h"][3] += po[1]
+                    D["ana_h"][1] += 1
+        elif act3 and hon < 0.65:
+            D["ana_s"][0] += 1
+            for c in _ana_cand_ref(ab):
+                if not any(w in fly for w in c):
+                    D["ana_s"][2] += 100
+                if c == act3:
+                    D["ana_s"][3] += po[1]
+                    D["ana_s"][1] += 1
     days = [d for d in sorted(day) if d <= base][-ndays:]
 
     def pack(a):
         return {"n": a[0], "h": a[1], "inv": a[2], "ret": a[3]}
-    ser = [{"d": d, "ex": pack(day[d]["ex"]), "tri": pack(day[d]["tri"]),
-            "ana": pack(day[d]["ana"])} for d in days]
-    tot = {"ex": [0, 0, 0, 0], "tri": [0, 0, 0, 0], "ana": [0, 0, 0, 0]}
+    keys = ("ex", "tri", "ana_h", "ana_s")
+    ser = [{"d": d, **{k: pack(day[d][k]) for k in keys}} for d in days]
+    tot = {k: [0, 0, 0, 0] for k in keys}
     for d in days:
-        for k in ("ex", "tri", "ana"):
+        for k in keys:
             for i in range(4):
                 tot[k][i] += day[d][k][i]
     return {"days": ser, "tot": {k: pack(v) for k, v in tot.items()},
@@ -2201,20 +2211,30 @@ function recoveryChart(days,series){
 // 【直近回収率結果】＝直近30日の日別回収率グラフ＋券種別（2連単/3連単/穴目）の累計成績。
 function recentRecoveryView(){
   const R=D.daily_rec; if(!R||!R.days||!R.days.length)return '';
-  const series=[{k:'ex',col:'#43c59e',lab:'2連単'},{k:'tri',col:'#e0a93b',lab:'3連単'},{k:'ana',col:'#c79bff',lab:'穴目'}];
+  // 穴目の対象帯（波乱/標準/合算）＝global anaScope を共用（上部サマリーと連動）。
+  //   波乱帯(<0.45)=対抗6点(ana_h) / 標準帯(0.45-0.65)=穴候補6点(ana_s) / 合算=両者を合算。
+  const scLab={all:'合算',haran:'波乱帯',std:'標準帯'};
+  const merge=(a,b)=>({n:a.n+b.n,h:a.h+b.h,inv:a.inv+b.inv,ret:a.ret+b.ret});
+  const anaPick=o=>anaScope==='haran'?o.ana_h:anaScope==='std'?o.ana_s:merge(o.ana_h,o.ana_s);
+  const days=R.days.map(d=>Object.assign({},d,{ana:anaPick(d)}));   // 穴目=選択帯で合成
+  const tot=Object.assign({},R.tot,{ana:anaPick(R.tot)});
+  const series=[{k:'ex',col:'#43c59e',lab:'2連単'},{k:'tri',col:'#e0a93b',lab:'3連単'},{k:'ana',col:'#c79bff',lab:'穴目（'+scLab[anaScope]+'）'}];
   const pct=(a,b)=>b?Math.round(a/b*100):0;
   const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
   const yfmt=v=>'¥'+Math.round(v).toLocaleString();
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
   h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を確率比例配分・穴帯は3連単を買わない・フライングは返還）。'
     +'折れ線＝日別の回収率（％）。<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
+  // 穴目の対象帯セレクタ（グラフ・券種別テーブルの穴目行に連動）
+  h+='<div class="anascope" style="justify-content:center;margin:6px 0 2px">穴目の対象：'
+    +['all','haran','std'].map(k=>'<button class="asb'+(anaScope===k?' on':'')+'" data-as="'+k+'">'+scLab[k]+'</button>').join('')+'</div>';
   // 凡例
   h+='<div class="meta" style="text-align:center">'
     +series.map(s=>'<span style="color:'+s.col+'">■</span> '+s.lab).join('　')+'</div>';
-  h+=recoveryChart(R.days,series);
+  h+=recoveryChart(days,series);
   // ── 当日・前日・前々日（券種別 的中率／投資／回収／回収率）──────────────
   // 直近3日を新しい順に 当日／前日／前々日 として券種別に並べる。
-  const cols=R.days.slice(-3).reverse();
+  const cols=days.slice(-3).reverse();
   const labs=['当日','前日','前々日'];
   function tbl3(k,lab,isAna){
     let t='<div class="swrap"><table class="st"><thead><tr><th class="k">'
@@ -2242,7 +2262,7 @@ function recentRecoveryView(){
   // 券種別 累計（的中率／投資／回収／回収率）
   h+='<div class="swrap"><table class="st"><thead><tr>'
     +'<th class="k">券種</th><th>的中率</th><th>投資</th><th>回収</th><th>回収率</th></tr></thead><tbody>';
-  series.forEach(s=>{const t=R.tot[s.k];const rr=pct(t.ret,t.inv);
+  series.forEach(s=>{const t=tot[s.k];const rr=pct(t.ret,t.inv);
     h+='<tr><td class="k"><span style="color:'+s.col+'">■</span> '+s.lab
       +(s.k==='ana'?'<small style="color:#9a8bb8"> 買わない参考</small>':'')+'</td>'
       +'<td class="num">'+pct(t.h,t.n)+'%<small>'+t.h+'/'+t.n+'</small></td>'
@@ -2250,9 +2270,13 @@ function recentRecoveryView(){
       +'<td class="num">'+yfmt(t.ret)+'</td>'
       +'<td class="num"><b class="'+recCls(rr)+'">'+rr+'%</b></td></tr>';});
   h+='</tbody></table></div>';
+  const anaDesc={
+    all:'標準帯（本命45-65％）は穴候補（API4番人気）アタマ6点／波乱帯（本命45％未満）は対抗（予想2番手）アタマ6点',
+    haran:'波乱帯（本命確率45％未満）で穴予想＝対抗（予想2番手）アタマ6点',
+    std:'標準帯（本命45-65％）で穴予想＝穴候補（API4番人気）アタマ6点'};
   h+='<div class="legend"><b>2連単・3連単</b>＝実際にサイトが買う買い目の回収率（購入対象）。'
-    +'<b style="color:#c79bff">穴目</b>＝穴帯（本命確率45％未満）で穴予想＝対抗（予想2番手）アタマ6点を3連単で買った場合の<b>参考シミュレーション（実際は購入しない）</b>（帯別方式・波乱帯）。'
-    +'的中していれば「穴予想的中」＝万舟級の的中。波乱帯 対抗6点はbacktest回収88.2％だが高分散で日別は大きく振れます。'
+    +'<b style="color:#c79bff">穴目（'+scLab[anaScope]+'）</b>＝'+anaDesc[anaScope]+'を3連単で買った場合の<b>参考シミュレーション（実際は購入しない）</b>（帯別方式）。'
+    +'的中していれば「穴予想的中」＝万舟級の的中。帯別方式のbacktest回収＝標準帯73.3％／波乱帯88.2％（合算75.7％）だが高分散で日別は大きく振れます。'
     +'※日別のため高配当1本で大きく振れます。控除率約25％の壁で、いずれの券種も長期回収率は100％未満が基本です。</div>';
   return h;
 }
@@ -2645,6 +2669,7 @@ function render(){
     root.innerHTML=statsView();
     document.querySelectorAll('.tb[data-t]').forEach(b=>b.onclick=()=>{tab=b.dataset.t;sel=null;render();});
     document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
+    document.querySelectorAll('.asb').forEach(b=>b.onclick=()=>{anaScope=b.dataset.as;render();});   // 穴目の対象帯（回収率グラフ・券種別）
     document.querySelectorAll('.sortb').forEach(b=>b.onclick=()=>{
       const s=b.dataset.st==='v'?vsort:rsort, c=b.dataset.col;
       if(s.c===c){s.d=-s.d;}else{s.c=c;s.d=-1;}   // 同じ列=方向反転／別列=降順から
