@@ -850,11 +850,15 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
     for rid, rc in races.items():
         if len(rc["b"]) != 6:
             continue
-        sv = [rc["b"][w][0] for w in range(1, 7)]
+        sv0 = [rc["b"][w][0] for w in range(1, 7)]
         fins = [rc["b"][w][1] for w in range(1, 7)]
         ab = [round((rc["ab"].get(w) or 0) * 1000) for w in range(1, 7)]
-        if any(x is None for x in sv):
+        if any(x is None for x in sv0):
             continue
+        # ★順位付けは客側 r.b[i][1]=round(p_win*1000) と同じ per-mille 整数で行う。
+        # 生の float で並べると丸め由来の同点順位が客側とズレ、対抗(2番手)が入れ替わって
+        # 上部サマリー(daySummary)と穴目回収率が食い違う（例: 平和島1R の 199 同点）。
+        sv = [round(x * 1000) for x in sv0]
         order = sorted([w for w in range(1, 7)
                         if fins[w - 1] is not None and fins[w - 1] >= 1],
                        key=lambda w: fins[w - 1])
