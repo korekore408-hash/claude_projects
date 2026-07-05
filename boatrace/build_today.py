@@ -1831,7 +1831,9 @@ function listView(){
       const exHit=ex.length>=2&&plTop(s,2,nEx).some(c=>eqArr(c[0],ex));
       const triBuy=triBuyList(plTop(s,3,200),nTri,hon,laneRankMap(s)); // 標準帯は穴型を購入対象外
       const triHit=triOn(hon)&&tri.length>=3&&triBuy.some(c=>eqArr(c[0],tri)); // 穴帯は3連単を買わない
-      const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中
+      const anaRef=!triOn(hon)?taikouRef(r):null;        // 穴帯は本線3連単を見送り→穴予想(対抗6点)の的中を表示
+      const anaHit=!!(anaRef&&tri.length>=3&&anaRef.some(c=>eqArr(c,tri)));
+      const hit=exHit||triHit;                           // 2連単/3連単の変動上位に決着が入れば的中（ヘッダは本線ベース）
       const pay=r.po?r.po[1]:null;const pay2=r.po?r.po[0]:null;
       h+='<span class="res">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
         +'<span class="chev">&rsaquo;</span>';
@@ -1842,8 +1844,8 @@ function listView(){
       h+='<div class="resline"><span class="rll">3連単</span>';
       tri.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
       if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>';
-      if(!triOn(hon))h+='<span style="font-size:11px;color:#7e8796;margin-left:4px">穴帯=見送り</span>';
-      h+='<span class="yen'+(triHit?' hit':'')+'">'+(pay!=null?'¥'+pay.toLocaleString():'配当 –')+'</span></div>';
+      if(anaRef)h+='<span style="font-size:11px;margin-left:4px">'+(anaHit?'<span class="ok" style="color:#c79bff">穴予想的中</span>':'<span style="color:#7e8796">穴予想=圏外（本線見送り）</span>')+'</span>';
+      h+='<span class="yen'+((triHit||anaHit)?' hit':'')+'">'+(pay!=null?'¥'+pay.toLocaleString():'配当 –')+'</span></div>';
     }else{
       h+='<span class="chev">&rsaquo;</span>';
     }
