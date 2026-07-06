@@ -68,12 +68,16 @@ def rival_terciles(pred, since):
 
 # 予想確率（本命確率 hon=top1 p_win）に応じた買目点数。堅い→少点 / 荒れ→多点。
 # 検証(2026年): 鉄板ほど少点で回収率が高く、大混戦は点数を広げる方が良い。上限は 2連単5 / 3連単20。
+# ★2026-07-06 鉄板の3連単 4→3点: 点別回収が1-3点目83.9/85.9/92.7%に対し4点目69.7%と構造的な崖。
+#   カットで鉄板3連単回収85.7→88.9%・総回収85.8→87.4%(backtest 2026上期708R・月別4/6でプラス)。
+#   閾値0.65は維持(0.675は帯内で逆に悪化・0.70+はn=85で不安定)。5-8R/場/A1級等のフィルタは
+#   交絡・ノイズで不採用。
 def k_ex(hon):     # 2連単（上限5）
     return 2 if hon >= 0.65 else 3 if hon >= 0.50 else 4 if hon >= 0.40 else 5
 
 
 def k_tri(hon):    # 3連単（上限20）
-    return (4 if hon >= 0.65 else 7 if hon >= 0.50 else 10 if hon >= 0.40
+    return (3 if hon >= 0.65 else 7 if hon >= 0.50 else 10 if hon >= 0.40
             else 14 if hon >= 0.30 else 20)
 
 
@@ -1522,7 +1526,7 @@ function plTop(s,kind,k){const idx=[0,1,2,3,4,5].filter(i=>s[i]>0);const tot=s.r
 
 // 予想確率（本命確率hon=0-1）に応じた買目点数。堅い→少点/荒れ→多点。上限 2連単5/3連単20。
 function kEx(hon){return hon>=0.65?2:hon>=0.50?3:hon>=0.40?4:5;}
-function kTri(hon){return hon>=0.65?4:hon>=0.50?7:hon>=0.40?10:hon>=0.30?14:20;}
+function kTri(hon){return hon>=0.65?3:hon>=0.50?7:hon>=0.40?10:hon>=0.30?14:20;}  // 鉄板=3点(2026-07-06 4点目カット・回収+1.6pt)
 // 穴帯(本命<0.45)は3連単を買わない。穴の3連単は回収72.9%(資金を溶かす主犯)、2連単は83.4%で
 // 下支え。穴3連単のみ停止で全体回収率 77.4%→78.2%(+0.8pt)・賭け金▲16%(backtest no_ana_tri)。
 function triOn(hon){return hon>=0.45;}
