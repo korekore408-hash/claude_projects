@@ -170,6 +170,8 @@
     background:#3a2a4a;color:#d6a8ff;margin-left:4px}
   .chance{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
     background:#3a2f15;color:#f0c869;margin-left:4px}
+  .skipb{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
+    background:#3a1a1a;color:#f09595;margin-left:4px}
   .vmeta{margin-left:8px;font-size:11px;font-weight:400;color:#9aa3b2}
   .vmeta .grd{border-radius:6px;padding:1px 6px;background:#2a2f3a;color:#9aa3b2;margin-right:5px}
   .vmeta .grd.hi{background:#3a2a14;color:#f0b649;font-weight:700}
@@ -556,9 +558,11 @@ function realList(rs){
         +(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
     }else{
       const shobu=r.ev!=null&&r.ev>=1.5;
+      const to=tetsuOdds(r);   // 鉄板×実オッズ<2.0＝見送り推奨（オッズ未取得は非表示）
       h+='<span class="rrt"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
         +(i===tgt?'<span class="soon">まもなく</span>':'')
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
+        +(to&&to.skip?'<span class="skipb">&#9888;見送り</span>':'')
         +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
     }
     h+='<span class="chev">&rsaquo;</span></div>';
@@ -590,8 +594,10 @@ function listView(){
      +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
     const chance = ha.hon<0.35 && ha.ana>=0.25;            // 本命弱い×穴厚い＝コメントチャンス
     const shobu = r.ev!=null && r.ev>=1.5;  // EV≥1.5で点灯（荒れ度の帯は問わず・オッズ取得後）
+    const to = done?null:tetsuOdds(r);      // 鉄板×実オッズ<2.0＝見送り推奨（締切前のみ）
     h+='<span class="ha2"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
+        +(to&&to.skip?'<span class="skipb">&#9888;見送り</span>':'')
         +(chance?'<span class="chance">&#10024;チャンス</span>':'')
       +'<span class="hp">本命<b>'+Math.round(ha.hon*100)+'</b> 穴<b class="a">'+Math.round(ha.ana*100)+'</b></span></span>';
     if(done){
@@ -723,6 +729,22 @@ function detailView(r){
          ? '相手（2・3着）は絞りやすいが、本命確率が低め。1着が読みづらいので頭は広めに。'
          : '相手が横一線で2・3着を絞りにくい。本命が強くても2連単/3連単は伸びにくい帯＝点数を欲張らない。')
     +'<br><span style="font-size:11px;color:#7e8796">※「相手の差」＝非本命5艇の1着確率のばらつき（発走前にモデルから分かる量）。1着の精度は本命確率が決め、相手の差はもっぱら2・3着を絞れるかに効く（検証 OOS 7,862R）。</span></div>';
+  // 鉄板×実オッズの見送り判定（締切前・オッズ取得済のみ表示）。
+  // backtest(2026-06・鉄板81R・最終オッズ): 1点目2連単<2.0見送り＝回収88.8→98.9%(+10.1pt)、
+  // <3.0まで見送ると110.2%だが対象半減(n=33)のため2〜3倍帯は「妙味薄」の目安表示に留める。
+  if(!done){
+    const to=tetsuOdds(r);
+    if(to){
+      h+='<div class="rdbox"'+(to.skip?' style="border-color:#5a2a2a"':'')+'>'
+        +'<span class="h">実オッズ判定</span>1点目2連単 '+to.c[0]+'-'+to.c[1]+' の実オッズ <b>'+to.odds.toFixed(1)+'倍</b> → '
+        +(to.skip
+          ?'<b style="color:#f09595">&#9888; 見送り推奨</b>：本命サイドが売れすぎ（2倍未満）＝当たっても戻りが薄い帯。検証（6月・鉄板81R）ではこの帯を見送るだけで回収88.8→98.9%(+10.1pt)・的中率も向上。'
+          :to.odds<3.0
+            ?'<span style="color:#e0a93b">△ 妙味薄</span>：2〜3倍帯。参考検証では3倍未満まで見送ると回収110.2%だが対象が半減（n=33）のため目安扱い。'
+            :'<b style="color:#43c59e">&#10003; オッズ妙味あり</b>：3倍以上。鉄板の回収を支えるのはこの帯。')
+        +'<br><span style="font-size:11px;color:#7e8796">※ 公式サイトの2連単オッズを直接取得（締切40分前から約3分毎に自動更新）。オッズは締切まで動くので最終判断は直前に。</span></div>';
+    }
+  }
   // 2連単 上位（予想確率で点数変動・上限5）
   const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
   const exTag=exOn?'<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span>':'';
@@ -1341,6 +1363,54 @@ function resultSweep(){
   return Promise.all(targets.map(resultFetch)).then(a=>a.some(x=>x));
 }
 
+// ── 鉄板レースの実オッズ直取り（/api/odds・Cloudflare Pages Function）──
+// backtest(2026-06・最終オッズ19日分・鉄板81R): 1点目2連単の実オッズ<2.0のレースを
+// 見送ると回収88.8→98.9%(+10.1pt)・的中率も+4pt。超低オッズ帯は当たっても戻りが薄い。
+// 対象は鉄板(API本命確率≥0.65)のみ・締切40分前〜締切・2分スロットル・サーバ側90秒キャッシュ
+// なので公式サイトへの負荷は人が見るのと同程度。取得失敗・発売前(オッズ0)は表示なし。
+const oddsLast={};                                    // race_id → 最終取得エポックms
+function isTetsu(r){return Math.max(...r.ab)/1000>=0.65;}
+function top2Combo(r){const t=plTop(betScore(r),2,1);return t.length?t[0][0]:null;}
+function oddsFetch(r){
+  const now=Date.now();
+  if(oddsLast[r.id]&&now-oddsLast[r.id]<120000)return Promise.resolve(false);
+  oddsLast[r.id]=now;
+  const q='jcd='+r.id.slice(0,2)+'&rno='+(+r.id.slice(10,12))+'&hd='+r.id.slice(2,10);
+  return fetch('/api/odds?'+q,{cache:'no-store'}).then(x=>{if(!x.ok)throw 0;return x.json();})
+    .then(o=>{ if(!o||!o.o2)return false; r.o2=o.o2; return true; })
+    .catch(()=>false);
+}
+// 締切40分前〜締切・結果未確定・鉄板の当日レース（＋詳細表示中の鉄板）のオッズを直取り。
+function oddsSweep(){
+  if(!IS_CLOUD)return Promise.resolve(false);         // /api/odds はクラウドのみ
+  const targets=[];
+  D.races.forEach(r=>{
+    if(r.d!==D.base||hasResult(r)||!isTetsu(r))return;
+    const mn=raceMin(r); if(mn==null)return;
+    if(mn<=40&&mn>=0)targets.push(r);
+  });
+  if(sel!=null){const r=dayRaces()[sel];
+    if(r&&r.d===D.base&&!hasResult(r)&&isTetsu(r)&&targets.indexOf(r)<0)targets.push(r);}
+  if(!targets.length)return Promise.resolve(false);
+  return Promise.all(targets.map(oddsFetch)).then(a=>a.some(x=>x));
+}
+// 鉄板の見送り判定。1点目2連単(買い目筆頭)の実オッズ<2.0→見送り推奨。
+// オッズ未取得・発売前(0)・非鉄板は null＝何も表示しない（縮退安全）。
+function tetsuOdds(r){
+  if(!r.o2||!isTetsu(r))return null;
+  const c=top2Combo(r); if(!c)return null;
+  const o=r.o2[c.join('-')];
+  if(o==null||o<=0)return null;                       // 0＝発売前・欠番＝判定不能
+  return {odds:o,skip:o<2.0,c:c};
+}
+// 当日・締切前の鉄板オッズ署名。判定表示(0.1倍単位)が変わった時だけ再描画するため。
+function oddsSig(){
+  let s='';
+  D.races.forEach(r=>{const t=(r.d===D.base&&!hasResult(r)&&r.o2)?tetsuOdds(r):null;
+    if(t)s+=r.id+':'+t.odds.toFixed(1)+';';});
+  return s;
+}
+
 // 当日レースの展示タイム/展示STの署名。値が変わった時だけ再描画するため（無変化のちらつき防止）。
 function exSig(){
   let s='';
@@ -1358,16 +1428,17 @@ function rerenderKeepScroll(){
 // GitHub Actions 枠は消費しない。
 function autoRefresh(){
   if(upBusy)return;                       // 手動更新中は触らない
-  const before=exSig();
+  const before=exSig(), beforeO=oddsSig();
   Promise.allSettled([upJSON(),fetchPreviews()]).then(res=>{
     const u=res[0], p=res[1]; let changed=false;
     if(u.status==='fulfilled'&&u.value&&u.value.fetched_at&&u.value.fetched_at!==upFetched){
       applyUpd(u.value); upFetched=u.value.fetched_at; changed=true;   // 結果/EVが更新された
     }
     if(p.status==='fulfilled'&&p.value){ applyPreviews(p.value); }     // 展示は previews で上書き
-    return Promise.all([tenjiSweep(),resultSweep()]).then(sw=>{        // 締切前=展示・締切後=結果を公式直取り
+    return Promise.all([tenjiSweep(),resultSweep(),oddsSweep()]).then(sw=>{  // 締切前=展示・オッズ／締切後=結果を公式直取り
       if(exSig()!==before)changed=true;                                // 展示が変わった
       if(sw[1])changed=true;                                           // 結果が確定した
+      if(oddsSig()!==beforeO)changed=true;                             // 鉄板オッズ判定が変わった
       if(changed)rerenderKeepScroll();
     });
   }).catch(()=>{});
@@ -1456,6 +1527,9 @@ function render(){
     if(IS_CLOUD&&dr&&dr.d===D.base&&!hasResult(dr)){
       const mn=raceMin(dr), fn=(mn!=null&&mn<=-2)?resultFetch:tenjiFetch;
       fn(dr).then(ch=>{ if(ch&&sel!=null&&dayRaces()[sel]===dr)rerenderKeepScroll(); });
+      // 鉄板は実オッズも即取得（見送り判定）。締切後は不要。
+      if(isTetsu(dr)&&!(mn!=null&&mn<=-2))
+        oddsFetch(dr).then(ch=>{ if(ch&&sel!=null&&dayRaces()[sel]===dr)rerenderKeepScroll(); });
     }
   }
 }
@@ -1479,7 +1553,7 @@ if(location.protocol==='file:'){
     upMsg='自動更新 '+(fa||'')+' ／ 結果 '+n.nres+'・展示 '+nexFinal+(n.nev?'・EV '+n.nev:'')+' レース反映'
       +(npv?' ・展示は最新フィード('+npv+'R)':'');
     render();
-    Promise.all([tenjiSweep(),resultSweep()]).then(sw=>{ if(sw[0]||sw[1])rerenderKeepScroll(); });   // 締切前=展示・締切後=結果を公式直取りで即最新化
+    Promise.all([tenjiSweep(),resultSweep(),oddsSweep()]).then(sw=>{ if(sw[0]||sw[1]||sw[2])rerenderKeepScroll(); });   // 締切前=展示・オッズ／締切後=結果を公式直取りで即最新化
   }).catch(()=>{});
   // 開いたまま展示公表を待てるよう、3分ごとに自動再取得（previews＋update.json＋公式直取り）。
   // 変化があった時だけ再描画するので、表示を邪魔しない。タブ非表示中はスキップ。
