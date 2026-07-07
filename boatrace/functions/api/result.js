@@ -33,7 +33,7 @@ function payoutRows(html) {
   return rows;
 }
 
-// raceresult HTML → {fin:[着順 枠1..6], order, km, po2, po3}。未確定/無ければ null。
+// raceresult HTML → {fin:[着順 枠1..6], order, km, po2, po3, po2f}。未確定/無ければ null。
 // export はローカル node テスト用。
 export function parseResult(html) {
   if (!html) return null;
@@ -57,10 +57,13 @@ export function parseResult(html) {
   let km = "";
   const mk = html.match(/(まくり差し|逃げ|差し|まくり|抜き|恵まれ)/);
   if (mk) km = mk[1];
+  // 表の並び＝3連単→3連複→2連単→2連複…: 3桁の1行目=3連単 / 2桁の1行目=2連単・2行目=2連複。
   const rows = payoutRows(html);
   const po3 = (rows.find((x) => x[0].length === 3) || [null, null])[1];
-  const po2 = (rows.find((x) => x[0].length === 2) || [null, null])[1];
-  return { fin, order, km, po2, po3 };
+  const two = rows.filter((x) => x[0].length === 2);
+  const po2 = two.length ? two[0][1] : null;
+  const po2f = two.length > 1 ? two[1][1] : null;   // 2連複（2026-07-07 券種切替で追加）
+  return { fin, order, km, po2, po3, po2f };
 }
 
 function json(obj, status) {

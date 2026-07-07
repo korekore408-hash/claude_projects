@@ -1,11 +1,13 @@
 // Cloudflare Pages Function: GET /api/odds?jcd=NN&rno=R&hd=YYYYMMDD[&type=3t]
 // ─────────────────────────────────────────────────────────────────────
-// 公式 odds2tf（2連単オッズ）を直接取得し {o2:{"1-2":3.4,...}} で返す。
+// 公式 odds2tf（2連単・2連複オッズ）を直接取得し {o2:{"1-2":3.4,...}, o2f:{"1-2":2.1,...}} で返す。
 //   ・用途＝鉄板レースの見送り判定（1点目2連単の実オッズ<2.0なら「見送り推奨」）
-//     ＋ odds.html（オッズ一覧別ページ）のデータ源。
+//     ＋ odds.html（オッズ一覧別ページ）のデータ源。o2f=2連複（2026-07-07 券種切替で追加・
+//     同ページに両表があるため追加フェッチなし）。
 //     backtest(2026-06・鉄板81R・最終オッズ): 見送りで回収88.8→98.9%(+10.1pt)。
 //   ・パーサは fetch_odds.py fetch_exacta / fetch_trifecta の JS 移植:
-//     2tfページの oddsPoint セル先頭30個＝2連単（文書順 p → 1着=(p%6)+1, 2着=残り昇順[p//6]）。
+//     2tfページの oddsPoint セル先頭30個＝2連単（文書順 p → 1着=(p%6)+1, 2着=残り昇順[p//6]）、
+//     続く15個＝2連複（行=大きい方の艇の三角順 [1-2,1-3,2-3,1-4,...]・実HTML3場で構造検証済み）。
 //     type=3t は odds3t ページの先頭120個＝3連単 {o3:{"1-2-3":5.6,...}}。
 //   ・Cache API で90秒キャッシュ＝多端末ポーリングの重複取得を公式サイトへ流さない。
 //   ・公式が落ちている/未発売時は {o2:null}/{o3:null} → クライアントは表示なし（縮退安全）。
@@ -34,6 +36,28 @@ export function parseExacta(html) {
     o2[a + "-" + others[Math.floor(p / 6)]] = v;            // 2着＝残り5艇昇順の行番目
   });
   return Object.keys(o2).length ? o2 : null;
+}
+
+// odds2tf HTML → 2連複 {"1-2":2.1,...}（最大15組）。2連単30セルの直後の15セル。
+// 三角順: [1-2, 1-3, 2-3, 1-4, 2-4, 3-4, 1-5, ..., 5-6]（行=大きい方の艇・列=小さい方）。
+export function parseQuinella(html) {
+  if (!html) return null;
+  const re = /oddsPoint[^>]*>\s*([0-9]+\.[0-9]+|[0-9]+|欠場|---|-)\s*</g;
+  const vals = [];
+  let m;
+  while ((m = re.exec(html)) && vals.length < 45) {
+    const v = parseFloat(m[1]);
+    vals.push(isNaN(v) ? null : v);
+  }
+  if (vals.length < 45) return null;                 // 2連複表なし（レイアウト想定外）
+  const o2f = {};
+  let q = 0;
+  for (let b = 2; b <= 6; b++)
+    for (let a = 1; a < b; a++) {
+      const v = vals[30 + q++];
+      if (v != null) o2f[a + "-" + b] = v;
+    }
+  return Object.keys(o2f).length ? o2f : null;
 }
 
 // odds3t HTML → {"1-2-3":5.6,...}（最大120組）。fetch_odds.py _trifecta_combo と同一マッピング:
@@ -85,18 +109,22 @@ export async function onRequestGet(context) {
   const hit = await cache.match(cacheKey);
   if (hit) return hit;
 
-  let o = null;
+  let o = null, of = null;
   try {
     const res = await fetch(
       (is3t ? URL_3T : URL_2T).replace("{r}", String(+rno)).replace("{jcd}", jcd2).replace("{hd}", hd),
       { headers: UA }
     );
-    if (res.ok) o = (is3t ? parseTrifecta : parseExacta)(await res.text());
+    if (res.ok) {
+      const html = await res.text();
+      o = (is3t ? parseTrifecta : parseExacta)(html);
+      if (!is3t) of = parseQuinella(html);            // 2連複は同ページから同時取得
+    }
   } catch (e) { /* 公式落ち/ブロックは null＝クライアントは表示なし */ }
 
   const resp = json(
     is3t ? { o3: o, fetched_at: new Date().toISOString() }
-         : { o2: o, fetched_at: new Date().toISOString() }
+         : { o2: o, o2f: of, fetched_at: new Date().toISOString() }
   );
   context.waitUntil(cache.put(cacheKey, resp.clone()));
   return resp;

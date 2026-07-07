@@ -226,10 +226,13 @@ def parse_result(html):
     if mk:
         km = mk.group(1)
     # 配当: numberSet1_row の数字ボックス列 → 直後の is-payout 金額。
+    # 表の並び＝3連単→3連複→2連単→2連複…: 3桁の1行目=3連単 / 2桁の1行目=2連単・2行目=2連複。
     rows = _payout_rows(html)
     po3 = next((a for n, a in rows if len(n) == 3), None)
-    po2 = next((a for n, a in rows if len(n) == 2), None)
-    return {"fin": fin, "order": order, "km": km, "po2": po2, "po3": po3}
+    two = [a for n, a in rows if len(n) == 2]
+    po2 = two[0] if two else None
+    po2f = two[1] if len(two) > 1 else None          # 2連複（2026-07-07 券種切替で追加）
+    return {"fin": fin, "order": order, "km": km, "po2": po2, "po3": po3, "po2f": po2f}
 
 
 def _payout_rows(html):

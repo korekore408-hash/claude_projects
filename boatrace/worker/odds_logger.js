@@ -43,6 +43,22 @@ function parseExacta(html) {
   return Object.keys(o2).length ? o2 : null;
 }
 
+// 2連複15点（2連単30セルの直後・三角順 [1-2,1-3,2-3,1-4,...]）
+function parseQuinella(html) {
+  if (!html) return null;
+  const re = /oddsPoint[^>]*>\s*([0-9]+\.[0-9]+|[0-9]+|欠場|---|-)\s*</g;
+  const vals = []; let m;
+  while ((m = re.exec(html)) && vals.length < 45) { const v = parseFloat(m[1]); vals.push(isNaN(v) ? null : v); }
+  if (vals.length < 45) return null;
+  const o2f = {}; let q = 0;
+  for (let b = 2; b <= 6; b++)
+    for (let a = 1; a < b; a++) {
+      const v = vals[30 + q++];
+      if (v != null) o2f[a + "-" + b] = v;
+    }
+  return Object.keys(o2f).length ? o2f : null;
+}
+
 function parseTrifecta(html) {
   if (!html) return null;
   const re = /oddsPoint[^>]*>\s*([0-9]+\.[0-9]+|[0-9]+|欠場|---|-)\s*</g;
@@ -104,16 +120,16 @@ export default {
       const jcd2 = String(t.jcd).padStart(2, "0");
       const u2 = URL_2T.replace("{r}", t.rno).replace("{jcd}", jcd2).replace("{hd}", hd);
       const u3 = URL_3T.replace("{r}", t.rno).replace("{jcd}", jcd2).replace("{hd}", hd);
-      let o2 = null, o3 = null;
+      let o2 = null, o2f = null, o3 = null;
       try {
         const [r2, r3] = await Promise.all([fetch(u2, { headers: UA }), fetch(u3, { headers: UA })]);
-        if (r2.ok) o2 = parseExacta(await r2.text());
+        if (r2.ok) { const h2 = await r2.text(); o2 = parseExacta(h2); o2f = parseQuinella(h2); }
         if (r3.ok) o3 = parseTrifecta(await r3.text());
       } catch (e) { /* 失敗レースはnullのまま記録 */ }
       const cmin = Math.floor(t.cm / 60), csec = t.cm % 60;
       return { jcd: t.jcd, rno: t.rno,
                close: String(cmin).padStart(2, "0") + ":" + String(csec).padStart(2, "0"),
-               o2, o3 };
+               o2, o2f, o3 };
     }));
     const kept = entries.filter((e) => e.o2 || e.o3);
     if (!kept.length) return;

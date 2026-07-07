@@ -6,9 +6,10 @@
 <title>オッズ一覧</title>
 <!--
   オッズ一覧（別ページ）: today.html のレース詳細「オッズ一覧」ボタンから開く。
-  /api/odds（2連単30点）+ /api/odds?type=3t（3連単120点）を直取りし全組を表示。
+  /api/odds（2連単30点+2連複15点）+ /api/odds?type=3t（3連単120点）を直取りし全組を表示。
   URLパラメータ: id=12桁race_id(jcd2+YYYYMMDD+rno2) / v=場名 / no=R番 / tm=締切
-                 b2=本線2連単(1-4,1-2,…) / b3=本線3連単 / ba=穴予想6点 …AI買い目ハイライト用
+                 bf=本線2連複(1-4,1-2,…) / b3=本線3連単 / ba=穴予想6点 …AI買い目ハイライト用
+                 （b2=旧・本線2連単は2026-07-07の券種切替で廃止・無視）
   約2分毎に自動更新（サーバ側90秒キャッシュ・タブ非表示中はスキップ）。クラウド専用。
 -->
 <style>
@@ -60,10 +61,10 @@ var OK=/^\d{12}$/.test(ID);
 var JCD=ID.slice(0,2),HD=ID.slice(2,10),RNO=+ID.slice(10,12);
 var V=Q.get('v')||'',NO=Q.get('no')||RNO,TM=Q.get('tm')||'';
 function combos(k){return (Q.get(k)||'').split(',').filter(function(s){return /^\d(-\d){1,2}$/.test(s);});}
-var B2=combos('b2'),B3=combos('b3'),BA=combos('ba');
-var SB2={},SB3={},SBA={};B2.forEach(function(c){SB2[c]=1;});B3.forEach(function(c){SB3[c]=1;});BA.forEach(function(c){SBA[c]=1;});
+var BF=combos('bf'),B3=combos('b3'),BA=combos('ba');
+var SBF={},SB3={},SBA={};BF.forEach(function(c){SBF[c]=1;});B3.forEach(function(c){SB3[c]=1;});BA.forEach(function(c){SBA[c]=1;});
 
-var o2=null,o3=null,at=null,busy=false,fail=false;
+var o2=null,o2f=null,o3=null,at=null,busy=false,fail=false;
 
 function oddsVal(o,c){var v=o&&o[c];return (v==null||v<=0)?null:v;}
 function fmt(v){return v==null?'–':(v>=1000?Math.round(v).toLocaleString():v.toFixed(1));}
@@ -74,16 +75,32 @@ function rankMap(o){
   var m={};ks.forEach(function(k,i){m[k]=i+1;});return m;
 }
 
-function aiRows(list,o,rmap,lab,cls){
+function aiRows(list,o,rmap,lab,cls,sep){
   var h='';
   list.forEach(function(c,i){
     var v=oddsVal(o,c),rk=rmap[c];
     h+='<div class="crow"><span class="rk">'+lab+(list.length>1?(i+1):'')+'</span>'
-      +c.split('-').map(chip).join('<span class="arr">&rarr;</span>')
+      +c.split('-').map(chip).join('<span class="arr">'+(sep||'&rarr;')+'</span>')
       +'<span class="pop">'+(rk?rk+'番人気':'')+'</span>'
       +'<span class="oz" style="color:'+cls+'">'+fmt(v)+(v!=null?'<span style="font-size:10px;color:#8791a3">倍</span>':'')+'</span></div>';
   });
   return h;
+}
+
+function fukuTable(){
+  // 2連複15点: 列=小さい方の艇a(1-5)・縦=相手b(a+1..6) の三角表
+  var h='<table><tr>';for(var a=1;a<=5;a++)h+='<th>'+chip(a)+'<span style="font-size:9px;color:#5d6675">軸</span></th>';h+='</tr>';
+  for(var row=0;row<5;row++){
+    h+='<tr>';
+    for(var a=1;a<=5;a++){
+      var b=a+1+row;
+      if(b>6){h+='<td style="border-bottom:0"></td>';continue;}
+      var c=a+'-'+b,v=oddsVal(o2f,c);
+      h+='<td class="'+(SBF[c]?'hl2':(v==null?'na':''))+'"><span class="lane">'+b+'</span>'+fmt(v)+'</td>';
+    }
+    h+='</tr>';
+  }
+  return h+'</table>';
 }
 
 function exTable(){
@@ -94,7 +111,7 @@ function exTable(){
     for(var a=1;a<=6;a++){
       var others=[1,2,3,4,5,6].filter(function(x){return x!==a;});
       var b=others[row],c=a+'-'+b,v=oddsVal(o2,c);
-      h+='<td class="'+(SB2[c]?'hl2':(v==null?'na':''))+'"><span class="lane">'+b+'</span>'+fmt(v)+'</td>';
+      h+='<td class="'+(v==null?'na':'')+'"><span class="lane">'+b+'</span>'+fmt(v)+'</td>';
     }
     h+='</tr>';
   }
@@ -123,14 +140,14 @@ function triTable(){
   return h;
 }
 
-function popList(o,n,dim){
+function popList(o,n,dim,sep,honSet){
   var ks=Object.keys(o||{}).filter(function(k){return o[k]>0;}).sort(function(a,b){return o[a]-o[b];}).slice(0,n);
   if(!ks.length)return '';
   var h='';
   ks.forEach(function(c,i){
-    var mk=SB2[c]||SB3[c]?' <span style="font-size:10px;color:#43c59e">AI本線</span>':(SBA[c]?' <span style="font-size:10px;color:#c79bff">AI穴</span>':'');
+    var mk=(honSet&&honSet[c])?' <span style="font-size:10px;color:#43c59e">AI本線</span>':(SBA[c]?' <span style="font-size:10px;color:#c79bff">AI穴</span>':'');
     h+='<div class="crow"><span class="rk">'+(i+1)+'位</span>'
-      +c.split('-').map(chip).join('<span class="arr">&rarr;</span>')+mk
+      +c.split('-').map(chip).join('<span class="arr">'+(sep||'&rarr;')+'</span>')+mk
       +'<span class="oz">'+fmt(o[c])+'<span style="font-size:10px;color:#8791a3">倍</span></span></div>';
   });
   return '<div class="sec">'+dim+' 人気順</div>'+h;
@@ -145,21 +162,22 @@ function render(){
     +'<button class="upbtn" id="upd"'+(busy?' disabled':'')+'>'+(busy?'取得中…':'更新')+'</button></h1>'
     +'<div class="meta">'+hd+(TM?'　締切 '+esc(TM):'')
     +(at?'　<span style="color:#43c59e">'+at+' 取得</span>':'')+'　約2分毎に自動更新</div>';
-  if(fail&&!o2&&!o3){
+  if(fail&&!o2&&!o2f&&!o3){
     h+='<div class="err">オッズを取得できませんでした。発売前（オッズ未確定）か、公式サイトが混雑しています。少し待つと自動で再取得します。</div>';
   }
-  var r2=rankMap(o2),r3=rankMap(o3);
-  if(B2.length||B3.length||BA.length){
+  var rf=rankMap(o2f),r3=rankMap(o3);
+  if(BF.length||B3.length||BA.length){
     h+='<div class="sec">AI買い目の実オッズ<span class="kbadge">本線=緑 / 穴予想=紫</span></div>';
-    if(B2.length)h+=aiRows(B2,o2,r2,'2連',' #7fe0bf');
+    if(BF.length)h+=aiRows(BF,o2f,rf,'2複',' #7fe0bf','=');
     if(B3.length)h+=aiRows(B3,o3,r3,'3連',' #7fe0bf');
     if(BA.length)h+=aiRows(BA,o3,r3,'穴',' #c79bff');
   }
-  h+=popList(o2,5,'2連単')+popList(o3,10,'3連単');
-  h+='<div class="sec">2連単 全30点</div>'+exTable();
+  h+=popList(o2f,5,'2連複','=',SBF)+popList(o3,10,'3連単',null,SB3);
+  h+='<div class="sec">2連複 全15点<span class="kbadge">本線の券種</span></div>'+fukuTable();
+  h+='<div class="sec">2連単 全30点<span class="kbadge">参考（購入対象外）</span></div>'+exTable();
   h+='<div class="sec">3連単 全120点<span class="kbadge">– は未発売/欠場</span></div>'+triTable();
-  h+='<div class="note">※ 公式サイトのオッズを直接取得（2連単/3連単・サーバ側90秒キャッシュ）。オッズは締切まで動きます。'
-    +'緑=AI本線の買い目、紫=AI穴予想。「–」は未発売・欠場・取得不可。</div>';
+  h+='<div class="note">※ 公式サイトのオッズを直接取得（2連複/2連単/3連単・サーバ側90秒キャッシュ）。オッズは締切まで動きます。'
+    +'緑=AI本線の買い目（2連複・3連単）、紫=AI穴予想。2連単は市場の堅さ確認用の参考（2026-07-07に本線を2連複へ切替）。「–」は未発売・欠場・取得不可。</div>';
   app.innerHTML=h;
   var b=document.getElementById('upd');if(b)b.onclick=function(){load(true);};
 }
@@ -172,11 +190,12 @@ function load(force){
     fetch('/api/odds?'+q,{cache:'no-store'}).then(function(x){return x.ok?x.json():null;}).catch(function(){return null;}),
     fetch('/api/odds?'+q+'&type=3t',{cache:'no-store'}).then(function(x){return x.ok?x.json():null;}).catch(function(){return null;})
   ]).then(function(a){
-    var n2=a[0]&&a[0].o2,n3=a[1]&&a[1].o3;
-    fail=!n2&&!n3;
+    var n2=a[0]&&a[0].o2,nf=a[0]&&a[0].o2f,n3=a[1]&&a[1].o3;
+    fail=!n2&&!nf&&!n3;
     if(n2)o2=n2;
+    if(nf)o2f=nf;
     if(n3)o3=n3;
-    if(n2||n3)at=new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    if(n2||nf||n3)at=new Date().toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     busy=false;render();
   });
 }

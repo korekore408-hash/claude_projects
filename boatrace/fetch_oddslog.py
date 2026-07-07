@@ -22,7 +22,7 @@ def export_date(base, token, date):
     rows = []
     for hhmm, entries in sorted(j.get("snapshots", {}).items()):
         for e in entries:
-            for kind, key in (("2t", "o2"), ("3t", "o3")):
+            for kind, key in (("2t", "o2"), ("2f", "o2f"), ("3t", "o3")):
                 for combo, odds in (e.get(key) or {}).items():
                     rows.append([date, hhmm, e["jcd"], e["rno"], e.get("close", ""),
                                  kind, combo, odds])
