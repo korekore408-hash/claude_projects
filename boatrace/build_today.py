@@ -1993,6 +1993,14 @@ function detailView(r){
         +'<br><span style="font-size:11px;color:#7e8796">※ 公式サイトの2連単オッズを直接取得（締切40分前から約3分毎に自動更新）。オッズは締切まで動くので最終判断は直前に。</span></div>';
     }
   }
+  // オッズ一覧ボタン（別ページ odds.html）: 全2連単30点/3連単120点＋AI買い目ハイライト。
+  // b2/b3=本線・ba=穴予想（穴帯=対抗6点/標準帯=穴候補6点）をURLで渡す。/api/odds はクラウドのみ。
+  if(IS_CLOUD){
+    const _b2=plTop(sb,2,kEx(honBand)).map(c=>c[0].join('-')).join(',');
+    const _b3=triOn(honBand)?triBuyList(plTop(sb,3,200),kTri(honBand),honBand,laneRankMap(sb)).map(c=>c[0].join('-')).join(','):'';
+    const _ba=(honBand<0.45?taikouRef(r):(honBand<0.65?anaCandRef(r.ab):[])).map(c=>c.join('-')).join(',');
+    h+='<div style="margin:10px 0 2px"><a href="odds.html?id='+r.id+'&v='+encodeURIComponent(r.v)+'&no='+r.no+(r.tm?'&tm='+encodeURIComponent(r.tm):'')+(_b2?'&b2='+_b2:'')+(_b3?'&b3='+_b3:'')+(_ba?'&ba='+_ba:'')+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #2a3852;border-radius:8px;background:#141a26;color:#8fa8d0;font-size:13px;font-weight:600;text-decoration:none">&#128202; オッズ一覧<span style="font-size:11px;color:#7e8796;font-weight:400">（別ページ・全買い目の実オッズ）</span></a></div>';
+  }
   // 2連単 上位（予想確率で点数変動・上限5）
   const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
   const exTag=exOn?'<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span>':'';
