@@ -354,11 +354,11 @@ def _tri_buy_list(combos, k, hon, rank_map):
 
 
 def _meri_w(probs, hon):
-    """買い目配分の「妙味寄せ」重み。JS meriW と同一。
-    鉄板+標準(hon≥0.45)は weight ∝ p^-0.5 で配当の大きい薄い目へ資金を寄せ、
-    爆発頻度を上げる（回収≈-0.4pt・的中不変・≥5倍が約10倍/[[boatrace-bet-points]]）。
-    穴帯(<0.45)は薄目寄せが回収を落とすため現行の確率比例(p^1)のまま。"""
-    g = -0.5 if hon >= 0.45 else 1.0
+    """買い目配分の「爆発重視」重み。JS meriW と同一。
+    全帯 weight ∝ p^-1（EVフラット）＝当たれば各点ほぼ同額回収まで薄目に振り切る。
+    合成回収は現行(妙味寄せ)とほぼ不変(-0.1pt)だが、≥5倍の爆発頻度と単レース最大配当が
+    大きく増える（穴2連複は≥5倍が約11倍・穴帯のみ回収-2.5pt/[[boatrace-bet-points]]）。"""
+    g = -1.0
     return [max(p, 1e-12) ** g for p in probs]
 
 
@@ -1704,9 +1704,9 @@ function taikou(r){
   }
   return {fav:fav+1, lane:ci+1, name:r.b[ci][0], prob:prob, tags:tags, ex:exUsed};
 }
-// 買い目配分の「妙味寄せ」重み。鉄板+標準(hon≥0.45)は weight∝p^-0.5 で配当の大きい
-// 薄い目へ資金を寄せ爆発頻度を上げる（回収≈-0.4pt・的中不変）。穴帯(<0.45)は現行の確率比例。
-function meriW(probs,hon){const g=hon>=0.45?-0.5:1;return probs.map(p=>Math.pow(Math.max(p,1e-12),g));}
+// 買い目配分の「爆発重視」重み。全帯 weight∝p^-1（EVフラット）で薄い高配当目に振り切る。
+// 合成回収はほぼ不変(-0.1pt)だが≥5倍の爆発頻度・単レース最大配当が大きく増える（穴帯のみ回収-2.5pt）。
+function meriW(probs,hon){const g=-1;return probs.map(p=>Math.pow(Math.max(p,1e-12),g));}
 // 予算budget円を買い目に重み比例で配分（¥100単位・各点最低¥100・合計=budget）。
 function allocYen(probs,budget){
   const unit=100,n=probs.length; if(!n)return [];
@@ -2202,7 +2202,7 @@ function detailView(r){
     +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝AI予想確率の逆数）。</div>';
   h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率・買い目）。割合・荒れ度・点数の基準＝API簡易合成。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連複≦5・3連単≦20）＝本命確率（実測補正）'+Math.round(calP(honD)*100)+'%で2連複'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
-    +'<b>金額は'+(triOn(honD)?'2連複・3連単それぞれ':'2連複に')+'¥2,000を配分（¥100単位・各点最低¥100）。'+(honD>=0.45?'鉄板・標準帯は<b style="color:#e0a93b">妙味寄せ</b>＝配当の大きい薄い目に厚く（薄目重み∝1÷√確率）。回収は約-0.4ptだが5倍超の爆発が約10倍の頻度に（的中率は不変・backtest 26,870R）。':'穴帯は本命ペアに価値が集中するため予想確率に比例配分（本命に厚く）。')+'</b>'
+    +'<b>金額は'+(triOn(honD)?'2連複・3連単それぞれ':'2連複に')+'¥2,000を配分（¥100単位・各点最低¥100）。全帯<b style="color:#e0a93b">爆発重視</b>＝配当の大きい薄い目に振り切って配分（薄目重み∝1÷確率・EVフラット）。合成回収はほぼ不変だが5倍超の爆発頻度と一撃の最大配当が大きく増える（的中率は不変・backtest 26,870R）。</b>'
     +'2連複は2026-07-07に2連単から切替（同じ点数で回収+3.7pt・的中52→68%・backtest 26,843R）。'
     +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
     +(stdBand?'標準帯の3連単は穴型（5-6番手絡み）を購入対象から外します。':'')
@@ -2396,7 +2396,7 @@ function recentRecoveryView(){
   const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
   const yfmt=v=>'¥'+Math.round(v).toLocaleString();
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
-  h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を配分＝鉄板・標準は妙味寄せ／穴帯は比例・穴帯は3連単を買わない・フライングは返還）。'
+  h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を全帯爆発重視で配分＝薄い高配当目に振り切り・穴帯は3連単を買わない・フライングは返還）。'
     +'折れ線＝日別の回収率（％）。<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
   // 穴目の対象帯セレクタ（グラフ・券種別テーブルの穴目行に連動）
   h+='<div class="anascope" style="justify-content:center;margin:6px 0 2px">穴目の対象：'
@@ -2496,7 +2496,7 @@ function statsView(){
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
     h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連複≤5/3連単≤20点）。'
-      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を配分（鉄板・標準は妙味寄せ／穴帯は比例）・穴帯(本命&lt;45%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
+      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を全帯爆発重視で配分（薄い高配当目に振り切り・EVフラット）・穴帯(本命&lt;45%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
       +'回収率＝Σ(配当×賭け金/100)÷Σ賭け金。100%超で利益。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
