@@ -353,6 +353,15 @@ def _tri_buy_list(combos, k, hon, rank_map):
     return combos[:k]
 
 
+def _meri_w(probs, hon):
+    """買い目配分の「妙味寄せ」重み。JS meriW と同一。
+    鉄板+標準(hon≥0.45)は weight ∝ p^-0.5 で配当の大きい薄い目へ資金を寄せ、
+    爆発頻度を上げる（回収≈-0.4pt・的中不変・≥5倍が約10倍/[[boatrace-bet-points]]）。
+    穴帯(<0.45)は薄目寄せが回収を落とすため現行の確率比例(p^1)のまま。"""
+    g = -0.5 if hon >= 0.45 else 1.0
+    return [max(p, 1e-12) ** g for p in probs]
+
+
 def _alloc_yen(probs, budget=2000, unit=100):
     """予算を確率比例で配分（各点最低1ユニット＝¥100・合計=budget）。JS allocYen と同一。"""
     n = len(probs)
@@ -742,7 +751,7 @@ def recent_stats(out, payout, pmkey="b"):
         if len(order) >= 2:
             buy2 = _pf_topk(sv, kx)
             if buy2:
-                yen2 = _alloc_yen([_pf_prob(sv, c) for c in buy2])
+                yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon))
                 a["n2"] += 1
                 act2 = tuple(sorted(order[:2]))
                 for c, y in zip(buy2, yen2):
@@ -755,7 +764,7 @@ def recent_stats(out, payout, pmkey="b"):
         if len(order) >= 3 and hon >= 0.45:
             buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), kt, hon, _lane_rank_map(sv))
             if buy3:
-                yen3 = _alloc_yen([_pl_prob(sv, c) for c in buy3])
+                yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon))
                 a["n3"] += 1
                 act3 = tuple(order[:3])
                 for c, y in zip(buy3, yen3):
@@ -868,7 +877,7 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
             buy2 = _pf_topk(sv, kx)
             b2 = round(rbud * 0.5 / 100) * 100
             if buy2 and b2 >= len(buy2) * 100:
-                yen2 = _alloc_yen([_pf_prob(sv, c) for c in buy2], budget=b2)
+                yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon), budget=b2)
                 act2 = tuple(sorted(order[:2])) if len(order) >= 2 else None
                 for c, y in zip(buy2, yen2):
                     if any(w in fly for w in c):
@@ -881,7 +890,7 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
             buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), kt, hon, _lane_rank_map(sv))
             b3 = round(rbud * 0.5 / 100) * 100
             if buy3 and b3 >= len(buy3) * 100 and len(order) >= 3:
-                yen3 = _alloc_yen([_pl_prob(sv, c) for c in buy3], budget=b3)
+                yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon), budget=b3)
                 act3 = tuple(order[:3])
                 for c, y in zip(buy3, yen3):
                     if any(w in fly for w in c):
@@ -971,7 +980,7 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         # 2連複（全帯）
         buy2 = _pf_topk(sv, k_ex(hon))
         if buy2:
-            yen2 = _alloc_yen([_pf_prob(sv, c) for c in buy2])
+            yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon))
             D["ex"][0] += 1
             for c, y in zip(buy2, yen2):
                 if not any(w in fly for w in c):
@@ -983,7 +992,7 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         if act3 and hon >= 0.45:
             buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), k_tri(hon), hon, _lane_rank_map(sv))
             if buy3:
-                yen3 = _alloc_yen([_pl_prob(sv, c) for c in buy3])
+                yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon))
                 D["tri"][0] += 1
                 for c, y in zip(buy3, yen3):
                     if not any(w in fly for w in c):
@@ -1695,7 +1704,10 @@ function taikou(r){
   }
   return {fav:fav+1, lane:ci+1, name:r.b[ci][0], prob:prob, tags:tags, ex:exUsed};
 }
-// 予算budget円を買い目に確率比例で配分（¥100単位・各点最低¥100・合計=budget）。割り振りは自由（確率比例）。
+// 買い目配分の「妙味寄せ」重み。鉄板+標準(hon≥0.45)は weight∝p^-0.5 で配当の大きい
+// 薄い目へ資金を寄せ爆発頻度を上げる（回収≈-0.4pt・的中不変）。穴帯(<0.45)は現行の確率比例。
+function meriW(probs,hon){const g=hon>=0.45?-0.5:1;return probs.map(p=>Math.pow(Math.max(p,1e-12),g));}
+// 予算budget円を買い目に重み比例で配分（¥100単位・各点最低¥100・合計=budget）。
 function allocYen(probs,budget){
   const unit=100,n=probs.length; if(!n)return [];
   let units=new Array(n).fill(1);                 // 各点 最低1ユニット(¥100)
@@ -1815,7 +1827,7 @@ function daySummary(date){
     const hon=Math.max(...r.ab)/1000;
     const actEx=ord.slice(0,2),actTri=ord.slice(0,3);
     let hit=false;
-    const ex=plTopF(s,kEx(hon));const exYen=allocYen(ex.map(c=>c[1]),2000);   // 2連複
+    const ex=plTopF(s,kEx(hon));const exYen=allocYen(meriW(ex.map(c=>c[1]),hon),2000);   // 2連複
     ex.forEach((c,i)=>{
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=exYen[i];                                   // 返還ぶんは投資から除外
@@ -1825,7 +1837,7 @@ function daySummary(date){
     const doTri=triOn(hon);
     if(doTri){
       const tri=triBuyList(plTop(s,3,200),kTri(hon),hon,laneRankMap(s));
-      const triYen=allocYen(tri.map(c=>c[1]),2000);
+      const triYen=allocYen(meriW(tri.map(c=>c[1]),hon),2000);
       tri.forEach((c,i)=>{
         const kept=!c[0].some(w=>fly[w]);
         if(kept)inv+=triYen[i];
@@ -2127,7 +2139,7 @@ function detailView(r){
   const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
   const exTag=exOn?'<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span>':'';
   const ex=plTopF(sb,nEx);
-  const exYen=allocYen(ex.map(c=>c[1]),2000);
+  const exYen=allocYen(meriW(ex.map(c=>c[1]),honD),2000);
   let exHit=actEx?ex.some(c=>eqPair(c[0],actEx)):false;
   const exHitI=actEx?ex.findIndex(c=>eqPair(c[0],actEx)):-1;
   const exRec=(actEx&&payEx!=null)?(exHitI>=0?Math.round(payEx*exYen[exHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
@@ -2158,7 +2170,7 @@ function detailView(r){
   }else{
   const triAll=plTop(sb,3,200);
   const tri=triBuyList(triAll,nTri,honD,rankMap);
-  const triYen=allocYen(tri.map(c=>c[1]),2000);
+  const triYen=allocYen(meriW(tri.map(c=>c[1]),honD),2000);
   let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
   const triHitI=actTri?tri.findIndex(c=>eqArr(c[0],actTri)):-1;
   const triRec=(actTri&&payTri!=null)?(triHitI>=0?Math.round(payTri*triYen[triHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
@@ -2190,7 +2202,7 @@ function detailView(r){
     +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝AI予想確率の逆数）。</div>';
   h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率・買い目）。割合・荒れ度・点数の基準＝API簡易合成。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連複≦5・3連単≦20）＝本命確率（実測補正）'+Math.round(calP(honD)*100)+'%で2連複'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
-    +'<b>金額は'+(triOn(honD)?'2連複・3連単それぞれ':'2連複に')+'¥2,000を予想確率に比例して配分（¥100単位・各点最低¥100・本命に厚く）。</b>'
+    +'<b>金額は'+(triOn(honD)?'2連複・3連単それぞれ':'2連複に')+'¥2,000を配分（¥100単位・各点最低¥100）。'+(honD>=0.45?'鉄板・標準帯は<b style="color:#e0a93b">妙味寄せ</b>＝配当の大きい薄い目に厚く（薄目重み∝1÷√確率）。回収は約-0.4ptだが5倍超の爆発が約10倍の頻度に（的中率は不変・backtest 26,870R）。':'穴帯は本命ペアに価値が集中するため予想確率に比例配分（本命に厚く）。')+'</b>'
     +'2連複は2026-07-07に2連単から切替（同じ点数で回収+3.7pt・的中52→68%・backtest 26,843R）。'
     +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
     +(stdBand?'標準帯の3連単は穴型（5-6番手絡み）を購入対象から外します。':'')
@@ -2384,7 +2396,7 @@ function recentRecoveryView(){
   const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
   const yfmt=v=>'¥'+Math.round(v).toLocaleString();
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
-  h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を確率比例配分・穴帯は3連単を買わない・フライングは返還）。'
+  h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を配分＝鉄板・標準は妙味寄せ／穴帯は比例・穴帯は3連単を買わない・フライングは返還）。'
     +'折れ線＝日別の回収率（％）。<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
   // 穴目の対象帯セレクタ（グラフ・券種別テーブルの穴目行に連動）
   h+='<div class="anascope" style="justify-content:center;margin:6px 0 2px">穴目の対象：'
@@ -2484,7 +2496,7 @@ function statsView(){
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
     h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連複≤5/3連単≤20点）。'
-      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を確率比例配分・穴帯(本命&lt;45%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
+      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を配分（鉄板・標準は妙味寄せ／穴帯は比例）・穴帯(本命&lt;45%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
       +'回収率＝Σ(配当×賭け金/100)÷Σ賭け金。100%超で利益。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
