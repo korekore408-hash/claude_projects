@@ -2908,7 +2908,7 @@ function render(){
     document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
     document.querySelectorAll('.dbtn').forEach(b=>b.onclick=()=>{selDate=b.dataset.d;cur='ALL';render();});
     document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{cur=b.dataset.v;render();});
-    document.querySelectorAll('.asb').forEach(b=>b.onclick=()=>{anaScope=b.dataset.as;render();});
+    document.querySelectorAll('.asb').forEach(b=>b.onclick=()=>{backY=window.scrollY||document.documentElement.scrollTop||0;anaScope=b.dataset.as;render();});   // 対象帯の切替は現在位置を保つ（REALの現在レースへ飛ばさない）
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{listY=window.scrollY||document.documentElement.scrollTop||0;sel=+rw.dataset.i;render();});
     if(rby==null&&cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
   }else{
