@@ -1568,6 +1568,7 @@ HTML = r"""<!DOCTYPE html>
 const D=__DATA__;
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
 let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
+let listY=0, backY=null;   // listY=詳細を開く直前の一覧スクロール位置／backY!=null=戻る時に復元する位置
 let anaScope='all';   // 穴目回収率の対象: 'all'=合算 / 'haran'=波乱帯 / 'std'=標準帯
 // ライブ更新サーバ(serve_odds.py)がある環境か。file://(→サーバへ誘導)・localhost・LANはtrue。
 // クラウド配信(pages.dev等)はfalse＝/updateが無いので「更新」ボタンは隠す（毎朝の自動更新のみ）。
@@ -2899,18 +2900,19 @@ function render(){
     });
     return;
   }
+  const rby=backY; backY=null;   // 「一覧へ戻る」で保存した位置。通常描画では常に先頭へ
   root.innerHTML = sel===null ? nav()+listView() : detailView(dayRaces()[sel]);
-  window.scrollTo(0,0);
+  if(rby!=null){try{window.scrollTo(0,rby);}catch(e){}}else{window.scrollTo(0,0);}
   if(sel===null){
     document.querySelectorAll('.tb[data-t]').forEach(b=>b.onclick=()=>{tab=b.dataset.t;sel=null;render();});
     document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
     document.querySelectorAll('.dbtn').forEach(b=>b.onclick=()=>{selDate=b.dataset.d;cur='ALL';render();});
     document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{cur=b.dataset.v;render();});
     document.querySelectorAll('.asb').forEach(b=>b.onclick=()=>{anaScope=b.dataset.as;render();});
-    document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{sel=+rw.dataset.i;render();});
-    if(cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
+    document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{listY=window.scrollY||document.documentElement.scrollTop||0;sel=+rw.dataset.i;render();});
+    if(rby==null&&cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
   }else{
-    document.querySelector('.back').onclick=()=>{sel=null;render();};
+    document.querySelector('.back').onclick=()=>{sel=null;backY=listY;render();};
     const _pv=document.querySelector('.pnav.prev'); if(_pv&&!_pv.disabled)_pv.onclick=()=>{sel--;render();};
     const _nx=document.querySelector('.pnav.next'); if(_nx&&!_nx.disabled)_nx.onclick=()=>{sel++;render();};
     // 詳細を開いたら、そのレースを公式から即取得（締切後は結果・締切前は展示。2分スロットル）。
