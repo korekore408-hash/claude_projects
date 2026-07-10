@@ -1389,6 +1389,11 @@ HTML = r"""<!DOCTYPE html>
   .vbtn{font-size:14px;padding:6px 12px;border-radius:8px;border:0.5px solid #39404d;
         background:transparent;color:#cdd6e2;cursor:pointer}
   .vbtn.on{background:#374151;color:#fff;border-color:#4b5563}
+  .lvbtn{font-size:12px;font-weight:600;padding:5px 13px;border-radius:14px;border:0.5px solid #39404d;
+         background:transparent;color:#9aa3b2;cursor:pointer}
+  .lvbtn.on{background:#374151;color:#fff;border-color:#4b5563}
+  .lvbtn.tetsu.on{background:#10362c;color:#43c59e;border-color:#1d6b52}
+  .lvbtn.haran.on{background:#3a1f1f;color:#e06b6b;border-color:#7a3a3a}
   .sortbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0 2px;font-size:12px;color:#8ea0ba}
   .sortb{font-size:12px;padding:4px 11px;border-radius:7px;border:0.5px solid #39404d;background:transparent;color:#cdd6e2;cursor:pointer}
   .sortb.on{background:#374151;color:#fff;border-color:#4b5563}
@@ -1570,6 +1575,7 @@ const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'
 let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
 let listY=0, backY=null;   // listY=詳細を開く直前の一覧スクロール位置／backY!=null=戻る時に復元する位置
 let anaScope='all';   // 穴目回収率の対象: 'all'=合算 / 'haran'=波乱帯 / 'std'=標準帯
+let lvlFilter='all';  // 一覧の帯フィルタ: 'all'=すべて / 'tetsu'=鉄板のみ / 'haran'=波乱のみ（全場/場別/リアル共通）
 // ライブ更新サーバ(serve_odds.py)がある環境か。file://(→サーバへ誘導)・localhost・LANはtrue。
 // クラウド配信(pages.dev等)はfalse＝/updateが無いので「更新」ボタンは隠す（毎朝の自動更新のみ）。
 const IS_LIVE=location.protocol==='file:'||/^(localhost$|127\.|0\.0\.0\.0$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
@@ -1907,13 +1913,14 @@ function summaryBar(){
 // リアル＝全会場を締切時刻順に1列表示。現在時刻の直近レースをハイライトし自動スクロール。
 function realList(rs){
   const tmv=s=>{if(!s)return 1e9;const p=s.split(':');return (+p[0])*60+(+p[1]);};
-  const order=rs.map((r,i)=>i).sort((a,b)=>tmv(rs[a].tm)-tmv(rs[b].tm));
+  const order=rs.map((r,i)=>i).filter(i=>lvlFilter==='all'||honAna(rs[i]).lvlcls===lvlFilter)
+    .sort((a,b)=>tmv(rs[a].tm)-tmv(rs[b].tm));   // 帯フィルタ（鉄板/波乱）はリアルにも適用
   const isToday=selDate===D.base;
   const now=new Date();const nowMin=now.getHours()*60+now.getMinutes();
   const hhmm=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
   let tgt=-1;
   if(isToday){for(const i of order){if(rs[i].tm&&tmv(rs[i].tm)>=nowMin){tgt=i;break;}}}
-  let h='<div class="meta">締切時刻順・全'+rs.length+'レース・タップで詳細'
+  let h='<div class="meta">締切時刻順・'+(lvlFilter==='all'?'全':'絞込 ')+order.length+'レース・タップで詳細'
     +(isToday&&tgt>=0?'・<span style="color:#e0a93b">現在 '+hhmm+'</span> の直近へ自動スクロール':'')+'</div>';
   let nowShown=false;
   for(const i of order){
@@ -1947,6 +1954,7 @@ function realList(rs){
     }
     h+='<span class="chev">&rsaquo;</span></div>';
   }
+  if(!order.length)h+='<div class="meta" style="margin-top:14px">'+(lvlFilter==='tetsu'?'鉄板':'波乱')+'のレースはありません</div>';
   return h;
 }
 function listView(){
@@ -1963,10 +1971,19 @@ function listView(){
   if(isBase&&anytm)h+='<button class="vbtn rt'+(cur==='REAL'?' on':'')+'" data-v="REAL"><span class="livedot"></span>リアル</button>';
   for(const a of venues)h+='<button class="vbtn'+(cur===a[0]?' on':'')+'" data-v="'+a[0]+'">'+a[1]+'</button>';
   h+='</div>';
+  // 帯フィルタ（鉄板/波乱）: 荒れ度の帯で一覧を絞る。件数はその日の全場ベース。
+  const nT=rs.filter(r=>honAna(r).lvlcls==='tetsu').length, nH=rs.filter(r=>honAna(r).lvlcls==='haran').length;
+  h+='<div class="vfilter" style="margin-top:2px">'
+    +'<button class="lvbtn'+(lvlFilter==='all'?' on':'')+'" data-lv="all">すべて</button>'
+    +'<button class="lvbtn tetsu'+(lvlFilter==='tetsu'?' on':'')+'" data-lv="tetsu">鉄板 '+nT+'</button>'
+    +'<button class="lvbtn haran'+(lvlFilter==='haran'?' on':'')+'" data-lv="haran">波乱 '+nH+'</button></div>';
   if(cur==='REAL')return h+realList(rs);
+  const shownV={};let shown=0;   // 場見出し＝表示される最初のレースで出す（フィルタ対応）
   rs.forEach((r,gi)=>{
     if(cur!=='ALL'&&cur!==r.c)return;
-    if(rs.findIndex(x=>x.c===r.c)===gi)h+='<h3>'+r.v+'<span class="vmeta"><span class="grd'+(r.g&&r.g!=='一般'?' hi':'')+'">'+(r.g||'一般')+'</span>'+(r.day?'第'+r.day+'日':'')+'</span></h3>';
+    if(lvlFilter!=='all'&&honAna(r).lvlcls!==lvlFilter)return;
+    shown++;
+    if(!shownV[r.c]){shownV[r.c]=1;h+='<h3>'+r.v+'<span class="vmeta"><span class="grd'+(r.g&&r.g!=='一般'?' hi':'')+'">'+(r.g||'一般')+'</span>'+(r.day?'第'+r.day+'日':'')+'</span></h3>';}
     const ps=r.b.map(x=>x[1]);let hm=0;for(let w=1;w<6;w++)if(ps[w]>ps[hm])hm=w;   // 本命＝学習モデル1番手
     const ha=honAna(r);const done=hasResult(r);
     h+='<div class="row'+(done?' done':'')+'" data-i="'+gi+'"><span class="rno">'+r.no+'R</span>'
@@ -2007,6 +2024,7 @@ function listView(){
     }
     h+='</div>';
   });
+  if(!shown)h+='<div class="meta" style="margin-top:14px">'+(lvlFilter==='tetsu'?'鉄板':'波乱')+'のレースはありません</div>';
   return h;
 }
 
@@ -2908,6 +2926,7 @@ function render(){
     document.querySelectorAll('.upbtn').forEach(b=>b.onclick=updateAll);
     document.querySelectorAll('.dbtn').forEach(b=>b.onclick=()=>{selDate=b.dataset.d;cur='ALL';render();});
     document.querySelectorAll('.vbtn').forEach(b=>b.onclick=()=>{cur=b.dataset.v;render();});
+    document.querySelectorAll('.lvbtn').forEach(b=>b.onclick=()=>{lvlFilter=b.dataset.lv;render();});   // 帯フィルタ（鉄板/波乱）
     document.querySelectorAll('.asb').forEach(b=>b.onclick=()=>{backY=window.scrollY||document.documentElement.scrollTop||0;anaScope=b.dataset.as;render();});   // 対象帯の切替は現在位置を保つ（REALの現在レースへ飛ばさない）
     document.querySelectorAll('.row').forEach(rw=>rw.onclick=()=>{listY=window.scrollY||document.documentElement.scrollTop||0;sel=+rw.dataset.i;render();});
     if(rby==null&&cur==='REAL'){const t=document.getElementById('nowtarget');if(t)t.scrollIntoView({block:'center'});}
