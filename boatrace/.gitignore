@@ -11,3 +11,5 @@ features_player_history.csv
 features_race_relative.csv
 predict_win.csv
 predict_win_oos.csv
+# 相関図の中間JSON（build_corr_data.py が predict_win.csv から再生成・corr.html に埋込済）
+corr_data.json
