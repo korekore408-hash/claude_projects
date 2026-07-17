@@ -2604,6 +2604,20 @@ function exView(r){
       +'<td class="parts">'+(pa&&pa.length?pa.join('・'):'–')+'</td></tr>';
   }
   h+='</tbody></table>';
+  // ③展示妙味フラグ（参考のみ）: 展示タイム最速が朝AIの人気薄(4番手以下)なら、
+  // 市場が過小評価する“人気薄の激走”を展示が先読みしている可能性。精査(before_value_deepdive):
+  // 直前情報8日188Rで 本命×この艇のワイド 回収率≈100%(荒れ気味139%)・的中32%。ただしCIは100跨ぎ=未確定。
+  if(best>=0){
+    const psM=r.b.map(x=>x[1]||0);
+    const mrank={};psM.map((p,i)=>[p,i]).sort((a,b)=>b[0]-a[0]).forEach((x,k)=>{mrank[x[1]]=k+1;});
+    let favM=0;for(let i=1;i<6;i++)if(psM[i]>psM[favM])favM=i;
+    if(mrank[best]>=4&&best!==favM){
+      h+='<div style="margin:8px 0;padding:9px 12px;border:1px solid #3a5a44;border-radius:8px;background:#16241b;color:#b6e4c4;font-size:13px">'
+        +'🔎 <b>展示妙味（参考）</b>：'+chip(best+1,'mc')+' が展示タイム最速だが朝AI評価は'+mrank[best]+'番手。'
+        +'市場が見落としがちな“人気薄の激走”を展示が示唆。参考買い目＝<b>'+chip(favM+1,'mc')+'×'+chip(best+1,'mc')+' のワイド</b>。'
+        +'<div style="margin-top:4px;color:#7fae8c;font-size:11px">※直前情報8日・188Rの小標本での傾向（ワイド回収率≈100%／荒れ気味のレースで高め・的中約32%）。統計的に未確定のため<b>確度は低く、少額の参考</b>に留めてください。</div></div>';
+    }
+  }
   // 展示後の予想（展示タイム/STを朝予想に軽くブレンド）
   const tp=tenjiPred(r);
   if(tp){
