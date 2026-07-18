@@ -519,6 +519,31 @@ def load_payouts(keep):
     return payout
 
 
+def venue_tenji_baseline():
+    """会場コード -> [平均展示タイム, 標準偏差]。展示タイムの会場特性（会場補正z用）。
+    全 k*.csv の展示タイムから算出（会場ごとに水面が違い、6.70〜6.96と大きく差がある）。
+    z = (展示T - 平均)/σ が負ほど『その会場基準で速い』。"""
+    vt = {}
+    for fp in glob.glob("data/k*.csv"):
+        try:
+            rows = load(fp)
+        except OSError:
+            continue
+        for r in rows:
+            v = r.get("会場"); t = to_float(r.get("展示タイム"))
+            if not v or t is None or not (6.0 <= t <= 7.5):
+                continue
+            code = VENUE_CODE.get(v)
+            if code:
+                vt.setdefault(code, []).append(t)
+    base = {}
+    for code, ts in vt.items():
+        if len(ts) >= 200:
+            m = sum(ts) / len(ts)
+            base[code] = [round(m, 3), round(_pstdev(ts) or 0.08, 3)]
+    return base
+
+
 def load_bfile_meta(keep, venues_by_date):
     """各日の B-file(出走表 txt, UTF-8) の場ヘッダ行から (グレード, 日目) を抽出。
     返り値 {(date, 会場): (grade, day)}。日目=『第 N 日』(確実)。
@@ -1371,10 +1396,13 @@ def main():
     # API確率→実1着率の較正カーブ（表示専用・帯/点数/買い目は生値のまま）
     cal = calib_knots(api_map, pred)
     print(f"  較正カーブ: 節点{len(cal)}個" + (f"（例 0.65→{_cal_interp(cal, 0.65):.2f}）" if cal else "（データ不足＝恒等）"))
+    vt_base = venue_tenji_baseline()
+    print(f"  会場展示ベースライン: {len(vt_base)}場（展示タイムの会場補正z用）")
     payload = {"labels": labels, "base": base, "races": out,
                "vstats_api": vstats_api, "recent_api": recent_api,
                "regime_api": regime_api, "rsp": rsp, "game": game,
-               "game_ana": game_ana, "daily_rec": daily_rec, "cal": cal}
+               "game_ana": game_ana, "daily_rec": daily_rec, "cal": cal,
+               "vt": vt_base}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
     with open(args.out, "w", encoding="utf-8") as f:
@@ -2659,18 +2687,22 @@ function exView(r){
       +'<td class="parts">'+(pa&&pa.length?pa.join('・'):'–')+'</td></tr>';
   }
   h+='</tbody></table>';
-  // ③展示妙味フラグ（参考のみ）: 展示タイム最速が朝AIの人気薄(4番手以下)なら、
-  // 市場が過小評価する“人気薄の激走”を展示が先読みしている可能性。精査(before_value_deepdive):
-  // 直前情報8日188Rで 本命×この艇のワイド 回収率≈100%(荒れ気味139%)・的中32%。ただしCIは100跨ぎ=未確定。
+  // ③展示妙味フラグ（参考のみ・会場補正版）: 展示タイム最速が朝AIの人気薄(4番手以下)で、
+  // かつ『その会場の基準でも速い(会場補正z<0)』時のみ発火。会場は水面が違い展示タイムの基準が
+  // 6.70〜6.96と大きく差があるため会場補正が必要（venue_tenji_probe: z<0側108.7% vs z≥0側77.7%）。
+  // 精査(before_value_deepdive/8日188R): 本命×この艇のワイド 回収率≈100%(会場補正で~109%)。CIは100跨ぎ=未確定。
   if(best>=0){
     const psM=r.b.map(x=>x[1]||0);
     const mrank={};psM.map((p,i)=>[p,i]).sort((a,b)=>b[0]-a[0]).forEach((x,k)=>{mrank[x[1]]=k+1;});
     let favM=0;for(let i=1;i<6;i++)if(psM[i]>psM[favM])favM=i;
-    if(mrank[best]>=4&&best!==favM){
+    const vt=D.vt&&D.vt[r.id.slice(0,2)];                        // 会場ベースライン[平均,σ]
+    const zb=(vt&&ts[best]!=null)?(ts[best]-vt[0])/vt[1]:null;   // 会場補正z（負=会場基準で速い）
+    if(mrank[best]>=4&&best!==favM&&(zb==null||zb<0)){
+      const zt=(zb!=null)?'（会場基準でも '+Math.abs(zb).toFixed(1)+'σ 速い）':'';
       h+='<div style="margin:8px 0;padding:9px 12px;border:1px solid #3a5a44;border-radius:8px;background:#16241b;color:#b6e4c4;font-size:13px">'
-        +'🔎 <b>展示妙味（参考）</b>：'+chip(best+1,'mc')+' が展示タイム最速だが朝AI評価は'+mrank[best]+'番手。'
+        +'🔎 <b>展示妙味（参考）</b>：'+chip(best+1,'mc')+' が展示タイム最速'+zt+'だが朝AI評価は'+mrank[best]+'番手。'
         +'市場が見落としがちな“人気薄の激走”を展示が示唆。参考買い目＝<b>'+chip(favM+1,'mc')+'×'+chip(best+1,'mc')+' のワイド</b>。'
-        +'<div style="margin-top:4px;color:#7fae8c;font-size:11px">※直前情報8日・188Rの小標本での傾向（ワイド回収率≈100%／荒れ気味のレースで高め・的中約32%）。統計的に未確定のため<b>確度は低く、少額の参考</b>に留めてください。</div></div>';
+        +'<div style="margin-top:4px;color:#7fae8c;font-size:11px">※会場補正済み（この会場の展示基準で速い側のみ表示）。直前情報8日の小標本では会場補正で速い側の回収≈109%だが統計的に未確定＝<b>確度は低く、少額の参考</b>に留めてください。</div></div>';
     }
   }
   // 展示後の予想（展示タイム/STを朝予想に軽くブレンド）

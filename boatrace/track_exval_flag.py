@@ -32,6 +32,7 @@ def collect():
     rel = B.load("features_race_relative.csv")
     api_map = B.build_api_scores(rel)
     kd = A.load_all_ktxt()
+    vbase = B.venue_tenji_baseline()                 # 会場コード->[平均展示T,σ]（会場補正z用）
     rows = []
     for fp in sorted(glob.glob("data/before/*.json")):
         for rid, v in json.load(open(fp)).items():
@@ -53,6 +54,9 @@ def collect():
             favM = max(range(6), key=lambda i: ps[i])
             if mrank[best] < 4:                                # 人気薄でない＝非発火
                 continue
+            # 会場補正z（負=その会場基準で速い）。アプリ③は z<0 のみ発火。
+            vb = vbase.get(rid[:2])
+            z = (time[best] - vb[0]) / vb[1] if vb else None
             # --- ワイド favM×best を精算 ---
             fav_w, ex_w = favM + 1, best + 1
             pr = frozenset((fav_w, ex_w))
@@ -67,6 +71,8 @@ def collect():
             rows.append({
                 "date": rid[2:10], "rid": rid, "band": band(max(api)),
                 "fav": fav_w, "exbest": ex_w, "exbest_rank": mrank[best],
+                "vz": round(z, 2) if z is not None else "",
+                "venue_fast": int(z is not None and z < 0),
                 "wide_hit": int(bool(hit)), "wide_pay": pay,
                 "nf_hit": int(bool(hit2)), "nf_pay": pay2,
             })
@@ -101,18 +107,27 @@ def main():
     d0, d1 = rows[0]["date"], rows[-1]["date"]
     print(f"③フラグ発火: {len(rows)}レース（{d0}〜{d1}） → ログ {LOG} に保存\n")
 
-    wide = [(100, r["wide_pay"]) for r in rows]
-    roi, hit, lo, hi, st, rt = roi_ci(wide)
+    def report(sub, title):
+        if not sub:
+            print(f"\n{title}: 該当なし"); return
+        pairs = [(100, r["wide_pay"]) for r in sub]
+        roi, hit, lo, hi, st, rt = roi_ci(pairs)
+        verdict = ("★妙味濃厚(CI下限>100)" if lo > 100 else
+                   "△点推定>100だが未確定(CI跨ぎ)" if roi > 100 else
+                   "×現状は優位なし")
+        print(f"\n{title}")
+        print(f"  発火 {len(sub)}R / 的中 {hit}（{hit/len(sub)*100:.1f}%） / "
+              f"回収率 {roi:.1f}%  [95%CI {lo:.1f}〜{hi:.1f}] / 収支 ¥{rt-st:,.0f}")
+        print(f"  判定: {verdict}")
+
+    vfast = [r for r in rows if r["venue_fast"]]
+    vslow = [r for r in rows if not r["venue_fast"]]
     print("=" * 60)
-    print("【本線】本命×展示最速人気薄 のワイド（各¥100）")
+    print("本命×展示最速人気薄 のワイド（各¥100）")
     print("=" * 60)
-    print(f"  発火 {len(rows)}R / 的中 {hit}（{hit/len(rows)*100:.1f}%） / "
-          f"回収率 {roi:.1f}%  [95%CI {lo:.1f}〜{hi:.1f}]")
-    print(f"  投資 ¥{st:,} / 回収 ¥{rt:,.0f} / 収支 ¥{rt-st:,.0f}")
-    verdict = ("★妙味濃厚(CI下限>100)" if lo > 100 else
-               "△点推定>100だが未確定(CI跨ぎ)" if roi > 100 else
-               "×現状は優位なし")
-    print(f"  判定: {verdict}")
+    report(vfast, "【本線＝アプリ③の発火条件】会場補正で速い(z<0)だけ")
+    report(rows, "【参考】会場補正なし・展示最速の人気薄すべて")
+    report(vslow, "【除外分】会場基準では遅い(z≥0)＝アプリは出さない側")
 
     # 参考: 2連複
     nf = [(100, r["nf_pay"]) for r in rows]
