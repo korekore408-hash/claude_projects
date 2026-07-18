@@ -1239,6 +1239,38 @@ def main():
     kres = load_kresult(keep)
     mk_map = makuri_rates()                          # 登番→まくり率（根拠タグ用）
     payout = load_payouts(keep)
+    # 配当一覧（結果表示用）: K-file(k*.txt)の全7券種を組合せ+配当で埋め込む。keep日付のみ解析。
+    import analyze_ana_taikou_roi as _kt
+    yy = {d[2:4] + d[5:7] + d[8:10] for d in keep}
+    ktxt = {}
+    for kp in glob.glob("data/k*.txt"):
+        m = re.search(r"k(\d{6})", kp)
+        if m and m.group(1) in yy:
+            _kt.parse_k_txt(kp, ktxt)
+
+    def _paylist(rid):
+        rc = ktxt.get(rid)
+        if not rc:
+            return None
+        cl = lambda x: [list(x[0]), x[1]] if x else None
+        P = {}
+        if rc.get("tan"):
+            P["tan"] = [rc["tan"][0], rc["tan"][1]]
+        if rc.get("fuku"):
+            P["fuku"] = [[w, p] for w, p in sorted(rc["fuku"].items())]
+        if rc.get("nt"):
+            P["2t"] = cl(rc["nt"])
+        if rc.get("nf"):
+            P["2f"] = cl(rc["nf"])
+        if rc.get("wide"):
+            P["wide"] = sorted(([sorted(w), p] for w, p in rc["wide"].items()),
+                               key=lambda x: x[0])
+        if rc.get("st"):
+            P["3t"] = cl(rc["st"])
+        if rc.get("sf"):
+            P["3f"] = cl(rc["sf"])
+        return P or None
+
     out = []
     for rid, rc in races.items():
         if len(rc["b"]) != 6 or any(rc["b"][w][1] is None for w in range(1, 7)):
@@ -1258,6 +1290,7 @@ def main():
                     "ab": ab,
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
+                    "pay": _paylist(rid),            # 配当一覧（全7券種・結果表示用）
                     # 気象（当日は空＝未反映）。表示用。tenki/wind(m)/wave(cm)
                     "wx": [rc.get("wx_tenki", ""), rc.get("wx_wind"), rc.get("wx_wave")],
                     "b": [[rc["b"][w][0], rc["b"][w][1], rc["b"][w][2]]
@@ -2108,6 +2141,7 @@ function detailView(r){
       h+='<div class="cause" style="border-left-color:#5dc7e0;color:#cdd6e2"><span class="h" style="color:#7fb2ff">買えてた場合の妙味</span>'
         +evrow('2連複',actEx,(r.po.length>2?r.po[2]:null),pfOf,'=')+'<br>'+evrow('3連単',actTri,r.po[1],plOf)+'</div>';
     }
+    h+=payTable(r);   // 全7券種の配当一覧（結果が出たレースのみ）
   }
   h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
@@ -2579,6 +2613,27 @@ function updateOdds(btn){
 const WINDDIR={1:'↑',2:'↗',3:'↗',4:'→',5:'→',6:'↘',7:'↘',8:'↓',9:'↓',10:'↙',11:'↙',12:'←',13:'←',14:'↖',15:'↖',16:'↑'};
 
 // 展示（直前情報）セクション。r.ex（更新で取得）を表で表示。
+// 配当一覧（結果確定レースのみ）: K-fileの全7券種を組合せ+払戻(¥/100円)で表示。r.pay は build_today が埋め込み。
+function payTable(r){
+  const P=r.pay; if(!P)return '';
+  const yen=v=>'¥'+(+v).toLocaleString();
+  const mc=w=>chip(w,'mc');
+  const row=(lab,combo,val)=>'<tr><td style="color:#9aa3b2;white-space:nowrap;padding:2px 10px 2px 0;vertical-align:top">'+lab+'</td>'
+    +'<td style="padding:2px 10px 2px 0">'+combo+'</td>'
+    +'<td style="text-align:right;font-weight:700;color:#e6c06a;white-space:nowrap;vertical-align:top">'+val+'</td></tr>';
+  let h='';
+  if(P.tan)h+=row('単勝',mc(P.tan[0]),yen(P.tan[1]));
+  if(P.fuku)h+=row('複勝',P.fuku.map(x=>mc(x[0])).join(' / '),P.fuku.map(x=>yen(x[1])).join(' / '));
+  if(P['2t'])h+=row('2連単',P['2t'][0].map(mc).join('→'),yen(P['2t'][1]));
+  if(P['2f'])h+=row('2連複',P['2f'][0].map(mc).join('='),yen(P['2f'][1]));
+  if(P.wide)P.wide.forEach((x,i)=>{h+=row(i?'':'拡連複',x[0].map(mc).join('='),yen(x[1]));});
+  if(P['3t'])h+=row('3連単',P['3t'][0].map(mc).join('→'),yen(P['3t'][1]));
+  if(P['3f'])h+=row('3連複',P['3f'][0].map(mc).join('='),yen(P['3f'][1]));
+  if(!h)return '';
+  return '<div class="cause" style="border-left-color:#e0a93b"><span class="h" style="color:#e0a93b">配当一覧</span>'
+    +'<table style="border-collapse:collapse;font-size:13px;margin-top:4px">'+h+'</table>'
+    +'<div style="font-size:11px;color:#7e8796;margin-top:4px">※100円あたりの払戻金（公式確定・K-file）。</div></div>';
+}
 function exView(r){
   const e=r.ex; if(!e)return '';
   let h='<div class="sec">直前情報（展示）<span class="kbadge">取得済</span></div>';
