@@ -25,6 +25,7 @@
 """
 import datetime
 import re
+import time
 
 import requests
 
@@ -34,23 +35,52 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (boatrace-study-script)"}
 # OpenAPI の race_grade_number → 表示グレード（B-file/公式と概ね対応）。
 _GRADE_NUM = {1: "SG", 2: "G1", 3: "G2", 4: "一般"}
 
+# フィードは GitHub Pages 静的配信で、たまに一瞬 空/未更新 を返す。その1回で
+# 締切時刻が全消えするのを防ぐため、取得を数回リトライ（指数バックオフ）する。
+_MAX_TRIES = 4
+_BACKOFF = (2, 4, 8)   # 秒
+
+
+def _fetch_feed():
+    """today.json 全体の programs リストを返す。通信失敗・非200・JSON不正・空応答は
+    リトライし、全試行だめなら []（呼び出し側は公式Bにフォールバック＝サイトは止めない）。"""
+    last = "?"
+    for i in range(_MAX_TRIES):
+        try:
+            res = requests.get(URL, headers=HEADERS, timeout=30)
+        except requests.RequestException as e:
+            last = f"通信失敗 {type(e).__name__}"
+        else:
+            if res.status_code != 200:
+                last = f"HTTP {res.status_code}"
+            else:
+                try:
+                    progs = res.json().get("programs", [])
+                except ValueError:
+                    last = "JSON parse 失敗"
+                else:
+                    if progs:               # 中身あり＝成功
+                        return progs
+                    last = "programs 空"
+        if i < _MAX_TRIES - 1:
+            time.sleep(_BACKOFF[min(i, len(_BACKOFF) - 1)])
+    print(f"  [fetch_openapi] today.json 取得できず（{_MAX_TRIES}回試行）: {last}")
+    return []
+
 
 def _raw(date_str=None):
-    """today.json を取得して programs リストを返す。失敗時 []。date_str(YYYYMMDD) 指定時は絞り込み。"""
-    try:
-        res = requests.get(URL, headers=HEADERS, timeout=30)
-    except requests.RequestException:
-        return []
-    if res.status_code != 200:
-        return []
-    try:
-        progs = res.json().get("programs", [])
-    except ValueError:
-        return []
-    if date_str:
-        ymd = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-        progs = [p for p in progs if p.get("race_date") == ymd]
-    return progs
+    """today.json を取得して programs リストを返す。失敗時 []。date_str(YYYYMMDD) 指定時は絞り込み。
+    date_str 指定で0件のときは、フィードが別日を配信している可能性を警告表示（時刻全消えの診断用）。"""
+    progs = _fetch_feed()
+    if not progs or not date_str:
+        return progs
+    ymd = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    sel = [p for p in progs if p.get("race_date") == ymd]
+    if not sel:
+        feed_dates = sorted({p.get("race_date") for p in progs})
+        print(f"  [fetch_openapi] 要求日 {ymd} の programs が0件。"
+              f"フィード配信日={feed_dates}（発走時刻が付きません）")
+    return sel
 
 
 def fetch_programs(date_str=None):
