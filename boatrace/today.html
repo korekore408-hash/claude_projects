@@ -1391,6 +1391,36 @@ function refreshPreviews(){
   return fetchPreviews().then(pj=>{const n=applyPreviews(pj); if(n)render(); return n;}).catch(()=>0);
 }
 
+// ── 締切時刻(発走予定)を programs フィードからクライアント直読み ──
+// 公式LZHに時刻が無く、ビルド時のフィードは早朝〜午前まだ当日分を配信しないことがある
+// （その日は today.html の tm が空→リアルタブ/発走時刻表示が丸ごと消える）。そこで
+// ページを開いた時点でフィードを直読みし、埋まっていれば tm を補完してリアル/時刻を復活。
+// CORS 許可済み（previews と同一ホスト）。失敗時は静かに無視＝焼き込み値のまま（従来動作）。
+const PROGRAMS_URL='https://boatraceopenapi.github.io/programs/v2/today.json';
+function fetchPrograms(){
+  return fetch(PROGRAMS_URL,{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();});
+}
+// programs を当日(base)レースへ反映。race_closed_at→'H:MM' を、tm が空のレースにだけ補完
+// （焼き込み済みの時刻は尊重）。戻り値＝新たに時刻が入ったレース数。
+function applyPrograms(pj){
+  const arr=(pj&&pj.programs)||[]; if(!arr.length)return 0;
+  const byId={};
+  arr.forEach(p=>{
+    const c=String(p.race_closed_at||'').match(/(\d{1,2}):(\d{2})/);
+    if(c)byId[pad2(p.race_stadium_number)+String(p.race_date).replace(/-/g,'')+pad2(p.race_number)]=(+c[1])+':'+c[2];
+  });
+  let n=0;
+  D.races.forEach(r=>{
+    if(r.d!==D.base||r.tm)return;            // 当日かつ未設定のレースだけ補完
+    const tm=byId[r.id]; if(!tm)return;
+    r.tm=tm; n++;
+  });
+  return n;
+}
+function refreshStartTimes(){
+  return fetchPrograms().then(pj=>{const n=applyPrograms(pj); if(n)render(); return n;}).catch(()=>0);
+}
+
 // ── 公式サイト直取り（/api/tenji・Cloudflare Pages Function）──
 // previews フィードは実測2〜4時間おきで発走前に間に合わないため、締切が近いレースだけ
 // 公式 beforeinfo を直接取得する（公表後≤3分で反映）。サーバ側90秒キャッシュ・
@@ -1527,12 +1557,13 @@ function rerenderKeepScroll(){
 function autoRefresh(){
   if(upBusy)return;                       // 手動更新中は触らない
   const before=exSig(), beforeO=oddsSig();
-  Promise.allSettled([upJSON(),fetchPreviews()]).then(res=>{
-    const u=res[0], p=res[1]; let changed=false;
+  Promise.allSettled([upJSON(),fetchPreviews(),fetchPrograms()]).then(res=>{
+    const u=res[0], p=res[1], pr=res[2]; let changed=false;
     if(u.status==='fulfilled'&&u.value&&u.value.fetched_at&&u.value.fetched_at!==upFetched){
       applyUpd(u.value); upFetched=u.value.fetched_at; changed=true;   // 結果/EVが更新された
     }
     if(p.status==='fulfilled'&&p.value){ applyPreviews(p.value); }     // 展示は previews で上書き
+    if(pr.status==='fulfilled'&&pr.value){ if(applyPrograms(pr.value))changed=true; }   // 締切時刻が埋まった＝リアル復活
     return Promise.all([tenjiSweep(),resultSweep(),oddsSweep()]).then(sw=>{  // 締切前=展示・オッズ／締切後=結果を公式直取り
       if(exSig()!==before)changed=true;                                // 展示が変わった
       if(sw[1])changed=true;                                           // 結果が確定した
@@ -1645,10 +1676,11 @@ if(location.protocol==='file:'){
   //  ・update.json(/api/update) ＝ 結果・EV・展示（自前30分バッチ）
   //  ・previews フィード（案A） ＝ 展示のみだが鮮度が高い。展示は previews を優先して上書き。
   // どちらも無ければ静かに無視（従来どおり手動更新で取得）。
-  Promise.allSettled([upJSON(),fetchPreviews()]).then(res=>{
-    const u=res[0], p=res[1]; let n={nres:0,nex:0,nev:0}, npv=0, fa='';
+  Promise.allSettled([upJSON(),fetchPreviews(),fetchPrograms()]).then(res=>{
+    const u=res[0], p=res[1], pr=res[2]; let n={nres:0,nex:0,nev:0}, npv=0, fa='';
     if(u.status==='fulfilled'&&u.value){ n=applyUpd(u.value); fa=u.value.fetched_at||''; upFetched=fa; }
     if(p.status==='fulfilled'&&p.value){ npv=applyPreviews(p.value); }   // 展示は previews で上書き（新鮮）
+    if(pr.status==='fulfilled'&&pr.value){ applyPrograms(pr.value); }    // 締切時刻が空なら programs で補完（リアル復活）
     const nexFinal=D.races.filter(r=>r.d===D.base&&r.ex).length;
     upMsg='自動更新 '+(fa||'')+' ／ 結果 '+n.nres+'・展示 '+nexFinal+(n.nev?'・EV '+n.nev:'')+' レース反映'
       +(npv?' ・展示は最新フィード('+npv+'R)':'');
