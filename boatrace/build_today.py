@@ -1633,6 +1633,21 @@ HTML = r"""<!DOCTYPE html>
 <button id="toTop" type="button" title="1番上へ戻る" aria-label="1番上へ戻る">▲<span>TOP</span></button>
 <script>
 const D=__DATA__;
+// 自己修復: 端末キャッシュで「昨日以前の today.html」を開いてしまったら、朝6時以降なら
+// キャッシュ回避クエリ付きで最新版を強制再取得する（当日リアル/発走時刻が見えない事故の根治）。
+// 1セッション1回だけ＝再取得後もまだ古い(配信側が未ビルド等)場合の無限ループを防ぐ。
+(function(){
+  try{
+    if(location.protocol==='file:')return;                      // ローカル直開きは対象外
+    const n=new Date(), p2=x=>(x<10?'0':'')+x;
+    const today=n.getFullYear()+'-'+p2(n.getMonth()+1)+'-'+p2(n.getDate());
+    if(D.base>=today||n.getHours()<6)return;                    // 最新 or 早朝(当日ビルド前)はそのまま
+    const k='staleReload-'+today;
+    if(sessionStorage.getItem(k))return;
+    sessionStorage.setItem(k,'1');
+    location.replace(location.pathname+'?fresh='+Date.now());
+  }catch(e){}
+})();
 const LC={1:['#ffffff','#111111'],2:['#1b1b1b','#ffffff'],3:['#e23b3b','#ffffff'],4:['#2f7fd6','#ffffff'],5:['#f2c025','#111111'],6:['#28a35a','#ffffff']};
 let selDate=D.labels[0][1], cur='ALL', sel=null, tab='pred';
 let listY=0, backY=null;   // listY=詳細を開く直前の一覧スクロール位置／backY!=null=戻る時に復元する位置
