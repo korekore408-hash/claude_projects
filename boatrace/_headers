@@ -1,0 +1,14 @@
+# Cloudflare Pages のレスポンスヘッダ設定。
+# HTML は端末にキャッシュさせない（iPhone等が「昨日の today.html」を出し続け、
+# 当日のリアル/発走時刻が見えなくなる事故の防止）。ETag 再検証が走るだけなので
+# 変更が無ければ 304 で転送は軽い。update.json 等のデータは従来どおり。
+/
+  Cache-Control: no-cache, must-revalidate
+/today.html
+  Cache-Control: no-cache, must-revalidate
+/index.html
+  Cache-Control: no-cache, must-revalidate
+/viewer.html
+  Cache-Control: no-cache, must-revalidate
+/odds.html
+  Cache-Control: no-cache, must-revalidate
