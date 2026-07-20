@@ -97,7 +97,7 @@ def parse_beforeinfo(html):
     """beforeinfo HTML → 展示情報 dict（取れない項目は None / 空）。
     {time:[6.78,..], tilt:[-0.5,..], parts:[[..],..],   # 枠1..6順
      course:[進入コース(枠ごと)], st:[展示ST(枠ごと)],
-     weather:{tenki,winddir,wind,wave,temp}}"""
+     weather:{tenki,winddir,wind,wave,temp,stabilizer(安定板使用の有無)}}"""
     if not html:
         return None
     time_, tilt, parts = [None] * 6, [None] * 6, [None] * 6
@@ -154,7 +154,7 @@ def _parse_st(s):
 
 
 def _parse_weather(html):
-    """天候/風向/風速/波高/気温。weather1_* クラスから抽出。"""
+    """天候/風向/風速/波高/気温/安定板。weather1_* クラスから抽出。"""
     seg = html
     ms = re.search(r'class="weather1[^"]*"', html)
     if ms:
@@ -168,8 +168,11 @@ def _parse_weather(html):
     temp = _num(re.search(r"([0-9]+(?:\.[0-9]+)?)\s*℃", seg))
     md = re.search(r"is-wind(\d+)", seg)
     winddir = int(md.group(1)) if md else None     # 1..16（風向の番号）
+    # 安定板使用（強風・高波時に主催が装着＝レースが荒れやすく予想の前提が崩れる）。
+    # 公式は「安定板使用」の文字を直前情報ページに表示する。版差に強いよう文字列で検出。
+    stabilizer = bool(re.search(r"安定板", html))
     return {"tenki": tenki, "winddir": winddir, "wind": wind,
-            "wave": wave, "temp": temp}
+            "wave": wave, "temp": temp, "stabilizer": stabilizer}
 
 
 def _num(m):

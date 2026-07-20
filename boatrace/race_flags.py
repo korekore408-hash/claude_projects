@@ -12,7 +12,8 @@
                         完走しなかった艇を含むレースを安全側でまとめて対象外。
   - フライング      : status F を含む。
   - 欠場            : status K* を含む（出走艇が欠けた）。
-  - 安定板          : 現状 K/B-file に情報が無く判定不可（列は用意・常に0）。
+  - 安定板          : 直前情報履歴(data/before/*.json の weather.stabilizer)から判定。
+                      その履歴が無い過去日は 0 のまま（K/B-file には情報が無い）。
 
 出力: race_flags.csv
   race_id, lane_changed, has_flying, has_dnf, has_absent, stabilizer,
@@ -36,6 +37,25 @@ def race_id_of(r):
     return f"{code}{int(y):04d}{int(m):02d}{int(d):02d}{int(r['レース']):02d}"
 
 
+def load_stabilizer(before_glob="data/before/before_*.json"):
+    """直前情報キャッシュ(data/before/*.json)から安定板使用レースの race_id 集合を返す。
+    fetch_before.py が weather.stabilizer を記録した日以降のレースだけ判定可能。
+    履歴が無い過去日は空のまま（従来どおり stabilizer=0）で、判定を偽装しない。"""
+    import json
+    out = set()
+    for p in sorted(glob.glob(before_glob)):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for rid, v in (d.items() if isinstance(d, dict) else []):
+            w = ((v or {}).get("ex") or {}).get("weather") or {}
+            if w.get("stabilizer"):
+                out.add(rid)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--glob", default="data/k*.csv")
@@ -48,6 +68,8 @@ def main():
             for r in csv.DictReader(f):
                 rows[race_id_of(r)].append(r)
 
+    stab_ids = load_stabilizer()   # 安定板使用レース（直前情報履歴から。無い日は空集合）
+
     out = []
     for rid, rs in rows.items():
         statuses = [(r.get("status") or "finish") for r in rs]
@@ -57,7 +79,7 @@ def main():
         has_flying = any(s == "F" for s in statuses)
         has_dnf = any(s[0] in ("S", "L") for s in statuses if s != "finish")
         has_absent = any(s[0] == "K" for s in statuses if s != "finish")
-        stabilizer = 0   # データ未取得（K/B-file に無し）
+        stabilizer = 1 if rid in stab_ids else 0   # 直前情報履歴から（無い過去日は0）
 
         reasons = []
         if lane_changed:
@@ -92,7 +114,7 @@ def main():
     print(f"○ 出力: {args.out}（{len(out)} レース / 対象外 {nexc} / 対象 {len(out)-nexc}）")
     for key, lab in [("lane_changed", "レーン変更"), ("has_dnf", "転覆・失格系"),
                      ("has_flying", "フライング"), ("has_absent", "欠場"),
-                     ("stabilizer", "安定板(判定不可)")]:
+                     ("stabilizer", "安定板(直前情報履歴)")]:
         print(f"    {lab:16} {sum(r[key] for r in out)}")
 
 
