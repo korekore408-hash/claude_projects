@@ -569,6 +569,35 @@ def bfile_start_times(date_str):
     return out
 
 
+def bfile_setkan(date_str):
+    """公式番組表(B-file)の『今節成績』列から race_id -> [艇1..艇6の成績文字列]。
+    各文字=当節1走の着順(1-6)またはF(フライング)/S(失格等)。空白=不出走枠(詰めて返す)。
+    レース前から載っている当節のこれまでの着順＝節間成績。date_str=YYYYMMDD。失敗時 {}。"""
+    path = f"data/b{date_str[2:]}.txt"
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    out, code, race_no = {}, None, None
+    for line in text.splitlines():
+        m = re.match(r"(\d{2})BBGN", line)
+        if m:
+            code = m.group(1)
+            continue
+        z = line.translate(_ZEN2HAN)
+        m = re.match(r"[\s　]*(\d{1,2})R\b", z)
+        if m:
+            race_no = int(m.group(1))
+            continue
+        m = re.match(r"^([1-6]) \d{4}", line)
+        if m and code and race_no:
+            rid = f"{code}{date_str}{race_no:02d}"
+            out.setdefault(rid, ["", "", "", "", "", ""])[int(m.group(1)) - 1] = \
+                line[59:71].replace(" ", "")
+    return out
+
+
 def load_bfile_meta(keep, venues_by_date):
     """各日の B-file(出走表 txt, UTF-8) の場ヘッダ行から (グレード, 日目) を抽出。
     返り値 {(date, 会場): (grade, day)}。日目=『第 N 日』(確実)。
@@ -1398,6 +1427,22 @@ def main():
     for o in out:
         o["tm"] = start_times.get(o["id"], "")
 
+    # 節間成績（公式B-fileの今節成績）。各日のB-fileから race_id -> [艇1..6] を合成。
+    # 全員空（節の初日1走目など）のレースはペイロードに載せない（JS側は r.sk 無しで非表示）。
+    sk_map = {}
+    for d in keep:
+        try:
+            sk_map.update(bfile_setkan(d.replace("-", "")))
+        except Exception as e:
+            print(f"  節間成績取得スキップ({d}): {e}")
+    n_sk = 0
+    for o in out:
+        sk = sk_map.get(o["id"])
+        if sk and any(sk):
+            o["sk"] = sk
+            n_sk += 1
+    print(f"  節間成績: {n_sk}レースに付与（B-file今節成績）")
+
     # 日付ラベル（当日/前日/前々日）
     rel_labels = ["当日", "前日", "前々日", "3日前", "4日前", "5日前", "6日前"]
     labels = []
@@ -1663,6 +1708,20 @@ HTML = r"""<!DOCTYPE html>
     -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.45)}
   #toTop:active{background:#2b3441;transform:translateY(1px)}
   #toTop span{font-size:10px;letter-spacing:.5px}
+  /* 節間成績（詳細画面・オッズ一覧の下の開閉パネル） */
+  .skbox{margin:10px 0 2px;border:1px solid #2a3852;border-radius:8px;background:#141a26;overflow:hidden}
+  .skbox summary{cursor:pointer;padding:8px 14px;color:#8fa8d0;font-size:13px;font-weight:600;user-select:none}
+  .sksub{font-size:11px;color:#7e8796;font-weight:400;margin-left:6px}
+  .skrow{display:flex;align-items:center;gap:8px;padding:5px 12px;border-top:0.5px solid #1c2433}
+  .skn{font-size:13px;color:#cdd6e2;min-width:72px}
+  .skq{display:flex;gap:3px;flex-wrap:wrap;flex:1}
+  .skc{display:inline-block;min-width:18px;text-align:center;padding:2px 0;border-radius:4px;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+  .sk1{background:#3d2f12;color:#e0a93b}
+  .sk2{background:#22303f;color:#7fb2ff}
+  .sk3{background:#26212f;color:#c9a0e8}
+  .sk46{background:#1c2433;color:#8a93a2}
+  .skx{background:#3a1c1c;color:#f09595}
+  .sks{font-size:11px;color:#7e8796;white-space:nowrap}
 </style></head><body>
 <div id="app"></div>
 <button id="toTop" type="button" title="1番上へ戻る" aria-label="1番上へ戻る">▲<span>TOP</span></button>
@@ -2201,6 +2260,70 @@ function detailView(r){
         : '<div style="margin-top:5px;font-size:11px;color:#9aa3b2">目立った武器なし（地力で予想2番手）</div>')
      +(done?' <b style="color:'+(tkfin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(tkfin===1?'1着！（対抗的中）':(tkfin?tkfin+'着':'－'))+'</b>':'')
      +'<br><span style="font-size:11px;color:#9aa3b2">※対抗＝betScore（'+(tk.ex?'展示反映後':'朝の学習')+'）の2番手。検証で隣接・展示・捲り屋は p_win に織込済＝当てる力は本命確率どまり（本命が飛んだ時に44%が1着）。回収率は本命軸に劣る<b>夢枠</b>。チルトは当日データのみ・過去検証不可の参考。</span></div>';}
+  // 買い目（2連複/3連単・穴予想）は先に bh へ組み立て、出走後は「結果の直下」・発走前は
+  // オッズ一覧の下（従来位置）へ挿入する（2026-07-20 出走後の成績を結果の下で見たい要望）。
+  const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
+  const exTag=exOn?'<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span>':'';
+  const rankMap=laneRankMap(sb);const stdBand=honD>=0.45&&honD<0.65;
+  let bh='';
+  // 2連複 上位（予想確率で点数変動・上限3）。2026-07-16 上限5→3へ縮小。
+  const ex=plTopF(sb,nEx);
+  const exYen=allocYen(meriW(ex.map(c=>c[1]),honD),2000);
+  let exHit=actEx?ex.some(c=>eqPair(c[0],actEx)):false;
+  const exHitI=actEx?ex.findIndex(c=>eqPair(c[0],actEx)):-1;
+  const exRec=(actEx&&payEx!=null)?(exHitI>=0?Math.round(payEx*exYen[exHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
+  bh+='<div class="sec">2連複 上位'+nEx+'<span class="kbadge">確率連動</span>'+exTag+'<span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(exRec)+'</div>';
+  ex.forEach((c,i)=>{const hit=actEx&&eqPair(c[0],actEx);
+    bh+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">=</span>'+chip(c[0][1],'mc')
+     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payEx!=null?'<span class="hitpay">配当¥'+payEx.toLocaleString()+'</span>':''):'')
+     +'<span class="stake">¥'+exYen[i].toLocaleString()+'</span>'
+     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
+  if(actEx&&!exHit){bh+='<div class="crow"><span class="rk">実</span>'+chip(Math.min(actEx[0],actEx[1]),'mc')+'<span class="arr">=</span>'+chip(Math.max(actEx[0],actEx[1]),'mc')+'<span class="cp ng">実際の結果</span></div>';}
+  // 3連単 上位（予想確率で点数変動・上限8）。標準帯は本命型/標準型/穴型を明示し穴型を必ず1点含める。
+  // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
+  if(!triOn(honD)){
+    // 穴帯（波乱）＝本線の3連単は見送り（回収72.9%＝資金を溶かす主犯）。3連単スロットは
+    // 「穴予想＝対抗6点（帯別方式A）」を合体出力。穴帯は対抗アタマ6点が最良（backtest 88.2%）。
+    const tk=taikou(r);const taiRef=taikouRef(r);
+    const taiHit=actTri?taiRef.some(c=>eqArr(c,actTri)):false;
+    bh+='<div class="sec">3連単 <span class="kbadge bud" style="color:#a56be0;background:#1c1526;border-color:#5a3f8f">本線=見送り</span><span class="kbadge" style="color:#c79bff">穴予想=対抗'+taiRef.length+'点</span>'+(actTri?(taiHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
+    bh+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率・実測補正'+Math.round(calP(honD)*100)+'%）は本線の3連単を買いません（回収72.9%＝資金を溶かす主犯・backtest 27,660R）。<b>本線は2連複のみ勝負。</b>穴予想は帯別方式（穴帯＝<b style="color:#b98fe0">対抗'+chip(tk.lane,'mc')+'号</b>をアタマに本命/3番/4番へ流す6点）。穴帯ではこれが最良（backtest 回収88.2%・的中15.3%＞穴候補79.7%）。<b>本線¥2,000とは別枠の穴狙い（各¥100・計¥600目安）。</b>'+(actTri?(taiHit?'<b style="color:#43c59e"> →来た</b>':''):'')+'</div>';
+    taiRef.forEach(c=>{const hit=actTri&&eqArr(c,actTri);
+      bh+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.82"><span class="rk" style="font-size:9px;color:#b98fe0">対抗</span>'+chip(c[0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[2],'mc')
+       +'<span class="ctag tg-ana" style="background:#2a1c3a;color:#c79bff">穴予想</span>'
+       +'<span class="stake">¥100</span>'
+       +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
+       +'</div>';});
+    if(actTri&&!taiHit){bh+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（本線見送り）</span></div>';}
+  }else{
+  const triAll=plTop(sb,3,200);
+  const tri=triBuyList(triAll,nTri,honD,rankMap);
+  const triYen=allocYen(meriW(tri.map(c=>c[1]),honD),2000);
+  let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
+  const triHitI=actTri?tri.findIndex(c=>eqArr(c[0],actTri)):-1;
+  const triRec=(actTri&&payTri!=null)?(triHitI>=0?Math.round(payTri*triYen[triHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
+  bh+='<div class="sec">3連単 上位'+tri.length+'<span class="kbadge">確率連動</span>'+exTag+'<span class="kbadge bud">計¥2,000</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(triRec)+'</div>';
+  tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);const tk=(stdBand&&comboKind(c[0],rankMap)[0]==='本命型')?comboKind(c[0],rankMap):null;
+    bh+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
+     +(tk?'<span class="ctag '+tk[1]+'">'+tk[0]+'</span>':'')
+     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payTri!=null?'<span class="hitpay">配当¥'+payTri.toLocaleString()+'</span>':''):'')
+     +'<span class="stake">¥'+triYen[i].toLocaleString()+'</span>'
+     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
+  if(actTri&&!triHit){bh+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
+  }
+  // 穴予想（帯別方式A・標準帯）＝穴候補アタマ6点。標準帯はこれが最良（backtest 73.3%）。
+  //   本線¥2,000（2連単/3連単）とは別枠の穴狙い（各¥100・計¥600目安）。
+  if(stdBand){
+    const candRef=anaCandRef(r.ab);
+    const candHit=actTri?candRef.some(c=>eqArr(c,actTri)):false;
+    bh+='<div style="font-size:11px;color:#7e8796;margin:8px 0 1px"><b style="color:#e0a93b">穴予想（別枠の穴狙い）</b>：穴候補<b style="color:#e0a93b">'+ha.anaLane+'号</b>をアタマに上位3艇へ流す6点（標準帯はこれが最良・backtest 回収73.3%）。軽視艇アタマで当たれば万舟級。<b>本線¥2,000とは別枠（各¥100・計¥600目安）。</b>'+(actTri?(candHit?'<b style="color:#43c59e"> →来た</b>':''):'')+'</div>';
+    candRef.forEach(c=>{const hit=actTri&&eqArr(c,actTri);
+      bh+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.82"><span class="rk" style="font-size:9px;color:#b89a5a">穴</span>'+chip(c[0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[2],'mc')
+       +'<span class="ctag tg-ana">穴予想</span>'
+       +'<span class="stake">¥100</span>'
+       +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
+       +'</div>';});
+  }
   if(done){
     h+='<div class="rbar"><span class="rlab">結果</span>';
     ord.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
@@ -2219,6 +2342,7 @@ function detailView(r){
         +evrow('2連複',actEx,(r.po.length>2?r.po[2]:null),pfOf,'=')+'<br>'+evrow('3連単',actTri,r.po[1],plOf)+'</div>';
     }
     h+=payTable(r);   // 全7券種の配当一覧（結果が出たレースのみ）
+    h+=bh;            // 出走後は2連複/3連単の成績（的中/圏外・配当・回収）を結果の直下に表示
   }
   h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
@@ -2267,67 +2391,23 @@ function detailView(r){
     const _ba=(honBand<0.45?taikouRef(r):(honBand<0.65?anaCandRef(r.ab):[])).map(c=>c.join('-')).join(',');
     h+='<div style="margin:10px 0 2px"><a href="odds.html?id='+r.id+'&v='+encodeURIComponent(r.v)+'&no='+r.no+(r.tm?'&tm='+encodeURIComponent(r.tm):'')+(_bf?'&bf='+_bf:'')+(_b3?'&b3='+_b3:'')+(_ba?'&ba='+_ba:'')+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #2a3852;border-radius:8px;background:#141a26;color:#8fa8d0;font-size:13px;font-weight:600;text-decoration:none">&#128202; オッズ一覧<span style="font-size:11px;color:#7e8796;font-weight:400">（別ページ・全買い目の実オッズ）</span></a></div>';
   }
-  // 2連複 上位（予想確率で点数変動・上限3）。2026-07-16 上限5→3へ縮小。
-  const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);   // 点数＝API本命確率（荒れ度据置）
-  const exTag=exOn?'<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span>':'';
-  const ex=plTopF(sb,nEx);
-  const exYen=allocYen(meriW(ex.map(c=>c[1]),honD),2000);
-  let exHit=actEx?ex.some(c=>eqPair(c[0],actEx)):false;
-  const exHitI=actEx?ex.findIndex(c=>eqPair(c[0],actEx)):-1;
-  const exRec=(actEx&&payEx!=null)?(exHitI>=0?Math.round(payEx*exYen[exHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
-  h+='<div class="sec">2連複 上位'+nEx+'<span class="kbadge">確率連動</span>'+exTag+'<span class="kbadge bud">計¥2,000</span>'+(actEx?(exHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(exRec)+'</div>';
-  ex.forEach((c,i)=>{const hit=actEx&&eqPair(c[0],actEx);
-    h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">=</span>'+chip(c[0][1],'mc')
-     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payEx!=null?'<span class="hitpay">配当¥'+payEx.toLocaleString()+'</span>':''):'')
-     +'<span class="stake">¥'+exYen[i].toLocaleString()+'</span>'
-     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
-  if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(Math.min(actEx[0],actEx[1]),'mc')+'<span class="arr">=</span>'+chip(Math.max(actEx[0],actEx[1]),'mc')+'<span class="cp ng">実際の結果</span></div>';}
-  // 3連単 上位（予想確率で点数変動・上限8）。標準帯は本命型/標準型/穴型を明示し穴型を必ず1点含める。
-  // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
-  const rankMap=laneRankMap(sb);const stdBand=honD>=0.45&&honD<0.65;
-  if(!triOn(honD)){
-    // 穴帯（波乱）＝本線の3連単は見送り（回収72.9%＝資金を溶かす主犯）。3連単スロットは
-    // 「穴予想＝対抗6点（帯別方式A）」を合体出力。穴帯は対抗アタマ6点が最良（backtest 88.2%）。
-    const tk=taikou(r);const taiRef=taikouRef(r);
-    const taiHit=actTri?taiRef.some(c=>eqArr(c,actTri)):false;
-    h+='<div class="sec">3連単 <span class="kbadge bud" style="color:#a56be0;background:#1c1526;border-color:#5a3f8f">本線=見送り</span><span class="kbadge" style="color:#c79bff">穴予想=対抗'+taiRef.length+'点</span>'+(actTri?(taiHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+'</div>';
-    h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">※穴帯（本命確率・実測補正'+Math.round(calP(honD)*100)+'%）は本線の3連単を買いません（回収72.9%＝資金を溶かす主犯・backtest 27,660R）。<b>本線は2連複のみ勝負。</b>穴予想は帯別方式（穴帯＝<b style="color:#b98fe0">対抗'+chip(tk.lane,'mc')+'号</b>をアタマに本命/3番/4番へ流す6点）。穴帯ではこれが最良（backtest 回収88.2%・的中15.3%＞穴候補79.7%）。<b>本線¥2,000とは別枠の穴狙い（各¥100・計¥600目安）。</b>'+(actTri?(taiHit?'<b style="color:#43c59e"> →来た</b>':''):'')+'</div>';
-    taiRef.forEach(c=>{const hit=actTri&&eqArr(c,actTri);
-      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.82"><span class="rk" style="font-size:9px;color:#b98fe0">対抗</span>'+chip(c[0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[2],'mc')
-       +'<span class="ctag tg-ana" style="background:#2a1c3a;color:#c79bff">穴予想</span>'
-       +'<span class="stake">¥100</span>'
-       +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
-       +'</div>';});
-    if(actTri&&!taiHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果（本線見送り）</span></div>';}
-  }else{
-  const triAll=plTop(sb,3,200);
-  const tri=triBuyList(triAll,nTri,honD,rankMap);
-  const triYen=allocYen(meriW(tri.map(c=>c[1]),honD),2000);
-  let triHit=actTri?tri.some(c=>eqArr(c[0],actTri)):false;
-  const triHitI=actTri?tri.findIndex(c=>eqArr(c[0],actTri)):-1;
-  const triRec=(actTri&&payTri!=null)?(triHitI>=0?Math.round(payTri*triYen[triHitI]/2000):0):null;  // 回収率＝払戻÷¥2,000
-  h+='<div class="sec">3連単 上位'+tri.length+'<span class="kbadge">確率連動</span>'+exTag+'<span class="kbadge bud">計¥2,000</span>'+(actTri?(triHit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(triRec)+'</div>';
-  tri.forEach((c,i)=>{const hit=actTri&&eqArr(c[0],actTri);const tk=(stdBand&&comboKind(c[0],rankMap)[0]==='本命型')?comboKind(c[0],rankMap):null;
-    h+='<div class="crow'+(hit?' hit':'')+'" data-combo="'+c[0].join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'+chip(c[0][0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[0][2],'mc')
-     +(tk?'<span class="ctag '+tk[1]+'">'+tk[0]+'</span>':'')
-     +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(payTri!=null?'<span class="hitpay">配当¥'+payTri.toLocaleString()+'</span>':''):'')
-     +'<span class="stake">¥'+triYen[i].toLocaleString()+'</span>'
-     +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
-  if(actTri&&!triHit){h+='<div class="crow"><span class="rk">実</span>'+chip(actTri[0],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[1],'mc')+'<span class="arr">&rarr;</span>'+chip(actTri[2],'mc')+'<span class="cp ng">実際の結果</span></div>';}
+  // 節間成績（公式番組表「今節成績」＝当節ここまでの着順）。オッズ一覧の下の開閉パネル。
+  if(r.sk&&r.sk.some(x=>x)){
+    h+='<details class="skbox"><summary>&#128211; 節間成績<span class="sksub">今節ここまでの着順（左が節の初走）</span></summary>';
+    r.b.forEach((b,w)=>{
+      const sq=r.sk[w]||'';
+      let chips='',n=0,w1=0,t2=0;
+      for(const ch of sq){n++;if(ch==='1')w1++;if(ch==='1'||ch==='2')t2++;
+        const cls=ch==='1'?'sk1':ch==='2'?'sk2':ch==='3'?'sk3':(ch>='4'&&ch<='6')?'sk46':'skx';
+        chips+='<span class="skc '+cls+'">'+ch+'</span>';}
+      h+='<div class="skrow">'+chip(w+1,'mc')+'<span class="skn">'+b[0]+'</span>'
+        +'<span class="skq">'+(n?chips:'<span style="color:#6b7280;font-size:11px">今節 初出走</span>')+'</span>'
+        +(n?'<span class="sks">'+n+'走・1着'+w1+'・2連対'+Math.round(t2/n*100)+'%</span>':'')
+        +'</div>';
+    });
+    h+='<div class="legend" style="margin:6px 12px 10px">※ 公式番組表の「今節成績」。数字＝着順、F＝フライング、S＝失格等。開催が進むほど走数が並びます。</div></details>';
   }
-  // 穴予想（帯別方式A・標準帯）＝穴候補アタマ6点。標準帯はこれが最良（backtest 73.3%）。
-  //   本線¥2,000（2連単/3連単）とは別枠の穴狙い（各¥100・計¥600目安）。
-  if(stdBand){
-    const candRef=anaCandRef(r.ab);
-    const candHit=actTri?candRef.some(c=>eqArr(c,actTri)):false;
-    h+='<div style="font-size:11px;color:#7e8796;margin:8px 0 1px"><b style="color:#e0a93b">穴予想（別枠の穴狙い）</b>：穴候補<b style="color:#e0a93b">'+ha.anaLane+'号</b>をアタマに上位3艇へ流す6点（標準帯はこれが最良・backtest 回収73.3%）。軽視艇アタマで当たれば万舟級。<b>本線¥2,000とは別枠（各¥100・計¥600目安）。</b>'+(actTri?(candHit?'<b style="color:#43c59e"> →来た</b>':''):'')+'</div>';
-    candRef.forEach(c=>{const hit=actTri&&eqArr(c,actTri);
-      h+='<div class="crow'+(hit?' hit':'')+'" style="opacity:.82"><span class="rk" style="font-size:9px;color:#b89a5a">穴</span>'+chip(c[0],'mc')+'<span class="arr">&rarr;</span>'+chip(c[1],'mc')+'<span class="arr">&rarr;</span>'+chip(c[2],'mc')
-       +'<span class="ctag tg-ana">穴予想</span>'
-       +'<span class="stake">¥100</span>'
-       +(hit?'<span class="ok" style="font-size:11px;margin-left:4px">来た</span>':'')
-       +'</div>';});
-  }
+  if(!done)h+=bh;   // 発走前の買い目はオッズ一覧の下（従来位置）。出走後は結果の直下で表示済み
   // 実オッズ取得ボタンは一旦非表示（必要オッズ表示のみ残す）
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
