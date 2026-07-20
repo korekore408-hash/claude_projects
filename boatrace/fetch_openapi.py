@@ -9,8 +9,9 @@
   ※ 主データ(歴史的結果K・出走表B)は公式LZHのまま。ここは置換しない。
 
 用途:
-  1. fetch_start_times(): race_id -> "HH:MM"（締切＝発走予定時刻）。today.html の
-     レース番号横に表示する。公式LZHには時刻が無いのでここから補う。
+  1. fetch_start_times(): race_id -> "HH:MM"（締切＝発走予定時刻）。
+     ※2026-07-20から主ソースは公式B-fileの『電話投票締切予定』(build_today.bfile_start_times)。
+     ここはB-fileが読めない時のフォールバック（フィードは丸1日止まることがある）。
   2. fetch_programs(): 正規化した当日出走表。公式Bが取れない時のフォールバック源／
      艇番・登番のクロスチェック用。
   3. CLI（crosscheck）: 同一日の OpenAPI 由来と B-file 由来の (艇番→登番) を突き合わせ、
