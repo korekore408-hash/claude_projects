@@ -543,6 +543,32 @@ def venue_tenji_baseline():
     return base
 
 
+_ZEN2HAN = str.maketrans("０１２３４５６７８９：Ｒ", "0123456789:R")
+
+
+def bfile_start_times(date_str):
+    """公式番組表(B-file)の『電話投票締切予定ＨＨ：ＭＭ』から race_id -> 'H:MM'。
+    B-file は毎朝のビルドで必ずDL済みの公式ソース＝非公式フィードのように止まらない。
+    会場コードはセクションマーカー『NNBBGN』から取得。date_str=YYYYMMDD。失敗時 {}。"""
+    path = f"data/b{date_str[2:]}.txt"
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    out, code = {}, None
+    for line in text.splitlines():
+        m = re.match(r"(\d{2})BBGN", line)
+        if m:
+            code = m.group(1)
+            continue
+        z = line.translate(_ZEN2HAN)
+        m = re.match(r"[\s　]*(\d{1,2})R\b.*電話投票締切予定\s*(\d{1,2}):(\d{2})", z)
+        if m and code:
+            out[f"{code}{date_str}{int(m.group(1)):02d}"] = f"{int(m.group(2))}:{m.group(3)}"
+    return out
+
+
 def load_bfile_meta(keep, venues_by_date):
     """各日の B-file(出走表 txt, UTF-8) の場ヘッダ行から (グレード, 日目) を抽出。
     返り値 {(date, 会場): (grade, day)}。日目=『第 N 日』(確実)。
@@ -1352,14 +1378,23 @@ def main():
         o["g"] = g
         o["day"] = day
 
-    # 発走時刻（締切時刻）を非公式OpenAPIから補完（④）。公式LZHに時刻が無いため。
-    # today.json は当日分のみ＝base日のレースに付く。取得失敗時は空でグレースフル。
+    # 発走時刻（締切時刻）。主ソース＝公式B-fileの『電話投票締切予定』（毎朝DL済み・
+    # 止まらない）。非公式OpenAPIフィードは欠けの補完のみ（フィードは丸1日止まる
+    # ことがあり、2026-07-19/20 に時刻全消え＝リアルタブ消失を2度起こした）。
     start_times = {}
     try:
-        import fetch_openapi
-        start_times = fetch_openapi.fetch_start_times(base.replace("-", ""))
+        start_times = bfile_start_times(base.replace("-", ""))
     except Exception as e:
-        print(f"  発走時刻取得スキップ: {e}")
+        print(f"  発走時刻(B-file)取得スキップ: {e}")
+    if start_times:
+        print(f"  発走時刻: 公式B-fileから {len(start_times)}レース")
+    else:
+        try:
+            import fetch_openapi
+            start_times = fetch_openapi.fetch_start_times(base.replace("-", ""))
+            print(f"  発走時刻: OpenAPIフォールバックから {len(start_times)}レース")
+        except Exception as e:
+            print(f"  発走時刻取得スキップ: {e}")
     for o in out:
         o["tm"] = start_times.get(o["id"], "")
 
