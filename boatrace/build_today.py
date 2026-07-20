@@ -67,7 +67,7 @@ def rival_terciles(pred, since):
 
 
 # 予想確率（本命確率 hon=top1 p_win）に応じた買目点数。堅い→少点 / 荒れ→多点。
-# 検証(2026年): 鉄板ほど少点で回収率が高く、大混戦は点数を広げる方が良い。上限は 2連単5 / 3連単20。
+# 検証(2026年): 鉄板ほど少点で回収率が高く、大混戦は点数を広げる方が良い。上限は 2連複3 / 3連単8。
 # ★2026-07-06 鉄板の3連単 4→3点: 点別回収が1-3点目83.9/85.9/92.7%に対し4点目69.7%と構造的な崖。
 #   カットで鉄板3連単回収85.7→88.9%・総回収85.8→87.4%(backtest 2026上期708R・月別4/6でプラス)。
 #   閾値0.65は維持(0.675は帯内で逆に悪化・0.70+はn=85で不安定)。5-8R/場/A1級等のフィルタは
@@ -78,9 +78,8 @@ def k_ex(hon):     # 2連複（上限3・場合に応じて1〜3点）。2026-07
     return 1 if hon >= 0.65 else 2 if hon >= 0.50 else 3
 
 
-def k_tri(hon):    # 3連単（上限20）
-    return (3 if hon >= 0.65 else 7 if hon >= 0.50 else 10 if hon >= 0.40
-            else 14 if hon >= 0.30 else 20)
+def k_tri(hon):    # 3連単（上限8）※2026-07-20 点数を絞る要望で上限20→8に縮小
+    return (3 if hon >= 0.65 else 7 if hon >= 0.50 else 8)
 
 
 CLASS_LABEL = {4: "A1", 3: "A2", 2: "B1", 1: "B2"}   # class_ord → 公式級別
@@ -585,7 +584,7 @@ def regime_result(rel, pred, score_map, hist, payout, since, hon_map=None):
     hon_map={race_id:本命確率} を渡すと荒れ度区分・点数・除外をその確率（従来モデル基準）で
     レース共通に固定（系統別 score は順位付けと本命1着判定のみ）。
     荒れ度＝本命確率(top1 p_win): ≥0.65 鉄板 / 0.45-0.65 標準 / <0.45 穴(波乱含み)。
-    買い目＝当日と同じ変動点数（2連複 k_ex≤3 / 3連単 k_tri≤20）。
+    買い目＝当日と同じ変動点数（2連複 k_ex≤3 / 3連単 k_tri≤8）。
     回収率 = Σ配当 /(Σ点数×100)×100。各100円・実配当(K-file)。
     返り値 [{lab,n,h2,r2,h3,r3}, ...]（鉄板/標準/穴）。"""
     races = {}
@@ -1721,10 +1720,10 @@ function calP(p){
   if(hi[0]<=lo[0])return lo[1];
   return lo[1]+(hi[1]-lo[1])*(p-lo[0])/(hi[0]-lo[0]);
 }
-// 予想確率（本命確率hon=0-1・生値）に応じた買目点数。堅い→少点/荒れ→多点。上限 2連複3/3連単20。
+// 予想確率（本命確率hon=0-1・生値）に応じた買目点数。堅い→少点/荒れ→多点。上限 2連複3/3連単8。
 // 2連複は2026-07-16に上限5→3へ縮小（backtestで回収率は1〜3点が頭打ち・4点以降は単調減）。
 function kEx(hon){return hon>=0.65?1:hon>=0.50?2:3;}
-function kTri(hon){return hon>=0.65?3:hon>=0.50?7:hon>=0.40?10:hon>=0.30?14:20;}  // 鉄板=3点(2026-07-06 4点目カット・回収+1.6pt)
+function kTri(hon){return hon>=0.65?3:hon>=0.50?7:8;}  // 鉄板=3点(2026-07-06 4点目カット)・上限20→8(2026-07-20 点数を絞る)
 // 穴帯(本命<0.45)は3連単を買わない。穴の3連単は回収72.9%(資金を溶かす主犯)、2連単は83.4%で
 // 下支え。穴3連単のみ停止で全体回収率 77.4%→78.2%(+0.8pt)・賭け金▲16%(backtest no_ana_tri)。
 function triOn(hon){return hon>=0.45;}
@@ -2233,7 +2232,7 @@ function detailView(r){
      +'<span class="stake">¥'+exYen[i].toLocaleString()+'</span>'
      +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
   if(actEx&&!exHit){h+='<div class="crow"><span class="rk">実</span>'+chip(Math.min(actEx[0],actEx[1]),'mc')+'<span class="arr">=</span>'+chip(Math.max(actEx[0],actEx[1]),'mc')+'<span class="cp ng">実際の結果</span></div>';}
-  // 3連単 上位（予想確率で点数変動・上限20）。標準帯は本命型/標準型/穴型を明示し穴型を必ず1点含める。
+  // 3連単 上位（予想確率で点数変動・上限8）。標準帯は本命型/標準型/穴型を明示し穴型を必ず1点含める。
   // 穴帯(本命<0.45)は3連単を組まない（回収72.9%＝資金を溶かす主犯。停止で全体+0.8pt・賭け金▲16%）。
   const rankMap=laneRankMap(sb);const stdBand=honD>=0.45&&honD<0.65;
   if(!triOn(honD)){
@@ -2284,7 +2283,7 @@ function detailView(r){
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
     +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝AI予想確率の逆数）。</div>';
   h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率・買い目）。割合・荒れ度・点数の基準＝API簡易合成。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
-    +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連複≦5・3連単≦20）＝本命確率（実測補正）'+Math.round(calP(honD)*100)+'%で2連複'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
+    +'買目点数は予想確率に連動（堅い→少点／荒れ→多点、2連複≦3・3連単≦8）＝本命確率（実測補正）'+Math.round(calP(honD)*100)+'%で2連複'+nEx+'点'+(triOn(honD)?'/3連単'+nTri+'点':'（穴帯につき3連単は見送り）')+'。'
     +'<b>金額は'+(triOn(honD)?'2連複・3連単それぞれ':'2連複に')+'¥2,000を配分（¥100単位・各点最低¥100）。全帯<b style="color:#e0a93b">爆発重視</b>＝配当の大きい薄い目に振り切って配分（薄目重み∝1÷確率・EVフラット）。合成回収はほぼ不変だが5倍超の爆発頻度と一撃の最大配当が大きく増える（的中率は不変・backtest 26,870R）。</b>'
     +'2連複は2026-07-07に2連単から切替（同じ点数で回収+3.7pt・的中52→68%・backtest 26,843R）。'
     +(triOn(honD)?'':'<b>穴帯は3連単を買いません（回収72.9%→停止で全体+0.8pt／賭け金減・backtest検証）。</b>')
@@ -2556,18 +2555,18 @@ function statsView(){
     +cell(a[7],all?'':'g3')+cell(a[9],all?'':'g3')+cell(a[10],all?'':'g3')+'</tr>';
   h+='<div class="meta">対象 '+V.from+'〜'+V.to+'（'+V.n+'レース・収集データ全体）・ '
     +'数字=予想上位K通り以内に決着が入った割合。「変動」=予想確率連動の点数（堅い→少点／荒れ→多点）。'
-    +'並び替えは「変動」的中率（2連複≤3／3連単≤20）基準。</div>';
+    +'並び替えは「変動」的中率（2連複≤3／3連単≤8）基準。</div>';
   h+=sortbar('v',vsort);
   const vrows=vsort.c?sortRows(V.rows,vsort.c==='e'?5:9,vsort.d):V.rows;
   h+='<div class="swrap"><table class="st"><thead><tr>'
     +'<th class="k">会場</th><th>R数</th><th>本命<br>1着</th>'
     +'<th class="g2">2連複<br>本命</th><th class="g2">変動<br>≤3</th><th class="g2">変動<br>回収</th>'
-    +'<th class="g3">3連単<br>本命</th><th class="g3">変動<br>≤20</th><th class="g3">変動<br>回収</th></tr></thead><tbody>';
+    +'<th class="g3">3連単<br>本命</th><th class="g3">変動<br>≤8</th><th class="g3">変動<br>回収</th></tr></thead><tbody>';
   for(const a of vrows)h+=row(a,false);
   h+=row(V.all,true);
   h+='</tbody></table></div>';
   h+='<div class="legend">※ 収集データ全体（'+V.from+'〜'+V.to+'）の結果から集計。本命=1着確率最大の枠。'
-    +'「変動」=予想確率に応じた点数（2連複≤3/3連単≤20）以内に実際の決着が含まれた割合（その点数を買えば当たる割合）。'
+    +'「変動」=予想確率に応じた点数（2連複≤3/3連単≤8）以内に実際の決着が含まれた割合（その点数を買えば当たる割合）。'
     +'<b>「変動回収」=その変動点数を各100円で実際に買った場合の回収率（Σ配当÷賭け金）。100%超で利益。</b>'
     +'※ 4月までは学習期間を含むため的中率・回収率はやや高めに出る（5月以降が純粋な検証）。'
     +'※ 全期間でも回収率は100%未満が基本（控除率約25%の壁）。</div>';
@@ -2578,7 +2577,7 @@ function statsView(){
       +'<td class="num g2">'+a[2]+'%</td><td class="num g2">'+a[3]+'%</td>'
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
-    h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連複≤3/3連単≤20点）。'
+    h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連複≤3/3連単≤8点）。'
       +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を全帯爆発重視で配分（薄い高配当目に振り切り・EVフラット）・穴帯(本命&lt;45%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
       +'回収率＝Σ(配当×賭け金/100)÷Σ賭け金。100%超で利益。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
@@ -2601,10 +2600,10 @@ function statsView(){
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・標準・穴 別の的中率と回収率（2026年〜）</div>';
     h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本命確率≥65％ ／ <b>標準</b>＝45–65％ ／ <b>穴</b>＝本命確率&lt;45％（波乱含み）。'
       +'<b>荒れ度・点数はAPI本命確率で判定</b>。'
-      +'買い目＝確率連動の変動点数（2連複≤3／3連単≤20点・各100円）。</div>';
+      +'買い目＝確率連動の変動点数（2連複≤3／3連単≤8点・各100円）。</div>';
     h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命1着　'
       +'<span style="color:#43c59e">■</span> 2連複（≤3点）　'
-      +'<span style="color:#e0a93b">■</span> 3連単（≤20点）</div>';
+      +'<span style="color:#e0a93b">■</span> 3連単（≤8点）</div>';
     h+='<div style="text-align:center"><div style="font-size:13px;color:#cdd6e2;margin:8px 0 2px;font-weight:600">① 的中率（％）</div>'
       +grpBars(RG,[{k:'win',col:'#5b9bd5'},{k:'h2',col:'#43c59e'},{k:'h3',col:'#e0a93b'}])+'</div>';
     h+='<div style="text-align:center"><div style="font-size:13px;color:#cdd6e2;margin:14px 0 2px;font-weight:600">② 回収率（％・<span style="color:#d9745c">赤破線=100％損益分岐</span>）</div>'
