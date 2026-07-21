@@ -207,6 +207,10 @@
   .tjp .tchg{color:#ef7a27;font-weight:700;font-size:12px}
   .tjp .tsame{color:#8ea0ba;font-weight:600;font-size:12px}
   .tjp .tjrk{color:#aebacb;font-size:12px;margin-top:4px}
+  .tjp .tjfm{color:#e7d3a6;font-size:12px;margin-top:6px;padding-top:6px;border-top:1px dashed #3a4657}
+  .tjp .tjfm .tjnote{color:#8a94a5;font-size:11px;margin-top:2px}
+  .tjp .tjstab{color:#f0b6b6;font-size:12px;margin-top:6px;padding:6px 8px;background:#2a1414;border:1px solid #6b2f2f;border-radius:6px}
+  .stabbadge{display:inline-block;color:#ffd7d7;background:#7a1f1f;border-radius:4px;padding:0 6px;font-size:11px;font-weight:700;margin-left:4px}
   /* 常時 左下に小さく表示する「1番上へ戻る」ボタン */
   #toTop{position:fixed;left:12px;bottom:14px;z-index:60;display:inline-flex;align-items:center;gap:3px;
     font-size:11px;font-weight:800;line-height:1;color:#cdd6e2;background:rgba(28,34,44,.86);
@@ -1301,11 +1305,12 @@ function exView(r){
   const e=r.ex; if(!e)return '';
   let h='<div class="sec">直前情報（展示）<span class="kbadge">取得済</span></div>';
   const w=e.weather||{};
-  if(w.tenki||w.wind!=null||w.wave!=null){
+  if(w.tenki||w.wind!=null||w.wave!=null||w.stabilizer){
     h+='<div class="exwx">🌤 '+(w.tenki||'–')
       +(w.wind!=null?' ・ 風'+w.wind+'m'+(w.winddir?(WINDDIR[w.winddir]||''):''):'')
       +(w.wave!=null?' ・ 波'+w.wave+'cm':'')
-      +(w.temp!=null?' ・ 気温'+w.temp+'℃':'')+'</div>';
+      +(w.temp!=null?' ・ 気温'+w.temp+'℃':'')
+      +(w.stabilizer?' <span class="stabbadge">⚠ 安定板使用</span>':'')+'</div>';
   }
   const ts=e.time||[];
   const valid=ts.map((t,i)=>[t,i]).filter(x=>x[0]!=null).sort((a,b)=>a[0]-b[0]);
@@ -1340,20 +1345,38 @@ function exView(r){
         +'<div style="margin-top:4px;color:#7fae8c;font-size:11px">※会場補正済み（この会場の展示基準で速い側のみ表示）。直前情報8日の小標本では会場補正で速い側の回収≈109%だが統計的に未確定＝<b>確度は低く、少額の参考</b>に留めてください。</div></div>';
     }
   }
-  // 展示後の予想（展示タイム/STを朝予想に軽くブレンド）
+  // ── 直前情報あり予想（展示タイム/STを朝予想に軽くブレンド。進入隊形・気象・安定板は判断材料として併記）──
   const tp=tenjiPred(r);
   if(tp){
     const ps=r.b.map(x=>x[1]); let mh=0; for(let i=1;i<6;i++)if(ps[i]>ps[mh])mh=i;  // 朝の本命index
     const changed=tp.top!==mh;
-    h+='<div class="tjp"><div class="tjhon">展示後の本命 '+chip(tp.top+1,'mc')+' '+(r.b[tp.top]?r.b[tp.top][0]:'')
+    h+='<div class="tjp"><div class="tjhon">直前情報あり本命 '+chip(tp.top+1,'mc')+' '+(r.b[tp.top]?r.b[tp.top][0]:'')
       +' <span style="color:#43c59e">'+Math.round(tp.prob[tp.top]*100)+'%</span>'
       +(changed?' <span class="tchg">▲ 朝の本命は'+chip(mh+1,'mc')+'</span>':' <span class="tsame">朝と同じ</span>')+'</div>';
-    h+='<div class="tjrk">展示後の順位　'+tp.order.map(i=>chip(i+1,'mc')).join(' ')+'</div></div>';
+    h+='<div class="tjrk">直前情報あり順位　'+tp.order.map(i=>chip(i+1,'mc')).join(' ')+'</div>';
+    // 進入隊形（前づけ）: 展示進入が枠と違う艇を表示。朝モデルは枠なり前提なので隊形が崩れると確度が落ちる。
+    // ※検証(1566R)では進入変化を確率へ混ぜても本命的中は改善せず→買い目には入れず「判断材料」として表示のみ。
+    const co=e.course||[];
+    const movedIn=[], movedOut=[];
+    for(let i=0;i<6;i++){const c=co[i]; if(c!=null){if(c<i+1)movedIn.push(chip(i+1,'mc')+'→'+c+'c'); else if(c>i+1)movedOut.push(chip(i+1,'mc')+'→'+c+'c');}}
+    if(movedIn.length||movedOut.length){
+      h+='<div class="tjfm">🚤 進入隊形の変化：'
+        +(movedIn.length?'<b style="color:#e0a93b">前づけ '+movedIn.join(' ')+'</b>':'')
+        +(movedIn.length&&movedOut.length?' ／ ':'')
+        +(movedOut.length?'後退 '+movedOut.join(' '):'')
+        +'<div class="tjnote">※朝AIは枠なり前提。隊形が崩れたレースは確度が下がる（買い目は展示T/STのみ反映）。</div></div>';
+    }
+    // 安定板：強風・高波で装着＝波乱含み。朝予想の前提が崩れるため確度低下を明示。
+    if(w.stabilizer){
+      h+='<div class="tjstab">⚠ <b>安定板使用</b>：強風・高波で装着＝波乱含み。イン/本命の信頼度が下がるので、点数を絞るか見送りも検討。</div>';
+    }
+    h+='</div>';
   }
   h+='<div class="legend">※ 展示＝発走直前の情報（自動取得：締切40分前から公式サイトを直接・約3分毎に反映。それ以外はOpenAPI直前フィード）。'
     +'<b style="color:#43c59e">緑</b>＝展示タイム最速、<b style="color:#e0a93b">橙</b>＝展示でイン(1c)進入。'
-    +'「展示後の本命」＝朝のAI予想に展示タイム・展示STを軽く加味した補正（過去検証で本命的中+0.5〜1.4pt）。'
-    +'<b style="color:#43c59e">展示があるレースは買い目もこの展示反映後で組みます</b>（backtestで総回収+0.9〜1.3pt）。ヘッドラインの本命/順位/1着確率と荒れ度・点数は朝予想のまま。</div>';
+    +'「直前情報あり本命」＝朝のAI予想に展示タイム・展示STを軽く加味した補正（過去検証で本命的中+0.5〜1.4pt）。'
+    +'<b style="color:#43c59e">展示があるレースは買い目もこの展示反映後で組みます</b>（backtestで総回収+0.9〜1.3pt）。ヘッドラインの本命/順位/1着確率と荒れ度・点数は朝予想のまま。'
+    +'<br>進入隊形・風/波・安定板は<b>判断材料として表示のみ</b>（1566Rの検証で確率へ混ぜても本命的中は改善せず、無理に組み込むとノイズになるため確率には反映していません）。安定板使用時は波乱含みで確度が下がります。</div>';
   return h;
 }
 
