@@ -2294,6 +2294,20 @@ function detailView(r){
     +'</div></div>';
   h+='<div class="dh">'+r.v+' '+r.no+'R'+(r.tm?' <span class="dhtm">'+r.tm+' 締切</span>':'')+'</div>';
   h+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
+  // 1着確率（AI予想・学習モデル）＝直前情報の前に表示（2026-07-23 要望で先頭へ移動）。
+  h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
+  r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
+    h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
+     +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
+     +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
+        +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
+     +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
+     +'<span class="bp">'+(pm/10).toFixed(1)+'%</span></div>';});
+  h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">'
+    +'<span class="rk">A1</span> 公式級別　｜　'
+    +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
+    +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
+    +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
   // 気象（K-file実況）。当日は中立化＝空なので「天候は当日未反映」と表示。
   // 展示(r.ex)取得済みなら気象は exView で実値表示するのでこの行は出さない。
   if(r.wx&&!r.ex){
@@ -2419,19 +2433,7 @@ function detailView(r){
     h+=payTable(r);   // 全7券種の配当一覧（結果が出たレースのみ）
     h+=bh;            // 出走後は2連複/3連単の成績（的中/圏外・配当・回収）を結果の直下に表示
   }
-  h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
-  r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
-    h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
-     +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
-     +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
-        +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
-     +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
-     +'<span class="bp">'+(pm/10).toFixed(1)+'%</span></div>';});
-  h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 0">'
-    +'<span class="rk">A1</span> 公式級別　｜　'
-    +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
-    +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
-    +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
+  // 1着確率セクションは detailView 冒頭（直前情報の前）へ移動（2026-07-23 要望）。
   // 相手（非本命5艇）の差＝2・3着の絞りやすさ。勝負どころ＝本命が強い×相手に差。
   const rd=rivalDiff(r);
   h+='<div class="rdbox'+(rd.prize?' prizebox':'')+'">'
