@@ -874,9 +874,9 @@ def recent_stats(out, payout, pmkey="b"):
 def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
                 daily_grant=100_000, base=None):
     """毎日10万円チャレンジ（鉄板）: 毎日10万円を支給し、AI が選んだ鉄板レースに投票。
-    ★新ルール（2026-07-22〜）:
-      - 毎日 daily_grant(¥100,000) を支給。前日が＋なら翌日は「10万円＋前日の勝ち分」を予算に張る。
-        前日が負け/±0なら繰越なし＝翌日も10万円だけ（損失は翌日に持ち越さない＝バーストしない）。
+    ★ルール（2026-07-23〜・繰越廃止）:
+      - 毎日 daily_grant(¥100,000) を支給し、その日はこの10万円だけで張る（毎日フラット・繰越なし）。
+        前日の勝ち分を翌日に回すルールは廃止（累計損益はそのまま日々加算）。
       - 対象＝鉄板レース（本命確率 hon≥0.65）のみ厳選。1レース予算の約 F_RACE を
         2連複（上位k_ex）＋3連単（上位k_tri・確率比例配分）に投票。予算超過時は比例縮小。
       - 実配当で精算・フライング（非完走）を含む買い目は返還。
@@ -991,7 +991,6 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
         return staked, returned, nbet, nhit, bets
 
     grant = float(daily_grant)
-    carry = 0.0          # 前日の勝ち分（＋のときだけ翌日に上乗せ）
     cum = 0.0            # 累計損益（払戻−賭け金）
     peak = 0.0
     rows = []
@@ -1001,7 +1000,7 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
         picks = [p for p in tetsu_picks(by_date[d]) if p[6]]   # 精算済みのみ
         if not picks:
             continue
-        budget = grant + carry
+        budget = grant                     # 毎日フラット10万円（繰越なし）
         staked, returned, nbet, nhit, bets = play_day(picks, budget)
         if nbet == 0:
             continue
@@ -1011,16 +1010,14 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
         rows.append({"d": d, "n": len(picks), "nbet": nbet, "nhit": nhit,
                      "budget": round(budget), "stake": round(staked),
                      "ret": round(returned), "pl": round(day_pl),
-                     "cum": round(cum), "carry": round(max(0.0, day_pl)),
-                     "bets": bets})
-        carry = max(0.0, day_pl)           # 負けた日は繰越0（翌日も10万円だけ）
+                     "cum": round(cum), "bets": bets})
 
-    # 当日プレビュー（結果待ち）: 予算＝10万＋前日繰越。
+    # 当日プレビュー（結果待ち）: 予算＝毎日10万円。
     pending = None
     if base and base in by_date:
         bp = tetsu_picks(by_date[base])
         if bp:
-            pending = {"d": base, "n": len(bp), "budget": round(grant + carry)}
+            pending = {"d": base, "n": len(bp), "budget": round(grant)}
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
             "peak": round(peak),
@@ -1143,9 +1140,9 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
     """毎日10万円チャレンジ【穴帯】: 穴帯(本命確率<0.45)レースだけを狙い、
     穴予想＝対抗(学習モデル2番手)アタマ6点(_taikou_ref／帯別方式・波乱帯)を3連単でフル購入。
     ※backtest 波乱帯 対抗6点=回収88.2%（穴候補6点79.7%より上位）で統一。
-    ★新ルール（2026-07-22〜・鉄板版と同じ）:
-      - 毎日 daily_grant(¥100,000) 支給。前日＋なら翌日は「10万円＋前日の勝ち分」を予算に。
-        負け日は繰越なし＝翌日も10万円（損失は持ち越さない＝バーストしない）。
+    ★ルール（2026-07-23〜・鉄板版と同じ・繰越廃止）:
+      - 毎日 daily_grant(¥100,000) 支給し、その日はこの10万円だけで張る（毎日フラット・繰越なし）。
+        前日の勝ち分を翌日に回すルールは廃止。
       - 対象＝その日の穴帯レース全て。1レース予算の約 F_RACE を6点に均等配分(¥100単位)。
       - 各日『何を買ったか（6点の組番）と結果（着順・的中・払戻）』を bets に記録して表示。
     ★ステートレス（毎ビルド再計算）。base当日は結果待ち＝集計不変のプレビュー。"""
@@ -1236,7 +1233,6 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         return staked, returned, nbet, nhit, bets
 
     grant = float(daily_grant)
-    carry = 0.0
     cum = 0.0
     peak = 0.0
     rows = []
@@ -1246,7 +1242,7 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         picks = [p for p in ana_picks(by_date[d]) if p[5]]
         if not picks:
             continue
-        budget = grant + carry
+        budget = grant                     # 毎日フラット10万円（繰越なし）
         staked, returned, nbet, nhit, bets = play_day(picks, budget)
         if nbet == 0:
             continue
@@ -1256,15 +1252,13 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         rows.append({"d": d, "n": len(picks), "nbet": nbet, "nhit": nhit,
                      "budget": round(budget), "stake": round(staked),
                      "ret": round(returned), "pl": round(day_pl),
-                     "cum": round(cum), "carry": round(max(0.0, day_pl)),
-                     "bets": bets})
-        carry = max(0.0, day_pl)
+                     "cum": round(cum), "bets": bets})
 
     pending = None
     if base and base in by_date:
         bp = ana_picks(by_date[base])
         if bp:
-            pending = {"d": base, "n": len(bp), "budget": round(grant + carry)}
+            pending = {"d": base, "n": len(bp), "budget": round(grant)}
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
             "peak": round(peak),
@@ -2599,7 +2593,7 @@ function gameDays(G,ana){
       +'<span class="gdp" style="color:'+(rp?'#43c59e':'#e06b6b')+'">'+(rp?'+':'')+yen(r.pl)+'</span>'
       +'<span class="gdc">累計'+(r.cum>=0?'+':'')+yen(r.cum)+'</span>'
       +'</summary><div class="gbets">'
-      +'<div class="gbsum">賭け金'+yen(r.stake)+' → 払戻'+yen(r.ret)+(r.carry>0?'　翌日繰越 +'+yen(r.carry):'')+'</div>'
+      +'<div class="gbsum">賭け金'+yen(r.stake)+' → 払戻'+yen(r.ret)+'</div>'
       +((r.bets&&r.bets.length)?r.bets.map(b=>gBetRace(b,ana)).join(''):'<div class="meta">対象レースなし</div>')
       +'</div></details>';
   }
@@ -2617,12 +2611,12 @@ function gameView(){
     +'<span style="font-size:13px;font-weight:700;color:#8b96a8">累計損益</span></div>';
   h+='<div style="font-size:11px;color:#8b96a8">精算 '+G.days+'日 ／ 支給総額 '+yen(grantTot)+' ／ 賭け金 '+yen(G.staked)+' ／ 払戻 '+yen(G.ret)+' ／ 最高到達 '+(G.peak>=0?'+':'')+yen(G.peak)+'</div>';
   if(G.pending&&G.pending.n)
-    h+='<div style="font-size:12px;color:#7fb2ff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：鉄板 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（＝10万＋前日の勝ち分）で投票予定（結果は翌朝反映）</div>';
+    h+='<div style="font-size:12px;color:#7fb2ff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：鉄板 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円）で投票予定（結果は翌朝反映）</div>';
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,false);
   else h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
   h+='<div class="legend"><b>新ルール</b>：<b>毎日10万円</b>を支給し、鉄板レース（本命確率65％以上）だけを厳選、1レース予算の約12％を2連複＋3連単（確率比例配分）に投票。'
-    +'<b>前日が＋なら翌日は「10万円＋前日の勝ち分」で勝負</b>（負けた日は繰越なし＝翌日も10万円だけ）。実際の配当で精算し、フライングは返還。'
+    +'<b>毎日フラットに10万円</b>で勝負（前日の勝ち分を翌日に回すルールは廃止）。実際の配当で精算し、フライングは返還。'
     +'各日の行を<b>タップするとその日に何を買ったか（組番・金額）と結果</b>が開きます。✓＝的中。※控除率25％の壁があり増え続ける保証はありません＝AIの実力を可視化する実験です。</div>';
   h+='</div>';
   return h;
@@ -2639,12 +2633,12 @@ function gameViewAna(){
     +'<span style="font-size:13px;font-weight:700;color:#9a8bb8">累計損益</span></div>';
   h+='<div style="font-size:11px;color:#9a8bb8">精算 '+G.days+'日 ／ 支給総額 '+yen(grantTot)+' ／ 賭け金 '+yen(G.staked)+' ／ 払戻 '+yen(G.ret)+' ／ 最高到達 '+(G.peak>=0?'+':'')+yen(G.peak)+'</div>';
   if(G.pending&&G.pending.n)
-    h+='<div style="font-size:12px;color:#c79bff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：穴帯 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（＝10万＋前日の勝ち分）で投票予定（結果は翌朝反映）</div>';
+    h+='<div style="font-size:12px;color:#c79bff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：穴帯 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円）で投票予定（結果は翌朝反映）</div>';
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,true);
   else h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
   h+='<div class="legend">穴狙いルール（実験）：<b>毎日10万円</b>を支給し、<b>穴帯レース（本命確率45％未満）だけ</b>を対象に、1レース予算の約1％を<b>穴予想＝対抗（予想2番手）アタマ6点</b>（3連単・帯別方式）に均等投票。'
-    +'前日＋なら翌日は「10万円＋前日の勝ち分」で勝負（負け日は繰越なし）。各日の行を<b>タップすると6点の組番と結果</b>が開きます。'
+    +'毎日フラットに10万円で勝負（前日の勝ち分を翌日に回すルールは廃止）。各日の行を<b>タップすると6点の組番と結果</b>が開きます。'
     +'※波乱帯の穴予想は対抗6点でbacktest回収88.2％だが高分散＝<b>「穴を追い続けるとどうなるか」を可視化する実験</b>。本家（鉄板）と見比べてください。</div>';
   h+='</div>';
   return h;
