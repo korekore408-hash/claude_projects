@@ -757,6 +757,42 @@ def makuri_rates(glob_pat="data/k*.csv", min_wins=5):
             for reg, w in win.items() if w >= min_wins}
 
 
+def st_habit_rates(glob_pat="data/k*.csv", min_races=15):
+    """全K-fileから 登番 → 相対ST平均（そのコースの平均STからの差, 秒）。
+    負=コース平均より速い『行く型(先手)』／正=遅い『出遅れ気味』。STはコースで
+    構造的に変わるためコース平均を引いてクセを抽出する。
+    検証(backtest_racer_st_habit.py, 約21万走): 前半平均ST→後半平均STの相関
+    r=0.74 で個人のクセは安定。ただし1走単位の予言力は弱い(RMSE改善+3%)ので、
+    的中を動かす特徴ではなく『先手/出遅れ』傾向の説明タグとして出す。
+    フライング癖は前後半で無相関(r≈0)＝個人のクセではないため出さない。
+    出走 min_races 未満は None 扱い。"""
+    csum, recs = {}, []
+    for p in sorted(glob.glob(glob_pat)):
+        try:
+            for r in load(p):
+                reg = (r.get("登番") or "").strip()
+                co = to_float(r.get("進入コース"))
+                st = to_float(r.get("スタートタイミング"))
+                if not reg or co is None or st is None:
+                    continue
+                c = int(co)
+                csum.setdefault(c, [0.0, 0])
+                csum[c][0] += st
+                csum[c][1] += 1
+                recs.append((reg, c, st))
+        except OSError:
+            continue
+    cmean = {c: v[0] / v[1] for c, v in csum.items() if v[1]}
+    agg = {}
+    for reg, c, st in recs:
+        if c in cmean:
+            a = agg.setdefault(reg, [0.0, 0])
+            a[0] += st - cmean[c]
+            a[1] += 1
+    return {reg: round(a[0] / a[1], 3)
+            for reg, a in agg.items() if a[1] >= min_races}
+
+
 def cause_comment(pm, fin, kr):
     """予想と結果のズレの原因を1文で説明。kr=load_kresult の1レース分。的中時は順当コメント。"""
     hm = max(range(6), key=lambda i: pm[i]) + 1            # 本命枠
@@ -1354,6 +1390,7 @@ def main():
 
     kres = load_kresult(keep)
     mk_map = makuri_rates()                          # 登番→まくり率（根拠タグ用）
+    sth_map = st_habit_rates()                        # 登番→相対ST平均（先手/出遅れタグ用）
     payout = load_payouts(keep)
     # 配当一覧（結果表示用）: K-file(k*.txt)の全7券種を組合せ+配当で埋め込む。keep日付のみ解析。
     import analyze_ana_taikou_roi as _kt
@@ -1419,6 +1456,9 @@ def main():
                     # 対抗1艇の『捲り屋』タグ用: 枠ごと まくり率（該当なしは null）
                     "mk": [mk_map.get(rc["feat"][w].get("reg"))
                            for w in range(1, 7)],
+                    # 枠ごと 相対ST平均（負=先手/正=出遅れ, 該当なしは null）
+                    "sth": [sth_map.get(rc["feat"][w].get("reg"))
+                            for w in range(1, 7)],
                     # 枠ごと [公式級別 A1/A2/B1/B2, AIオリジナル実力ランク S/A/B/C/D]
                     "rk": [[official_rank(rc["feat"][w].get("cl")),
                             ai_player_rank(rc["feat"][w])]
@@ -1648,6 +1688,9 @@ HTML = r"""<!DOCTYPE html>
   .tag.h{background:#10362c;color:#43c59e}.tag.m{background:#3a1f1f;color:#e06b6b}
   .kbadge{font-size:10px;color:#7fb2ff;background:#14233a;border:0.5px solid #2b4a6f;border-radius:7px;padding:1px 7px;margin-left:8px;font-weight:600}
   .tkt{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;margin:2px 5px 0 0;border-radius:10px;background:#241a33;color:#c9a9f0;border:0.5px solid #4a326e}
+  .sthb{display:inline-block;font-size:10px;font-weight:700;padding:0 6px;margin-left:5px;border-radius:8px;vertical-align:middle;white-space:nowrap}
+  .sthb.go{background:#12352a;color:#4fd6a0;border:0.5px solid #2f7a5e}
+  .sthb.slow{background:#3a2f18;color:#e0b054;border:0.5px solid #6e5626}
   .crow{display:flex;align-items:center;gap:6px;padding:6px 2px;border-bottom:0.5px solid #2a2f3a}
   .crow.hit{background:#10362c;border-radius:5px}
   .crow.evplus{background:#173a1f;border-radius:5px;box-shadow:inset 3px 0 0 #43c59e}
@@ -1940,6 +1983,10 @@ function taikou(r){
   if(neigh.length&&neigh.every(i=>abrank[i]>=4))tags.push(['隣弱','両隣が格下（'+neigh.map(i=>(i+1)+'号艇').join('・')+'）']);
   // 捲り屋（勝ち星の35%以上がまくり系）
   if(r.mk&&r.mk[ci]!=null&&r.mk[ci]>=0.35)tags.push(['捲り屋','勝ち星の'+Math.round(r.mk[ci]*100)+'%がまくり系']);
+  // スタートのクセ（過去約1年のコース補正ST平均。前後半相関r=0.74で安定。傾向の参考）
+  if(r.sth&&r.sth[ci]!=null){const v=r.sth[ci];
+    if(v<=-0.015)tags.push(['先手','平均STがコース標準より'+(Math.abs(v)*100).toFixed(1)+'/100秒速い＝スタート行く型（傾向）']);
+    else if(v>=0.020)tags.push(['出遅れ気味','平均STがコース標準より'+(v*100).toFixed(1)+'/100秒遅い（傾向）']);}
   // 展示（当日 previews のみ）
   let exUsed=false;
   if(r.ex&&r.ex.time){
@@ -2295,6 +2342,7 @@ function detailView(r){
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
         +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
+     +(r.sth&&r.sth[w]!=null?(r.sth[w]<=-0.015?'<span class="sthb go" title="過去約1年の平均STがこのコース標準より'+(Math.abs(r.sth[w])*100).toFixed(1)+'/100秒速い＝スタート行く型（傾向。前後半相関0.74で安定・1走の予言力は弱い参考）">⚡先手</span>':(r.sth[w]>=0.020?'<span class="sthb slow" title="過去約1年の平均STがこのコース標準より'+(r.sth[w]*100).toFixed(1)+'/100秒遅い＝出遅れ気味（傾向・参考）">△出遅れ</span>':'')):'')
      +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(pm/10).toFixed(1)+'%</span></div>';});
   h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">'
