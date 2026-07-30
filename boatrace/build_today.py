@@ -2372,6 +2372,22 @@ function detailView(r){
     +'<div class="hacell"><div class="hak">穴確率（4-6番手）</div><div class="hav ana">'
     +Math.round(ha.anaC*100)+'%</div><div class="hsub"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span></div></div></div>';
   h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 4px">※確率は過去の実測1着率で較正済み（検証: 素のAPI値は本命が強い帯で+11〜12pt過小評価）。鉄板/標準/穴の帯・点数は従来どおり内部値で判定（backtest済みルールを変えないため）。</div>';
+  // 本線(PL上位1点)の予想率＝『買い目が当たる堅さ(本命度)』。1着確率より「当たる堅さ」をよく表す
+  // （検証3.4万R: 同じ本命確率でもこの値が高いほど2連単的中+2〜11pt・較正良好）。表示のみ・点数据置。
+  {const q2f=plTopF(ps,1),q2t=plTop(ps,2,1);
+   const p2f=q2f.length?q2f[0][1]:null,c2f=q2f.length?q2f[0][0]:null;
+   const p2t=q2t.length?q2t[0][1]:null,c2t=q2t.length?q2t[0][0]:null;
+   if(p2f!=null&&p2t!=null){
+    const d2=done&&actEx;
+    const hit2f=d2&&c2f&&eqPair(c2f,actEx),hit2t=d2&&c2t&&eqArr(c2t,actEx);
+    const res=(hit)=>hit?' <b style="color:#43c59e">的中</b>':(d2?' <span style="color:#8a94a6">不的中</span>':'');
+    h+='<div class="sec">本線の堅さ（本命度）<span class="kbadge" title="本線1点の予想率（Plackett-Luceで1着確率から算出）。検証3.4万レースで較正良好（予測20%→実測19%・30%→27%）。1着確率より「買い目が当たる堅さ」をよく表す指標">較正良好・参考</span></div>';
+    h+='<div class="ha"><div class="hacell"><div class="hak">本線 2連複</div><div class="hav hon">'
+      +(p2f*100).toFixed(1)+'%</div><div class="hsub">'+chip(c2f[0],'mc')+' = '+chip(c2f[1],'mc')+res(hit2f)+'</div></div>'
+      +'<div class="hacell"><div class="hak">本線 2連単</div><div class="hav">'
+      +(p2t*100).toFixed(1)+'%</div><div class="hsub">'+chip(c2t[0],'mc')+' &rarr; '+chip(c2t[1],'mc')+res(hit2t)+'</div></div></div>';
+    h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">※本線1点の予想率（PL上位1点）。<b>1着確率より「買い目が当たる堅さ」をよく表す</b>＝同じ本命確率でもこの値が高いほど2連単的中が+2〜11pt（検証3.4万R・較正良好）。回収は全帯で2連複＞2連単。荒れ度帯・点数は従来どおり内部値で判定（参考指標）。</div>';
+   }}
   {const al=ha.anaLane, af=r.ft?r.ft[al-1]:null, afin=done?r.b[al-1][2]:null;
    h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896"><span class="h" style="color:#b89a5a">穴候補</span>'
      +chip(al,'mc')+' '+r.b[al-1][0]+' … '
