@@ -1766,6 +1766,12 @@ HTML = r"""<!DOCTYPE html>
   .scol{color:#9aa3b2}
   /* 毎日10万円チャレンジ 日別・買い目明細 */
   .gdays{margin-top:6px}
+  .gdwrap{margin-top:6px}
+  .gdwrap>summary{list-style:none;cursor:pointer;padding:8px 10px;font-size:12px;font-weight:700;color:#9fb0c8;background:#111726;border:1px solid #232c42;border-radius:8px}
+  .gdwrap>summary::-webkit-details-marker{display:none}
+  .gdwrap>summary::before{content:"▸ ";color:#6b7488}
+  .gdwrap[open]>summary::before{content:"▾ "}
+  .gdwrap[open]>summary{border-bottom-left-radius:0;border-bottom-right-radius:0}
   .gday{border:1px solid #232c42;border-radius:8px;margin:5px 0;background:#111726;overflow:hidden}
   .gday>summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:8px 10px;font-size:12px}
   .gday>summary::-webkit-details-marker{display:none}
@@ -2710,7 +2716,9 @@ function gameDays(G,ana){
       +((r.bets&&r.bets.length)?r.bets.map(b=>gBetRace(b,ana)).join(''):'<div class="meta">対象レースなし</div>')
       +'</div></details>';
   }
-  return h+'</div>';
+  // 日々の実績はまとめて折りたたみ（既定は閉じる）。
+  return '<details class="gdwrap"><summary>日々の実績（'+G.rows.length+'日）を見る</summary>'
+    +h+'</div></details>';
 }
 // 毎日10万円チャレンジ（鉄板）パネル（場別成績の先頭に表示）。
 function gameView(){
