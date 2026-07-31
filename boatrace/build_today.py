@@ -152,6 +152,33 @@ def build_api_scores(rel):
     return out
 
 
+def pl_quinella_top(ps):
+    """1着確率配列 ps(6) から本線2連複の予想率（PL上位1点＝最尤ペアのP(top2)）を返す。
+    P(unordered{i,j}) = P(i1着)P(j2着|i) + P(j1着)P(i2着|j) の最大値。"""
+    tot = sum(ps)
+    if tot <= 0:
+        return 0.0
+    best = 0.0
+    for i in range(6):
+        for j in range(i + 1, 6):
+            pij = ps[i] / tot * ps[j] / (tot - ps[i])
+            pji = ps[j] / tot * ps[i] / (tot - ps[j])
+            best = max(best, pij + pji)
+    return best
+
+
+def q2conf(q):
+    """本線2連複予想率 q2f を、従来の本命確率(hon)帯スケールへ写像する。
+    q2f 0.40 → 0.65（鉄板境界） / 0.25 → 0.45（波乱境界）に対応させ、
+    下流の帯・点数しきい値(0.65/0.50/0.45)を変えずに基準だけ q2f に切替える。
+    検証(predict×実払戻 33,935R): 現行API基準とROI同等(77.7% vs 77.8%)・賭け金-17%。"""
+    if q <= 0.25:
+        return q / 0.25 * 0.45
+    if q <= 0.40:
+        return 0.45 + (q - 0.25) / 0.15 * 0.20
+    return min(0.65 + (q - 0.40) / 0.30 * 0.35, 0.999)
+
+
 def calib_knots(api_map, pred, since="20260101"):
     """API簡易合成の1着確率 p → 実1着率 の単調較正カーブ（isotonic/PAV）の節点。
     検証(2026-07-07 OOS 5-6月): API確率は高域で実力を+11〜12pt過小評価・0.35-0.45は過大評価。
@@ -1321,15 +1348,14 @@ def main():
 
     # 予想スコア: api_map=API予想(簡易合成・主系統)。荒れ度/割合/穴/点数の基準。
     api_map = build_api_scores(rel)
-    # 荒れ度（鉄板/標準/穴）・割合・穴・点数・除外はすべて API本命確率で1回だけ判定し両系統共通化
-    # （ユーザー決定 2026-06-27: 割合・帯分けともAPIに統一）。従来モデルは比較用の別系統スコア。
+    # 荒れ度（鉄板/標準/穴）・割合・穴・点数・除外の基準＝hon_canon。
+    # まずAPI本命確率の最大値をフォールポジションとして持ち…
     hon_canon = {}
     for (rid, w), v in api_map.items():
         if v is not None and v > hon_canon.get(rid, -1.0):
             hon_canon[rid] = v
     # 学習モデル(predict_win.csv)の p_win マップ。本命/順位/買い目/1着確率・成績集計の主系統
-    # （2026-06-29: 学習モデルを予想の主役に復帰。本命1着的中 56.7%>API 54.9%。
-    #   荒れ度/点数/除外は hon_canon=API のまま＝backtestで回収率75.8%>フル切替74.3%）。
+    # （2026-06-29: 学習モデルを予想の主役に復帰。本命1着的中 56.7%>API 54.9%）。
     model_map = {}
     for (rid, w), pr in pred.items():
         v = to_float(pr.get("p_win"))
@@ -1338,6 +1364,19 @@ def main():
                 model_map[(rid, int(w))] = v
             except (ValueError, TypeError):
                 pass
+    # …本線2連複予想率(q2f)を hon帯スケールへ写像した値で hon_canon を上書き（ユーザー要望）。
+    # 鉄板/標準/波乱の帯・点数・3連単見送り・10万円チャレンジ選定は、単艇の1着確率でなく
+    # 「本線2連複が当たる堅さ」で判定する（鉄板＝q2f≥0.40＝実測2連複的中≈36%）。
+    # 下流の閾値(0.65/0.50/0.45)は不変。検証(33,935R): ROI 77.7% ≈ 現行77.8%・賭け金-17%。
+    mp = {}
+    for (rid, w), pr in pred.items():
+        v = to_float(pr.get("p_win"))
+        if v is not None:
+            mp.setdefault(rid, {})[w] = v
+    for rid, wm in mp.items():
+        ps = [wm.get(str(w)) if str(w) in wm else wm.get(w) for w in range(1, 7)]
+        if all(p is not None for p in ps) and sum(ps) > 0:
+            hon_canon[rid] = q2conf(pl_quinella_top(ps))
 
     all_dates = sorted({r["日付"] for r in rel})
     base = args.date or all_dates[-1]
@@ -1930,6 +1969,13 @@ function plTopF(s,k){
   out.sort((x,y)=>y[1]-x[1]);
   return out.slice(0,k);
 }
+// 荒れ度/点数の基準値＝本線2連複予想率(q2f・朝の学習モデル)を hon帯スケールへ写像。
+// q2f0.40→0.65(鉄板)/0.25→0.45(波乱境界)。下流の kEx/kTri/triOn/lvl 閾値は不変のまま
+// 「本命=1着が堅い」から「本線2連複が当たる堅さ」へ基準を切替える（検証: ROI維持・賭け金-17%）。
+function q2conf(r){
+  const s=r.b.map(x=>x[1]);const t=plTopF(s,1);const q=t.length?t[0][1]:0;
+  return q<=0.25?q/0.25*0.45:q<=0.40?0.45+(q-0.25)/0.15*0.20:Math.min(0.65+(q-0.40)/0.30*0.35,0.999);
+}
 // 順不同ペアの一致（2連複の的中判定）。c/act は [枠,枠]。
 function eqPair(c,act){return c&&act&&c.length===2&&act.length===2&&((c[0]===act[0]&&c[1]===act[1])||(c[0]===act[1]&&c[1]===act[0]));}
 // API確率→実1着率の較正（表示専用・区分線形）。D.cal はビルド時 isotonic/PAV の節点。
@@ -1963,7 +2009,10 @@ function honAnaS(s){
   const anaC=Math.min(1,calP(s[idx[3]]/1000)+calP(s[idx[4]]/1000)+calP(s[idx[5]]/1000));
   return {hon,ana,honC,anaC,lvl:lvl[0],lvlcls:lvl[1],hmLane:idx[0]+1,anaLane:idx[3]+1};
 }
-function honAna(r){return honAnaS(r.ab);}            // 主系統＝API（割合・荒れ度・穴の基準）
+// 本命確率/穴確率はAPI(r.ab)由来のまま。荒れ度ラベル(lvl)だけ本線2連複予想率(q2conf)で判定。
+function honAna(r){const o=honAnaS(r.ab);const c=q2conf(r);
+  const lv=c>=0.65?['鉄板','tetsu']:c<0.45?['波乱含み','haran']:['標準','std'];
+  o.lvl=lv[0];o.lvlcls=lv[1];return o;}
 // 対抗1艇（穴）＝本命を食う可能性が最も高い1艇＋その根拠タグ。
 // ★検証(残差テスト OOS 6,497R): 隣接艇の弱さ・隣ST・捲り屋×高機は【すべて p_win に織込済】＝残差≈0。
 //   よって対抗の最尤艇＝betScore（展示反映後）の2番手で、追加で当てる力は無い（本命飛び時44%が1着）。
@@ -2096,7 +2145,7 @@ function venueColor(c){return VC[(parseInt(c,10)||0)%VC.length];}
 function isHit(r){
   if(!hasResult(r))return null;
   const s=betScore(r);const ord=finishOrder(r);   // 買い目＝展示反映後（展示無ければ朝の学習モデル）
-  const hon=Math.max(...r.ab)/1000;const nEx=kEx(hon),nTri=kTri(hon);
+  const hon=q2conf(r);const nEx=kEx(hon),nTri=kTri(hon);   // 帯・点数の基準＝本線2連複予想率
   const ex=ord.slice(0,2),tri=ord.slice(0,3);
   const exHit=ex.length>=2&&plTopF(s,nEx).some(c=>eqPair(c[0],ex));
   const triHit=triOn(hon)&&tri.length>=3&&triBuyList(plTop(s,3,200),nTri,hon,laneRankMap(s)).some(c=>eqArr(c[0],tri));
@@ -2119,7 +2168,7 @@ function daySummary(date){
     nDone++;
     const fly=flySet(r);if(Object.keys(fly).length)nF++;
     const s=betScore(r);const ord=finishOrder(r);
-    const hon=Math.max(...r.ab)/1000;
+    const hon=q2conf(r);   // 帯・点数の基準＝本線2連複予想率
     const actEx=ord.slice(0,2),actTri=ord.slice(0,3);
     let hit=false;
     const ex=plTopF(s,kEx(hon));const exYen=allocYen(meriW(ex.map(c=>c[1]),hon),2000);   // 2連複
@@ -2188,9 +2237,9 @@ function summaryBar(){
   h+='<div class="anascope">穴予想の対象：'
     +['all','haran','std'].map(k=>'<button class="asb'+(anaScope===k?' on':'')+'" data-as="'+k+'">'+scLab[k]+'</button>').join('')+'</div>';
   const foot={
-    all:'「穴目回収率」＝標準帯(本命45-65%)は穴候補6点／波乱帯(本命45%未満)は対抗6点をアタマに置いた3連単6点をフル購入した場合の<b>合算</b>回収率（参考シミュ・各¥100均等・F返還・3連単のみ・詳細画面の穴予想と同じ買い方）。',
-    haran:'「穴目回収率／波乱帯」＝本命45%未満のレースで穴予想＝<b>対抗</b>（betScore2番手）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュ・各¥100均等・F返還・3連単のみ）。',
-    std:'「穴目回収率／標準帯」＝本命45-65%のレースで穴予想＝<b>穴候補</b>（API4番人気）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュ・各¥100均等・F返還・3連単のみ）。'};
+    all:'「穴目回収率」＝標準帯(本線2連複予想率25-40%)は穴候補6点／波乱帯(2連複予想率25%未満)は対抗6点をアタマに置いた3連単6点をフル購入した場合の<b>合算</b>回収率（参考シミュ・各¥100均等・F返還・3連単のみ・詳細画面の穴予想と同じ買い方）。',
+    haran:'「穴目回収率／波乱帯」＝本線2連複予想率25%未満のレースで穴予想＝<b>対抗</b>（betScore2番手）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュ・各¥100均等・F返還・3連単のみ）。',
+    std:'「穴目回収率／標準帯」＝本線2連複予想率25-40%のレースで穴予想＝<b>穴候補</b>（API4番人気）をアタマに置いた3連単6点をフル購入した場合の回収率（参考シミュ・各¥100均等・F返還・3連単のみ）。'};
   h+='<div class="sumf">'+foot[anaScope]+'</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
@@ -2287,7 +2336,7 @@ function listView(){
       +'<span class="hp">本命<b>'+Math.round(ha.honC*100)+'</b> 穴<b class="a">'+Math.round(ha.anaC*100)+'</b></span></span>';
     if(done){
       const s=betScore(r);const ord=finishOrder(r);      // 買い目＝展示反映後（展示無ければ朝の学習モデル）
-      const hon=Math.max(...r.ab)/1000;const nEx=kEx(hon),nTri=kTri(hon);   // 点数＝API本命確率
+      const hon=q2conf(r);const nEx=kEx(hon),nTri=kTri(hon);   // 点数の基準＝本線2連複予想率
       const ex=ord.slice(0,2);const tri=ord.slice(0,3);
       const exHit=ex.length>=2&&plTopF(s,nEx).some(c=>eqPair(c[0],ex));     // 2連複
       const triBuy=triBuyList(plTop(s,3,200),nTri,hon,laneRankMap(s)); // 標準帯は穴型を購入対象外
@@ -2321,7 +2370,7 @@ function recBadge(rec){if(rec==null)return '';const c=rec>=100?'rok':(rec>0?'ram
 function detailView(r){
   const ps=r.b.map(x=>x[1]);const s=ps;const mx=Math.max(...ps);   // 本命/順位/1着確率＝朝の学習モデル（ヘッドライン）
   const _tp=tenjiPred(r);const sb=_tp?_tp.prob.slice():ps;const exOn=!!_tp;   // 買い目＝展示反映後（exOn=展示あり・backtest+0.9〜1.3pt）
-  const honBand=Math.max(...r.ab)/1000;                            // 荒れ度/点数の基準＝API本命確率(backtestでAPI据置)
+  const honBand=q2conf(r);                            // 荒れ度/点数の基準＝本線2連複予想率(q2f写像)
   const done=hasResult(r);const ord=done?finishOrder(r):null;
   const actEx=(done&&ord.length>=2)?ord.slice(0,2):null, actTri=(done&&ord.length>=3)?ord.slice(0,3):null;
   const payEx=(r.po&&r.po.length>2)?r.po[2]:null, payTri=r.po?r.po[1]:null;   // 実配当（2連複/3連単・100円あたり）。的中行に配当・回収率を表示。
@@ -2365,13 +2414,13 @@ function detailView(r){
   if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
   // 本命確率 / 穴確率
   const ha=honAna(r);
-  h+='<div class="predhdr api">荒れ度の基準＝API簡易合成<span class="psub">勝率＋枠＋機力（鉄板/標準/穴・点数の判定に使用）</span></div>';
+  h+='<div class="predhdr api">荒れ度の基準＝本線2連複予想率<span class="psub">鉄板＝本線2連複の予想率≥40%（実測的中≈36%）。1着の堅さでなく「買い目が当たる堅さ」で鉄板/標準/波乱・点数を判定</span></div>';
   h+='<div class="sec">本命確率 / 穴確率<span class="kbadge" title="過去の実測1着率にもとづく補正（isotonic較正）。素のAPI確率は高い帯で実力を1割ほど過小評価していたため、実測ベースに直して表示">実測補正</span></div>';
   h+='<div class="ha"><div class="hacell"><div class="hak">本命確率</div><div class="hav hon">'
     +Math.round(ha.honC*100)+'%</div><div class="hsub">'+chip(ha.hmLane,'mc')+' '+r.b[ha.hmLane-1][0]+'</div></div>'
     +'<div class="hacell"><div class="hak">穴確率（4-6番手）</div><div class="hav ana">'
     +Math.round(ha.anaC*100)+'%</div><div class="hsub"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span></div></div></div>';
-  h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 4px">※確率は過去の実測1着率で較正済み（検証: 素のAPI値は本命が強い帯で+11〜12pt過小評価）。鉄板/標準/穴の帯・点数は従来どおり内部値で判定（backtest済みルールを変えないため）。</div>';
+  h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 4px">※本命確率/穴確率は過去の実測1着率で較正済み（表示専用）。鉄板/標準/波乱の帯・点数は<b>本線2連複予想率</b>で判定＝1着だけでなく2着まで含めた「買い目が当たる堅さ」で分類（検証33,935R: 現行API基準とROI同等・賭け金-17%）。</div>';
   // 本線(PL上位1点)の予想率＝『買い目が当たる堅さ(本命度)』。1着確率より「当たる堅さ」をよく表す
   // （検証3.4万R: 同じ本命確率でもこの値が高いほど2連単的中+2〜11pt・較正良好）。表示のみ・点数据置。
   {const q2f=plTopF(ps,1),q2t=plTop(ps,2,1);
@@ -2679,7 +2728,7 @@ function gameView(){
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,false);
   else h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend"><b>新ルール</b>：<b>毎日10万円</b>を支給し、鉄板レース（本命確率65％以上）だけを厳選、1レース予算の約12％を2連複＋3連単（確率比例配分）に投票。'
+  h+='<div class="legend"><b>新ルール</b>：<b>毎日10万円</b>を支給し、鉄板レース（本線2連複予想率40％以上）だけを厳選、1レース予算の約12％を2連複＋3連単（確率比例配分）に投票。'
     +'<b>毎日フラットに10万円</b>で勝負（前日の勝ち分を翌日に回すルールは廃止）。実際の配当で精算し、フライングは返還。'
     +'各日の行を<b>タップするとその日に何を買ったか（組番・金額）と結果</b>が開きます。✓＝的中。※控除率25％の壁があり増え続ける保証はありません＝AIの実力を可視化する実験です。</div>';
   h+='</div>';
@@ -2701,7 +2750,7 @@ function gameViewAna(){
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,true);
   else h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend">穴狙いルール（実験）：<b>毎日10万円</b>を支給し、<b>穴帯レース（本命確率45％未満）だけ</b>を対象に、1レース予算の約1％を<b>穴予想＝対抗（予想2番手）アタマ6点</b>（3連単・帯別方式）に均等投票。'
+  h+='<div class="legend">穴狙いルール（実験）：<b>毎日10万円</b>を支給し、<b>波乱帯レース（本線2連複予想率25％未満）だけ</b>を対象に、1レース予算の約1％を<b>穴予想＝対抗（予想2番手）アタマ6点</b>（3連単・帯別方式）に均等投票。'
     +'毎日フラットに10万円で勝負（前日の勝ち分を翌日に回すルールは廃止）。各日の行を<b>タップすると6点の組番と結果</b>が開きます。'
     +'※波乱帯の穴予想は対抗6点でbacktest回収88.2％だが高分散＝<b>「穴を追い続けるとどうなるか」を可視化する実験</b>。本家（鉄板）と見比べてください。</div>';
   h+='</div>';
@@ -2804,9 +2853,9 @@ function recentRecoveryView(){
       +'<td class="num"><b class="'+recCls(rr)+'">'+rr+'%</b></td></tr>';});
   h+='</tbody></table></div>';
   const anaDesc={
-    all:'標準帯（本命45-65％）は穴候補（API4番人気）アタマ6点／波乱帯（本命45％未満）は対抗（予想2番手）アタマ6点',
-    haran:'波乱帯（本命確率45％未満）で穴予想＝対抗（予想2番手）アタマ6点',
-    std:'標準帯（本命45-65％）で穴予想＝穴候補（API4番人気）アタマ6点'};
+    all:'標準帯（本線2連複予想率25-40％）は穴候補（API4番人気）アタマ6点／波乱帯（2連複予想率25％未満）は対抗（予想2番手）アタマ6点',
+    haran:'波乱帯（本線2連複予想率25％未満）で穴予想＝対抗（予想2番手）アタマ6点',
+    std:'標準帯（本線2連複予想率25-40％）で穴予想＝穴候補（API4番人気）アタマ6点'};
   h+='<div class="legend"><b>2連複・3連単</b>＝実際にサイトが買う買い目の回収率（購入対象）。'
     +'<b style="color:#c79bff">穴目（'+scLab[anaScope]+'）</b>＝'+anaDesc[anaScope]+'を3連単で買った場合の<b>参考シミュレーション（実際は購入しない）</b>（帯別方式）。'
     +'的中していれば「穴予想的中」＝万舟級の的中。帯別方式のbacktest回収＝標準帯73.3％／波乱帯88.2％（合算75.7％）だが高分散で日別は大きく振れます。'
@@ -2856,7 +2905,7 @@ function statsView(){
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
     h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連複≤3/3連単≤8点）。'
-      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を全帯爆発重視で配分（薄い高配当目に振り切り・EVフラット）・穴帯(本命&lt;45%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
+      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を全帯爆発重視で配分（薄い高配当目に振り切り・EVフラット）・波乱帯(本線2連複予想率&lt;25%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
       +'回収率＝Σ(配当×賭け金/100)÷Σ賭け金。100%超で利益。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
@@ -2876,8 +2925,8 @@ function statsView(){
   // 鉄板・標準・穴 と予想した場合の 的中率／回収率（系統は上のトグルに連動）
   if(RG&&RG.length&&RG.some(r=>r.n)){
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・標準・穴 別の的中率と回収率（2026年〜）</div>';
-    h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本命確率≥65％ ／ <b>標準</b>＝45–65％ ／ <b>穴</b>＝本命確率&lt;45％（波乱含み）。'
-      +'<b>荒れ度・点数はAPI本命確率で判定</b>。'
+    h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本線2連複予想率≥40％ ／ <b>標準</b>＝25–40％ ／ <b>穴</b>＝本線2連複予想率&lt;25％（波乱含み）。'
+      +'<b>荒れ度・点数は本線2連複予想率で判定</b>（1着の堅さでなく買い目が当たる堅さ）。'
       +'買い目＝確率連動の変動点数（2連複≤3／3連単≤8点・各100円）。</div>';
     h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命1着　'
       +'<span style="color:#43c59e">■</span> 2連複（≤3点）　'
@@ -3208,7 +3257,7 @@ function resultSweep(){
 // 対象は鉄板(API本命確率≥0.65)のみ・締切40分前〜締切・2分スロットル・サーバ側90秒キャッシュ
 // なので公式サイトへの負荷は人が見るのと同程度。取得失敗・発売前(オッズ0)は表示なし。
 const oddsLast={};                                    // race_id → 最終取得エポックms
-function isTetsu(r){return Math.max(...r.ab)/1000>=0.65;}
+function isTetsu(r){return q2conf(r)>=0.65;}
 function top2Combo(r){const t=plTop(betScore(r),2,1);return t.length?t[0][0]:null;}
 function oddsFetch(r){
   const now=Date.now();
