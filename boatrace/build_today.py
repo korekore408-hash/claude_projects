@@ -1055,9 +1055,7 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
         return staked, returned, nbet, nhit, bets
 
     grant = float(daily_grant)
-    cum = 0.0            # 累計損益（払戻−賭け金）
-    peak = 0.0
-    rows = []
+    all_rows = []
     for d in sorted(by_date):
         if d == base:
             continue                       # 当日は下でプレビュー
@@ -1068,13 +1066,19 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
         staked, returned, nbet, nhit, bets = play_day(picks, budget)
         if nbet == 0:
             continue
-        day_pl = returned - staked
-        cum += day_pl
+        all_rows.append({"d": d, "mon": d[:7], "n": len(picks), "nbet": nbet,
+                         "nhit": nhit, "budget": round(budget),
+                         "stake": round(staked), "ret": round(returned),
+                         "pl": round(returned - staked), "bets": bets})
+
+    # 毎月リセット: パネルは最新月ぶんのみ。累計損益は月初にゼロへ戻す。
+    cur_mon = all_rows[-1]["mon"] if all_rows else (base[:7] if base else None)
+    rows = [r for r in all_rows if r["mon"] == cur_mon]
+    cum = peak = 0.0
+    for r in rows:
+        cum += r["pl"]
         peak = max(peak, cum)
-        rows.append({"d": d, "n": len(picks), "nbet": nbet, "nhit": nhit,
-                     "budget": round(budget), "stake": round(staked),
-                     "ret": round(returned), "pl": round(day_pl),
-                     "cum": round(cum), "bets": bets})
+        r["cum"] = round(cum)
 
     # 当日プレビュー（結果待ち）: 予算＝毎日10万円。
     pending = None
@@ -1084,10 +1088,11 @@ def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
             pending = {"d": base, "n": len(bp), "budget": round(grant)}
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
-            "peak": round(peak),
+            "peak": round(peak), "mon": cur_mon,
             "staked": round(sum(r["stake"] for r in rows)),
             "ret": round(sum(r["ret"] for r in rows)),
-            "rows": rows, "pending": pending, "from": start_date}
+            "rows": rows, "pending": pending,
+            "from": (cur_mon + "-01") if cur_mon else start_date}
 
 
 def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays=30):
@@ -1297,9 +1302,7 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         return staked, returned, nbet, nhit, bets
 
     grant = float(daily_grant)
-    cum = 0.0
-    peak = 0.0
-    rows = []
+    all_rows = []
     for d in sorted(by_date):
         if d == base:
             continue
@@ -1310,13 +1313,19 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         staked, returned, nbet, nhit, bets = play_day(picks, budget)
         if nbet == 0:
             continue
-        day_pl = returned - staked
-        cum += day_pl
+        all_rows.append({"d": d, "mon": d[:7], "n": len(picks), "nbet": nbet,
+                         "nhit": nhit, "budget": round(budget),
+                         "stake": round(staked), "ret": round(returned),
+                         "pl": round(returned - staked), "bets": bets})
+
+    # 毎月リセット: パネルは最新月ぶんのみ。累計損益は月初にゼロへ戻す。
+    cur_mon = all_rows[-1]["mon"] if all_rows else (base[:7] if base else None)
+    rows = [r for r in all_rows if r["mon"] == cur_mon]
+    cum = peak = 0.0
+    for r in rows:
+        cum += r["pl"]
         peak = max(peak, cum)
-        rows.append({"d": d, "n": len(picks), "nbet": nbet, "nhit": nhit,
-                     "budget": round(budget), "stake": round(staked),
-                     "ret": round(returned), "pl": round(day_pl),
-                     "cum": round(cum), "bets": bets})
+        r["cum"] = round(cum)
 
     pending = None
     if base and base in by_date:
@@ -1325,10 +1334,11 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
             pending = {"d": base, "n": len(bp), "budget": round(grant)}
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
-            "peak": round(peak),
+            "peak": round(peak), "mon": cur_mon,
             "staked": round(sum(r["stake"] for r in rows)),
             "ret": round(sum(r["ret"] for r in rows)),
-            "rows": rows, "pending": pending, "from": start_date}
+            "rows": rows, "pending": pending,
+            "from": (cur_mon + "-01") if cur_mon else start_date}
 
 
 def main():
@@ -2711,7 +2721,7 @@ function gameDays(G,ana){
       +'<span class="gdn">'+r.nbet+'R</span>'
       +'<span class="gdb">予算'+yen(r.budget)+'</span>'
       +'<span class="gdp" style="color:'+(rp?'#43c59e':'#e06b6b')+'">'+(rp?'+':'')+yen(r.pl)+'</span>'
-      +'<span class="gdc">累計'+(r.cum>=0?'+':'')+yen(r.cum)+'</span>'
+      +'<span class="gdc">月累計'+(r.cum>=0?'+':'')+yen(r.cum)+'</span>'
       +'</summary><div class="gbets">'
       +'<div class="gbsum">賭け金'+yen(r.stake)+' → 払戻'+yen(r.ret)+'</div>'
       +((r.bets&&r.bets.length)?r.bets.map(b=>gBetRace(b,ana)).join(''):'<div class="meta">対象レースなし</div>')
@@ -2726,11 +2736,12 @@ function gameView(){
   const G=D.game; if(!G||G.grant==null)return '';
   const yen=v=>'¥'+Math.round(v).toLocaleString('en-US');
   const pl=G.pl, up=pl>=0, col=up?'#43c59e':'#e06b6b', grantTot=G.grant*G.days;
+  const ml=G.mon?(+G.mon.slice(5,7))+'月':'';
   let h='<div style="margin-top:8px;border:1px solid #2a3550;border-radius:12px;padding:14px;background:linear-gradient(180deg,#141c2e,#0f1522)">';
-  h+='<div style="font-size:16px;font-weight:700;color:#ffd66b">💰 毎日10万円チャレンジ <span style="font-size:12px;color:#8b96a8;font-weight:500">（7/1〜・鉄板・毎日10万円支給）</span></div>';
+  h+='<div style="font-size:16px;font-weight:700;color:#ffd66b">💰 毎日10万円チャレンジ <span style="font-size:12px;color:#8b96a8;font-weight:500">（'+ml+'・鉄板・毎日10万円支給・毎月リセット）</span></div>';
   h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:8px 0 2px">'
     +'<span style="font-size:30px;font-weight:800;color:'+col+'">'+(up?'+':'')+yen(pl)+'</span>'
-    +'<span style="font-size:13px;font-weight:700;color:#8b96a8">累計損益</span></div>';
+    +'<span style="font-size:13px;font-weight:700;color:#8b96a8">'+ml+'の損益</span></div>';
   h+='<div style="font-size:11px;color:#8b96a8">精算 '+G.days+'日 ／ 支給総額 '+yen(grantTot)+' ／ 賭け金 '+yen(G.staked)+' ／ 払戻 '+yen(G.ret)+' ／ 最高到達 '+(G.peak>=0?'+':'')+yen(G.peak)+'</div>';
   if(G.pending&&G.pending.n)
     h+='<div style="font-size:12px;color:#7fb2ff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：鉄板 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円）で投票予定（結果は翌朝反映）</div>';
@@ -2748,11 +2759,12 @@ function gameViewAna(){
   const G=D.game_ana; if(!G||G.grant==null)return '';
   const yen=v=>'¥'+Math.round(v).toLocaleString('en-US');
   const pl=G.pl, up=pl>=0, col=up?'#43c59e':'#e06b6b', grantTot=G.grant*G.days;
+  const ml=G.mon?(+G.mon.slice(5,7))+'月':'';
   let h='<div style="margin-top:12px;border:1px solid #3a2a50;border-radius:12px;padding:14px;background:linear-gradient(180deg,#1c1430,#140f22)">';
-  h+='<div style="font-size:16px;font-weight:700;color:#c79bff">🕳️ 毎日10万円チャレンジ【穴帯】 <span style="font-size:12px;color:#9a8bb8;font-weight:500">（7/1〜・穴だけ追う実験）</span></div>';
+  h+='<div style="font-size:16px;font-weight:700;color:#c79bff">🕳️ 毎日10万円チャレンジ【穴帯】 <span style="font-size:12px;color:#9a8bb8;font-weight:500">（'+ml+'・穴だけ追う実験・毎月リセット）</span></div>';
   h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:8px 0 2px">'
     +'<span style="font-size:30px;font-weight:800;color:'+col+'">'+(up?'+':'')+yen(pl)+'</span>'
-    +'<span style="font-size:13px;font-weight:700;color:#9a8bb8">累計損益</span></div>';
+    +'<span style="font-size:13px;font-weight:700;color:#9a8bb8">'+ml+'の損益</span></div>';
   h+='<div style="font-size:11px;color:#9a8bb8">精算 '+G.days+'日 ／ 支給総額 '+yen(grantTot)+' ／ 賭け金 '+yen(G.staked)+' ／ 払戻 '+yen(G.ret)+' ／ 最高到達 '+(G.peak>=0?'+':'')+yen(G.peak)+'</div>';
   if(G.pending&&G.pending.n)
     h+='<div style="font-size:12px;color:#c79bff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：穴帯 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円）で投票予定（結果は翌朝反映）</div>';
