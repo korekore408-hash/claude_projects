@@ -785,6 +785,34 @@ def makuri_rates(glob_pat="data/k*.csv", min_wins=5):
             for reg, w in win.items() if w >= min_wins}
 
 
+def kimarite_rates(glob_pat="data/k*.csv", min_wins=8):
+    """全K-fileから 登番 → [まくり系率, 差し率]（勝ち星に占める割合）。
+    まくり系=まくり+まくり差し（外から一発の荒らし）／差し=内を突く型。
+    各艇行に『まくり型/差し型』の傾向バッジを出すため。
+    検証(35,647勝の実測): 決まり手はコースが主因（1コース逃げ95%、4コースまくり48%等）。
+    個人差は弱く前後半相関はまくり系 r≈0.26・差し r≈0.16＝的中を動かす力は無い。
+    よって『進入コース×本人の型』の傾向タグ（参考）としてのみ表示。勝ち星 min_wins 未満は None。"""
+    win, mak, sas = {}, {}, {}
+    for p in sorted(glob.glob(glob_pat)):
+        try:
+            for r in load(p):
+                if (r.get("着順") or "").strip() != "1":
+                    continue
+                reg = (r.get("登番") or "").strip()
+                if not reg:
+                    continue
+                km = (r.get("決まり手") or "").strip()
+                win[reg] = win.get(reg, 0) + 1
+                if km in ("まくり", "まくり差し"):
+                    mak[reg] = mak.get(reg, 0) + 1
+                elif km == "差し":
+                    sas[reg] = sas.get(reg, 0) + 1
+        except OSError:
+            continue
+    return {reg: [round(mak.get(reg, 0) / w, 3), round(sas.get(reg, 0) / w, 3)]
+            for reg, w in win.items() if w >= min_wins}
+
+
 def st_habit_rates(glob_pat="data/k*.csv", min_races=15):
     """全K-fileから 登番 → 相対ST平均（そのコースの平均STからの差, 秒）。
     負=コース平均より速い『行く型(先手)』／正=遅い『出遅れ気味』。STはコースで
@@ -1440,6 +1468,7 @@ def main():
 
     kres = load_kresult(keep)
     mk_map = makuri_rates()                          # 登番→まくり率（根拠タグ用）
+    km_map = kimarite_rates()                         # 登番→[まくり系率,差し率]（型バッジ用）
     sth_map = st_habit_rates()                        # 登番→相対ST平均（先手/出遅れタグ用）
     payout = load_payouts(keep)
     # 配当一覧（結果表示用）: K-file(k*.txt)の全7券種を組合せ+配当で埋め込む。keep日付のみ解析。
@@ -1509,6 +1538,9 @@ def main():
                     # 枠ごと 相対ST平均（負=先手/正=出遅れ, 該当なしは null）
                     "sth": [sth_map.get(rc["feat"][w].get("reg"))
                             for w in range(1, 7)],
+                    # 枠ごと [まくり系率, 差し率]（まくり型/差し型バッジ用, 該当なしは null）
+                    "km": [km_map.get(rc["feat"][w].get("reg"))
+                           for w in range(1, 7)],
                     # 枠ごと [公式級別 A1/A2/B1/B2, AIオリジナル実力ランク S/A/B/C/D]
                     "rk": [[official_rank(rc["feat"][w].get("cl")),
                             ai_player_rank(rc["feat"][w])]
@@ -1741,6 +1773,9 @@ HTML = r"""<!DOCTYPE html>
   .sthb{display:inline-block;font-size:10px;font-weight:700;padding:0 6px;margin-left:5px;border-radius:8px;vertical-align:middle;white-space:nowrap}
   .sthb.go{background:#12352a;color:#4fd6a0;border:0.5px solid #2f7a5e}
   .sthb.slow{background:#3a2f18;color:#e0b054;border:0.5px solid #6e5626}
+  .kmb{display:inline-block;font-size:10px;font-weight:700;padding:0 6px;margin-left:5px;border-radius:8px;vertical-align:middle;white-space:nowrap}
+  .kmb.mk{background:#3a1b2a;color:#f08fb0;border:0.5px solid #7a3a55}
+  .kmb.sa{background:#1b2a3a;color:#7fb8e6;border:0.5px solid #3a5a7a}
   .crow{display:flex;align-items:center;gap:6px;padding:6px 2px;border-bottom:0.5px solid #2a2f3a}
   .crow.hit{background:#10362c;border-radius:5px}
   .crow.evplus{background:#173a1f;border-radius:5px;box-shadow:inset 3px 0 0 #43c59e}
@@ -1819,6 +1854,20 @@ HTML = r"""<!DOCTYPE html>
   .hav{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;margin:2px 0;line-height:1.1}
   .hav.hon{color:#ffd54a}.hav.ana{color:#e0a93b}
   .hsub{font-size:12px;color:#cdd6e2}
+  .shp{display:flex;gap:10px;align-items:center;margin:4px 0 10px;padding:8px 10px;border-radius:8px;font-size:12px;border:1px solid #2a3142}
+  .shp.sharp{background:#10241c;border-color:#2f6f57}
+  .shp.mid{background:#20242e;border-color:#3a4152}
+  .shp.flat{background:#2a1620;border-color:#7a3a55}
+  .shp-l{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:64px}
+  .shp-bdg{font-weight:700}
+  .shp.sharp .shp-bdg{color:#4fd6a0}
+  .shp.mid .shp-bdg{color:#cdd6e2}
+  .shp.flat .shp-bdg{color:#f08fb0}
+  .shbars{display:flex;align-items:flex-end;gap:2px;height:26px}
+  .shbar{width:6px;background:#6b7da0;border-radius:1px;display:inline-block}
+  .shp.sharp .shbar{background:#43c59e}
+  .shp.flat .shbar{background:#e0708f}
+  .shp-t{flex:1;color:#cdd6e2;line-height:1.45}
   .lvl{font-size:11px;font-weight:700;border-radius:8px;padding:2px 9px;display:inline-block}
   .lvl.tetsu{background:#10362c;color:#43c59e}
   .lvl.std{background:#2a2f3a;color:#cdd6e2}
@@ -1992,6 +2041,35 @@ function plTopF(s,k){
 function q2conf(r){
   const s=r.b.map(x=>x[1]);const t=plTopF(s,1);const q=t.length?t[0][1]:0;
   return q<=0.25?q/0.25*0.45:q<=0.50?0.45+(q-0.25)/0.25*0.20:Math.min(0.65+(q-0.50)/0.20*0.35,0.999);
+}
+// 決まり手タイプ・バッジ。km=[まくり系率,差し率]（過去の勝ち星に占める割合）。course=進入(枠)。
+// 検証(35,647勝): 決まり手はコースが主因（1コース逃げ95%/4コースまくり48%）で個人差は弱い
+// （前後半相関 まくり系0.26・差し0.16）。よって「外の枠×まくり型＝荒れの目」「内寄り×差し型」の
+// 傾向タグ(参考)のみ表示。逃げは1コースの本分なので出さない。
+function kimBadge(km,course){
+  if(!km)return '';
+  const mk=km[0],sa=km[1];
+  if(course>=3&&mk>=0.40)
+    return '<span class="kmb mk" title="勝ち星の'+Math.round(mk*100)+'%がまくり系（まくり/まくり差し）。外の進入なので一発でイン勢を飛ばす荒れの目（傾向・参考。決まり手はコースが主因で個人差は弱い）">⚡まくり型</span>';
+  if(course>=2&&course<=4&&sa>=0.25)
+    return '<span class="kmb sa" title="勝ち星の'+Math.round(sa*100)+'%が差し。内を突いて浮いた先行艇を差し込む型（傾向・参考）">差し型</span>';
+  return '';
+}
+// 決着の型＝本線2連複 上位5点の予想率の分布の形。flat=P1−P5（大きいほど本線が抜け、小さいほど団子）。
+// 検証(35,599R): flatは本線予想率(P1)とr=0.99でほぼ同義だが「上位5点の形」を直接見せる指標。
+// この形で本命(1番人気)と穴(4-6番人気)の1着率が大きく入れ替わる:
+//   団子(flat<12pt): 本命≈33-37% / 穴≈25-29%（拮抗＝本命が飛ぶ）
+//   抜け(flat≥30pt): 本命≈62% / 穴≈8-9%（本命圧勝）
+function raceShape(r){
+  const s=r.b.map(x=>x[1]);const t=plTopF(s,5);
+  const p=t.map(c=>c[1]);while(p.length<5)p.push(0);
+  const flat=(p[0]||0)-(p[4]||0);
+  if(flat>=0.30)return {p:p,flat:flat,lab:'本線濃厚',cls:'sharp',hon:'約6割',ana:'約1割',
+    note:'上位が抜けて本命が飛びにくい型。本線（本命絡み）を厚く。'};
+  if(flat<0.12)return {p:p,flat:flat,lab:'大混戦',cls:'flat',hon:'約3〜4割',ana:'約2〜3割',
+    note:'上位が団子で本命と穴が拮抗＝本命が飛びやすい型。本線1点は当てにくく、手広く／見送りも一考。'};
+  return {p:p,flat:flat,lab:'拮抗',cls:'mid',hon:'約5割',ana:'1〜2割',
+    note:'本命やや優位だが相手は広め。ヒモを絞りきれない中間の型。'};
 }
 // 順不同ペアの一致（2連複の的中判定）。c/act は [枠,枠]。
 function eqPair(c,act){return c&&act&&c.length===2&&act.length===2&&((c[0]===act[0]&&c[1]===act[1])||(c[0]===act[1]&&c[1]===act[0]));}
@@ -2409,6 +2487,7 @@ function detailView(r){
      +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
         +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
      +(r.sth&&r.sth[w]!=null?(r.sth[w]<=-0.015?'<span class="sthb go" title="過去約1年の平均STがこのコース標準より'+(Math.abs(r.sth[w])*100).toFixed(1)+'/100秒速い＝スタート行く型（傾向。前後半相関0.74で安定・1走の予言力は弱い参考）">⚡先手</span>':(r.sth[w]>=0.020?'<span class="sthb slow" title="過去約1年の平均STがこのコース標準より'+(r.sth[w]*100).toFixed(1)+'/100秒遅い＝出遅れ気味（傾向・参考）">△出遅れ</span>':'')):'')
+     +kimBadge(r.km&&r.km[w],w+1)
      +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(pm/10).toFixed(1)+'%</span></div>';});
   h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">'
@@ -2438,6 +2517,14 @@ function detailView(r){
     +'<div class="hacell"><div class="hak">穴確率（4-6番手）</div><div class="hav ana">'
     +Math.round(ha.anaC*100)+'%</div><div class="hsub"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span></div></div></div>';
   h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 4px">※本命確率/穴確率は過去の実測1着率で較正済み（表示専用）。鉄板/標準/波乱の帯・点数は<b>本線2連複予想率</b>で判定＝1着だけでなく2着まで含めた「買い目が当たる堅さ」で分類（検証33,935R: 現行API基準とROI同等・賭け金-17%）。</div>';
+  // 決着の型（本線2連複 上位5点の形）＝本命/穴の見立て。団子ほど本命が飛び穴と拮抗、抜けるほど本命濃厚。
+  {const sh=raceShape(r);
+   const mx=Math.max.apply(null,sh.p.concat(0.001));
+   const bars=sh.p.map((v,i)=>'<span class="shbar" style="height:'+Math.max(v/mx*100,5).toFixed(0)+'%" title="'+(i+1)+'位 '+(v*100).toFixed(1)+'%"></span>').join('');
+   h+='<div class="shp '+sh.cls+'"><div class="shp-l"><span class="shp-bdg">'+sh.lab+'</span>'
+     +'<div class="shbars" title="本線2連複 上位5点の予想率（左=1位）。段差が大きいほど本線が抜け、平ら＝団子で大混戦">'+bars+'</div></div>'
+     +'<div class="shp-t"><b>決着イメージ</b>：'+sh.note
+     +'<br><span style="color:#9aa3b2">この型の実測（35,599R）：本命(1番人気)1着 <b>'+sh.hon+'</b> ／ 穴(4-6番人気)1着 <b>'+sh.ana+'</b></span></div></div>';}
   // 本線(PL上位1点)の予想率＝『買い目が当たる堅さ(本命度)』。1着確率より「当たる堅さ」をよく表す
   // （検証3.4万R: 同じ本命確率でもこの値が高いほど2連単的中+2〜11pt・較正良好）。表示のみ・点数据置。
   {const q2f=plTopF(ps,1),q2t=plTop(ps,2,1);
