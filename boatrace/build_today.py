@@ -887,11 +887,12 @@ def cause_comment(pm, fin, kr):
     return "ズレ要因：" + "・".join(r[:2]) + "。"
 
 
-def recent_stats(out, payout, pmkey="b"):
+def recent_stats(out, payout, pmkey="b", hon_map=None):
     """前日・前々日（結果のある日）の場別 2連複/3連単 的中率・回収率。
     pmkey で順位付けスコアの系統を切替（"b"=従来モデル / "ab"=API予想）。
     ★買い目はサイト本体（買い目UI／上部サマリー daySummary）と同一ポリシーで集計＝「実際に買った場合」:
-      - 荒れ度・点数はレース共通＝API本命確率(r.ab)で固定。
+      - 荒れ度・点数はレース共通＝本線2連複予想率(q2conf 写像 hon_map)で固定。
+        hon_map 未指定のレースはAPI本命確率(r.ab)へフォールバック。
       - 2連複＝確率上位 k_ex（全帯）。3連単＝確率上位 k_tri、ただし
         **穴帯(本命<0.45)は買わない**・**標準帯(0.45-0.65)は穴型(5-6番手絡み)を除外**(triBuyList)。
       - 各券種に¥2,000を確率比例配分(allocYen)。**非完走(F等)艇を含む買い目は賭け金を投資から除外(返還)**。
@@ -908,8 +909,11 @@ def recent_stats(out, payout, pmkey="b"):
                        key=lambda w: fins[w - 1])
         if fins[order[0] - 1] != 1:
             continue
-        # 荒れ度・点数はレース共通＝API本命確率で固定（系統別は sv の順位のみ）。
-        hon = max(r["ab"]) / 1000.0
+        # 荒れ度・点数はレース共通＝本線2連複予想率(q2conf 写像)で固定（系統別は sv の順位のみ）。
+        # サイト本体(daySummary/買い目UI)・場別/regime と同一基準。未算出レースのみAPI本命確率へフォールバック。
+        hon = hon_map.get(r["id"]) if hon_map is not None else None
+        if hon is None:
+            hon = max(r["ab"]) / 1000.0
         kx, kt = k_ex(hon), k_tri(hon)
         po = payout.get(r["id"], (0, 0, 0))
         # 非完走（フライング等）艇＝着順なし。その艇を含む買い目は返還＝賭け金から除外。
@@ -955,7 +959,7 @@ def recent_stats(out, payout, pmkey="b"):
                 round(a["ret3"] / a["inv3"] * 100) if a["inv3"] else 0]
 
     rows = [stat(a) for a in ag.values()]
-    rows.sort(key=lambda x: x[3], reverse=True)     # 2連単回収率の降順
+    rows.sort(key=lambda x: x[3], reverse=True)     # 2連複回収率の降順
     T = {k: sum(a[k] for a in ag.values()) for k in
          ["n2", "h2", "ret2", "inv2", "n3", "h3", "ret3", "inv3"]}
     T["v"] = "全場"
@@ -1613,7 +1617,7 @@ def main():
     # 学習モデル（主系統）の全履歴から場別成績・荒れ度別・直近を算出。
     # 順位付け＝学習モデル(model_map/"b")、荒れ度・点数の基準＝API本命確率(hon_canon)で共通。
     vstats_api = venue_stats(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
-    recent_api = recent_stats(out, payout, "b")
+    recent_api = recent_stats(out, payout, "b", hon_canon)
     regime_api = regime_result(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
 
     rsp = rival_terciles(pred, args.stats_from)
