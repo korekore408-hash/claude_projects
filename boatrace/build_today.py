@@ -1755,6 +1755,9 @@ HTML = r"""<!DOCTYPE html>
   .kmlab{font-size:12px;color:#cdd6e2;background:#2a2f3a;border-radius:6px;padding:1px 8px;margin-left:6px}
   .cause{font-size:12px;color:#e0c896;background:#241f15;border-left:3px solid #a8730a;border-radius:0 6px 6px 0;padding:7px 10px;margin:6px 0;line-height:1.6}
   .cause .h{color:#b89a5a;font-size:11px;margin-right:6px}
+  .cause.hn{color:#cdd6e2;background:#161d26;border-left-color:#5dc7e0}
+  .cause.hn .h{color:#7fb2ff}
+  .hn-o{color:#43c59e;font-weight:700}.hn-m{color:#e0a93b;font-weight:700}.hn-x{color:#9aa3b2}
   .rbar{display:flex;align-items:center;gap:6px;margin:8px 0;flex-wrap:wrap}
   .rlab{font-size:12px;color:#9aa3b2}
   .arr{color:#5b6472;font-size:12px}
@@ -2093,6 +2096,39 @@ function kTri(hon){return hon>=0.65?3:hon>=0.50?7:8;}  // 鉄板=3点(2026-07-06
 // 穴帯(本命<0.45)は3連単を買わない。穴の3連単は回収72.9%(資金を溶かす主犯)、2連単は83.4%で
 // 下支え。穴3連単のみ停止で全体回収率 77.4%→78.2%(+0.8pt)・賭け金▲16%(backtest no_ana_tri)。
 function triOn(hon){return hon>=0.45;}
+// 反省会：結果が出た後、その決着（1-2着/1-2-3着）が本線の何点目だったか＝
+// 「あと何点買えば獲れたか」を出す。現行の買い点数(kEx/kTri)と突き合わせて
+// 的中/あと◯点/圏外 を表示。順位は朝の学習モデル(p_win)のPL予想での序列。
+function hanseiRank(list,eq,act){for(let i=0;i<list.length;i++){if(eq(list[i][0],act))return i+1;}return 0;}
+function hansei(r){
+  if(!hasResult(r))return '';
+  const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
+  const hon=q2conf(r),nEx=kEx(hon),nTri=kTri(hon),triBuy=triOn(hon);
+  const mc=w=>chip(w,'mc');
+  const verdict=(rk,buy,shown)=>{
+    if(!rk)return '<span class="hn-x">圏外（予想対象外・0点でも不可）</span>';
+    const need='本線<b>'+rk+'点目</b>（'+rk+'番人気）';
+    if(!shown)return need+' → <span class="hn-x">この帯は見送り</span>：'+rk+'点買えば獲れた';
+    if(rk<=buy)return need+' → <span class="hn-o">現行'+buy+'点で的中</span>';
+    return need+' → <span class="hn-m">あと'+(rk-buy)+'点で届いた</span>（現行'+buy+'点／'+rk+'点買えば的中）';
+  };
+  let body='';
+  if(ord.length>=2){
+    const act=[ord[0],ord[1]];const rk=hanseiRank(plTopF(s,15),eqPair,act);
+    body+='<div style="margin:2px 0">2連複 '+mc(Math.min(act[0],act[1]))+'='+mc(Math.max(act[0],act[1]))
+      +'：'+verdict(rk,nEx,true)+'</div>';
+  }
+  if(ord.length>=3){
+    const act=[ord[0],ord[1],ord[2]];const rk=hanseiRank(plTop(s,3,120),eqArr,act);
+    body+='<div style="margin:2px 0">3連単 '+mc(act[0])+'&rarr;'+mc(act[1])+'&rarr;'+mc(act[2])
+      +'：'+verdict(rk,nTri,triBuy)+'</div>';
+  }else{
+    body+='<div style="margin:2px 0;color:#7e8796">3連単：3着まで確定せず（F/失格）＝反省対象外</div>';
+  }
+  return '<div class="cause hn"><span class="h">反省会（何点買えば獲れたか）</span>'
+    +body
+    +'<div style="font-size:11px;color:#7e8796;margin-top:3px">※順位＝朝の学習モデルのPL予想での序列。現行の買い点数は 2連複'+nEx+'点／3連単'+(triBuy?nTri+'点':'見送り')+'（荒れ度連動）。結果論の答え合わせで、次の点数設計の参考に。</div></div>';
+}
 // 本命確率/穴確率/荒れ度/穴筆頭。s=per-mille p_win 配列。
 // 本命=モデル1番手(p_win最大)。穴=モデル順位4-6(=軽視された艇)の1着。
 // 検証(29,233R OOS): 本命確率はキャリブ良好、穴率はΣp_win(4-6)とほぼ一致(平均13%)。
@@ -2645,6 +2681,7 @@ function detailView(r){
       h+='<div class="cause" style="border-left-color:#5dc7e0;color:#cdd6e2"><span class="h" style="color:#7fb2ff">買えてた場合の妙味</span>'
         +evrow('2連複',actEx,(r.po.length>2?r.po[2]:null),pfOf,'=')+'<br>'+evrow('3連単',actTri,r.po[1],plOf)+'</div>';
     }
+    h+=hansei(r);     // 反省会：その決着が本線何点目だったか＝何点買えば獲れたか
     h+=payTable(r);   // 全7券種の配当一覧（結果が出たレースのみ）
     h+=bh;            // 出走後は2連複/3連単の成績（的中/圏外・配当・回収）を結果の直下に表示
   }
