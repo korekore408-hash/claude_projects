@@ -1837,6 +1837,11 @@ HTML = r"""<!DOCTYPE html>
   .rk{font-size:11px;color:#5b6472;min-width:20px}
   .cp{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums;color:#9aa3b2;text-align:right}
   .odds{display:block;font-size:11px;color:#e0a93b;font-weight:600}
+  .stdbuy{border:1px solid #253044;border-radius:8px;padding:8px 10px;margin:2px 0 8px;background:#121722}
+  .stdsub{margin:4px 0}
+  .sechd{font-size:12px;font-weight:700;color:#8fa8d0;margin:6px 0 2px}
+  .stdrow.evplus{background:#0f2a1d;border-radius:4px}
+  .stdstat{color:#43c59e;font-weight:700}
   .stake{margin-left:8px;font-size:13px;font-weight:800;font-variant-numeric:tabular-nums;color:#43c59e;white-space:nowrap}
   .hitpay{margin-left:6px;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;color:#43c59e;white-space:nowrap}
   .recpct{margin-left:8px;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
@@ -2108,6 +2113,65 @@ function winMethodBlock(r){
     +'今日のコースで可能な決まり手だけに条件付けして強めに反映（勝数が少ないほどコース実測へ寄せる）。'
     +'決まり手はコースが主因（1コース逃げ95%等）で個人差は弱い（前後相関r≈0.24）ため<b>傾向・参考</b>。'
     +(done?'':'進入が枠なり前提。前づけ等で実進入が変われば型も変わります。')+'</div>';
+}
+// P(2着コース | 1着コース, 決まり手) 実測（全Kファイル）。相手（紐）を決まり手予想で絞る根拠。
+// キー=1着コース(1-6) → 決まり手idx(0逃げ/1差し/2まくり/3まくり差し) → [P(2着=1コース)..P(2着=6コース)]。
+const SEC={"1":{"0":[0,.343,.291,.19,.122,.054]},"2":{"1":[.597,0,.158,.119,.078,.048],"2":[.111,0,.363,.273,.161,.091]},"3":{"1":[.232,.308,0,.208,.177,.075],"2":[.22,.204,0,.277,.21,.088],"3":[.633,.161,0,.099,.071,.035]},"4":{"1":[.367,.28,.176,0,.111,.065],"2":[.222,.2,.105,0,.331,.142],"3":[.387,.154,.252,0,.131,.076]},"5":{"1":[.277,.299,.226,.139,0,.058],"2":[.335,.22,.102,.091,0,.252],"3":[.414,.152,.145,.215,0,.074]},"6":{"2":[.295,.286,.166,.138,.115,0],"3":[.387,.188,.111,.146,.167,0]}};
+const SECM={"1":[0,.343,.291,.19,.122,.054],"2":[.44,0,.225,.169,.105,.062],"3":[.399,.199,0,.192,.147,.063],"4":[.297,.202,.161,0,.232,.109],"5":[.385,.179,.14,.179,0,.117],"6":[.332,.22,.147,.157,.143,0]};
+// 標準の買い方＝本命1点軸の流し。相手（紐）を「決まり手予想×実力」で絞る。
+// 2連複＝本命=相手／3連単＝本命→相手→相手。点数は荒れ度連動。波乱帯は3連単見送り（本線ポリシー準拠）。
+// 各買い目は data-combo/data-p 付き＝「オッズ更新」で実オッズEVを計算し +EV を上へ再ランク（updateOdds）。
+function plProbOf(ps,combo){let p=1,rem=ps.reduce((a,b)=>a+b,0);for(const w of combo){if(rem<=0)return 0;p*=ps[w-1]/rem;rem-=ps[w-1];}return p;}
+function stdBuy(r){
+  const ps=r.b.map(x=>x[1]);const tot=ps.reduce((a,b)=>a+b,0);if(tot<=0)return '';
+  const hon=q2conf(r);
+  if(!(hon>=0.45&&hon<0.65))return '';                 // 標準帯（本線2連複予想率25-50%）のレースのみ
+  const pn=ps.map(x=>x/tot);
+  let ax=0;for(let i=1;i<6;i++)if(ps[i]>ps[ax])ax=i;   // 本命＝学習モデル1番手
+  const axc=ax+1;                                       // 進入コース＝枠なり
+  const md=winMethodDist(r.kd&&r.kd[ax],axc).d;         // 本命の決まり手予想[逃げ,差し,まくり,まくり差し,他]
+  // 相手選定は決まり手の「上位2種類」だけを使う（3位以下は無視して正規化）
+  const mwSort=md.slice(0,4).map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]);
+  const top2=mwSort.slice(0,2);const tsum=top2.reduce((a,b)=>a+b[0],0)||1;
+  const mwn=[0,0,0,0];top2.forEach(x=>{mwn[x[1]]=x[0]/tsum;});
+  const secByM=SEC[axc]||{},fb=SECM[axc]||[0,0,0,0,0,0];
+  const sec=[0,0,0,0,0,0];                              // P(2着コース=k | 本命勝ち,上位2型mix)
+  for(let m=0;m<4;m++){if(mwn[m]<=0)continue;const v=secByM[m]||fb;for(let k=0;k<6;k++)sec[k]+=mwn[m]*v[k];}
+  const rel=[];for(let j=0;j<6;j++)rel.push(j===ax?-1:pn[j]*(sec[j]+0.02));   // 相手スコア＝実力×型propensity
+  const aite=[0,1,2,3,4,5].filter(j=>j!==ax).sort((a,b)=>rel[b]-rel[a]);
+  const nFuku=kEx(hon);                                 // 2連複 点数＝これまで通り（標準帯=2点）
+  const nTri=kTri(hon);                                 // 3連単 点数＝これまで通り（標準帯=7点）
+  const poolN=4;                                        // 3連単 相手プール（top4→最大12組から nTri 点）
+  const mc=w=>chip(w,'mc');
+  const m2lab=top2.filter(x=>x[0]>0.001).map(x=>KMLAB[x[1]]).join('・');
+  // 買い目行（data-combo/data-p でライブEV対象）
+  const rowFuku=(a,b,p)=>{const lo=Math.min(a,b),hi=Math.max(a,b);
+    return '<div class="crow stdrow" data-combo="'+lo+'-'+hi+'" data-p="'+p.toFixed(4)+'">'
+      +mc(lo)+'<span class="arr">=</span>'+mc(hi)
+      +'<span class="cp">必要'+(1/p).toFixed(1)+'倍</span><span class="ev">実 –</span></div>';};
+  const rowTri=(a,b,c,p)=>'<div class="crow stdrow" data-combo="'+a+'-'+b+'-'+c+'" data-p="'+p.toFixed(4)+'">'
+      +mc(a)+'<span class="arr">&rarr;</span>'+mc(b)+'<span class="arr">&rarr;</span>'+mc(c)
+      +'<span class="cp">必要'+(1/p).toFixed(1)+'倍</span><span class="ev">実 –</span></div>';
+  // 2連複 軸流し（本命＝相手 上位 nFuku）
+  const fuku=aite.slice(0,nFuku);
+  let f2='';fuku.forEach(j=>{f2+=rowFuku(axc,j+1,plProbOf(ps,[axc,j+1])+plProbOf(ps,[j+1,axc]));});
+  // 3連単 軸1着流し（相手プール内 a→b を確率上位 nTri 点）
+  const pool=aite.slice(0,poolN);const cand=[];
+  for(const a of pool)for(const b of pool){if(a===b)continue;
+    cand.push([a,b,plProbOf(ps,[axc,a+1,b+1])]);}
+  cand.sort((x,y)=>y[2]-x[2]);
+  let t3='';cand.slice(0,nTri).forEach(c=>{t3+=rowTri(axc,c[0]+1,c[1]+1,c[2]);});
+  return '<div class="sec">標準の買い方（決まり手＋オッズ旨味）<span class="kbadge">本命'+mc(axc)+'軸流し</span></div>'
+    +'<div class="stdbuy">'
+    +'<div style="font-size:12px;color:#9aa3b2;margin:2px 0 4px">本命 '+mc(axc)+' '+r.b[ax][0]+'（決まり手 上位2種＝<b>'+m2lab+'</b>）。相手は上位2型×実力で選定＝'
+    +aite.slice(0,poolN).map(j=>mc(j+1)).join(' ')+'。<span class="stdstat"></span></div>'
+    +'<div class="stdsub"><div class="sechd">2連複（本命＝相手'+nFuku+'点）</div>'+f2+'</div>'
+    +'<div class="stdsub"><div class="sechd">3連単（本命→相手→相手'+nTri+'点）</div>'+t3+'</div>'
+    +'<div style="font-size:11px;color:#7e8796;margin:4px 0 8px">※標準帯（本線2連複予想率25-50%）のレースのみ表示。本命＝学習モデル1番手を軸に、相手を'
+    +'<b>決まり手予想の上位2種類（'+m2lab+'）で実測どおり2着に来やすい艇×各艇の実力</b>で選定。'
+    +'点数はこれまで通り（2連複'+nFuku+'点／3連単'+nTri+'点）。<b>「オッズ更新」を押すと実オッズでEVを計算し、旨味（+EV★）の目を上へ並べ替え</b>ます'
+    +'（実オッズはライブのみ・発走前に取得）。決まり手はコースが主因で個人差は弱く<b>参考</b>。</div>'
+    +'</div>';
 }
 function dayRaces(){return D.races.filter(r=>r.d===selDate);}
 function hasResult(r){return r.b.some(x=>x[2]===1);}  // 1着が決まっていれば結果あり（F/失格混在でも可）
@@ -2825,6 +2889,7 @@ function detailView(r){
     });
     h+='<div class="legend" style="margin:6px 12px 10px">※ 公式番組表の「今節成績」。数字＝着順、F＝フライング、S＝失格等。開催が進むほど走数が並びます。</div></details>';
   }
+  if(!done)h+=stdBuy(r);   // 標準の買い方（本命軸流し・決まり手で相手選定・ライブで+EV再ランク）
   if(!done)h+=bh;   // 発走前の買い目はオッズ一覧の下（従来位置）。出走後は結果の直下で表示済み
   // 実オッズ取得ボタンは一旦非表示（必要オッズ表示のみ残す）
   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
@@ -3191,11 +3256,23 @@ function updateOdds(btn){
     document.querySelectorAll('.crow[data-combo]').forEach(row=>{
       const cb=row.dataset.combo, p=parseFloat(row.dataset.p), od=map[cb], ev=row.querySelector('.ev');
       row.classList.remove('evplus'); if(!ev)return;
-      if(od==null){ev.textContent='実 –';return;}
-      const e=p*od; n++; const plus=e>=1;
+      if(od==null){ev.textContent='実 –';row.dataset.ev='-1';return;}
+      const e=p*od; n++; const plus=e>=1; row.dataset.ev=e;
       ev.innerHTML='実<b>'+od.toFixed(1)+'</b>倍 EV<b>'+e.toFixed(2)+'</b>'+(plus?' ★':'');
       if(plus)row.classList.add('evplus');
       if(best===null||e>best)best=e;
+    });
+    // 標準の買い方＝EV降順に並べ替え（+EV=旨味の目を上へ）。券種(.stdsub)ごとに整列。
+    document.querySelectorAll('.stdsub').forEach(sub=>{
+      const rows=[...sub.querySelectorAll('.crow[data-combo]')];
+      if(!rows.length||rows.every(x=>x.dataset.ev==null))return;
+      rows.sort((a,b)=>parseFloat(b.dataset.ev||'-1')-parseFloat(a.dataset.ev||'-1'));
+      rows.forEach(x=>sub.appendChild(x));
+    });
+    document.querySelectorAll('.stdbuy').forEach(box=>{
+      const plus=box.querySelectorAll('.stdrow.evplus').length;
+      const st=box.querySelector('.stdstat');
+      if(st)st.textContent=plus?'旨味（+EV）'+plus+'点を上へ並べ替え済み':'現時点で+EVの目なし（旨味薄）';
     });
     stat.innerHTML='取得 '+(o.fetched_at||'')+' ／ '+n+'点照合・最大EV '+(best!=null?best.toFixed(2):'–')+'（★=+EV）';
     btn.disabled=false;
