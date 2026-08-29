@@ -813,6 +813,33 @@ def kimarite_rates(glob_pat="data/k*.csv", min_wins=8):
             for reg, w in win.items() if w >= min_wins}
 
 
+def kimarite_dist(glob_pat="data/k*.csv", min_wins=6):
+    """全K-fileから 登番 → [勝数, 逃げ率, 差し率, まくり率, まくり差し率, 他率]（勝ち星内訳）。
+    他=抜き+恵まれ。各艇に『勝ち方（決まり手）の内訳%』を出すための素データ。
+    これは本人の全コースの勝ち星を含む＝出走コースの偏りを含むので、JS側で
+    『今日の進入コースで可能な決まり手だけに条件付け→コース実測ベースへ強め(重み0.6)にブレンド』して
+    使う（決まり手はコースが主因・個人差 前後相関r≈0.24と弱いため、素の内訳をそのまま出さない）。
+    勝ち数 min_wins 未満は None（＝コース実測のみ）。"""
+    KM = {"逃げ": 1, "差し": 2, "まくり": 3, "まくり差し": 4, "抜き": 5, "恵まれ": 5}
+    cnt = {}
+    for p in sorted(glob.glob(glob_pat)):
+        try:
+            for r in load(p):
+                if (r.get("着順") or "").strip() != "1":
+                    continue
+                reg = (r.get("登番") or "").strip()
+                idx = KM.get((r.get("決まり手") or "").strip())
+                if not reg or idx is None:
+                    continue
+                a = cnt.setdefault(reg, [0, 0, 0, 0, 0, 0])
+                a[0] += 1
+                a[idx] += 1
+        except OSError:
+            continue
+    return {reg: [a[0]] + [round(a[i] / a[0], 3) for i in range(1, 6)]
+            for reg, a in cnt.items() if a[0] >= min_wins}
+
+
 def st_habit_rates(glob_pat="data/k*.csv", min_races=15):
     """全K-fileから 登番 → 相対ST平均（そのコースの平均STからの差, 秒）。
     負=コース平均より速い『行く型(先手)』／正=遅い『出遅れ気味』。STはコースで
@@ -1473,6 +1500,7 @@ def main():
     kres = load_kresult(keep)
     mk_map = makuri_rates()                          # 登番→まくり率（根拠タグ用）
     km_map = kimarite_rates()                         # 登番→[まくり系率,差し率]（型バッジ用）
+    kd_map = kimarite_dist()                           # 登番→[勝数,逃げ,差し,まくり,まくり差し,他]（勝ち方内訳用）
     sth_map = st_habit_rates()                        # 登番→相対ST平均（先手/出遅れタグ用）
     payout = load_payouts(keep)
     # 配当一覧（結果表示用）: K-file(k*.txt)の全7券種を組合せ+配当で埋め込む。keep日付のみ解析。
@@ -1544,6 +1572,9 @@ def main():
                             for w in range(1, 7)],
                     # 枠ごと [まくり系率, 差し率]（まくり型/差し型バッジ用, 該当なしは null）
                     "km": [km_map.get(rc["feat"][w].get("reg"))
+                           for w in range(1, 7)],
+                    # 枠ごと [勝数,逃げ,差し,まくり,まくり差し,他]（勝ち方内訳%, 該当なしは null）
+                    "kd": [kd_map.get(rc["feat"][w].get("reg"))
                            for w in range(1, 7)],
                     # 枠ごと [公式級別 A1/A2/B1/B2, AIオリジナル実力ランク S/A/B/C/D]
                     "rk": [[official_rank(rc["feat"][w].get("cl")),
@@ -1783,6 +1814,16 @@ HTML = r"""<!DOCTYPE html>
   .kmb{display:inline-block;font-size:10px;font-weight:700;padding:0 6px;margin-left:5px;border-radius:8px;vertical-align:middle;white-space:nowrap}
   .kmb.mk{background:#3a1b2a;color:#f08fb0;border:0.5px solid #7a3a55}
   .kmb.sa{background:#1b2a3a;color:#7fb8e6;border:0.5px solid #3a5a7a}
+  .wmleg{display:flex;flex-wrap:wrap;gap:10px;margin:2px 0 6px;font-size:11px;color:#9aa3b2}
+  .wmlg{display:inline-flex;align-items:center;gap:4px}
+  .wmdot{display:inline-block;width:9px;height:9px;border-radius:2px}
+  .wmrow{display:flex;align-items:center;gap:7px;padding:4px 2px;border-bottom:0.5px solid #232833}
+  .wmnm{font-size:12px;color:#cdd6e2;width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}
+  .wmbarw{flex:1;min-width:80px;height:12px;border-radius:3px;overflow:hidden;display:flex;background:#1a1e27}
+  .wmseg{height:100%}
+  .wmtop{font-size:11px;color:#cdd6e2;width:120px;flex:none;text-align:right}
+  .wmnote{font-size:10px;color:#7e8796;width:96px;flex:none;text-align:right}
+  @media(max-width:560px){.wmtop,.wmnote{display:none}}
   .crow{display:flex;align-items:center;gap:6px;padding:6px 2px;border-bottom:0.5px solid #2a2f3a}
   .crow.hit{background:#10362c;border-radius:5px}
   .crow.evplus{background:#173a1f;border-radius:5px;box-shadow:inset 3px 0 0 #43c59e}
@@ -2022,6 +2063,51 @@ function tenjiPred(r){
 function betScore(r){
   const tp=tenjiPred(r);
   return (tp&&tp.prob)?tp.prob.slice():r.b.map(x=>x[1]);
+}
+// 勝ち方（決まり手）の内訳%。進入コース別の実測分布(全Kファイル・1着)をベースに、
+// 本人の内訳を「今日の進入コースで可能な決まり手だけ」に条件付けして強め(重み0.6)にブレンド。
+// 決まり手はコースが主因（1コース逃げ95%等）で個人差は弱い(前後相関r≈0.24)ため、
+// 素の個人内訳は出さず、コース実測へ寄せた参考値として出す。並び=[逃げ,差し,まくり,まくり差し,他]。
+const KMLAB=['逃げ','差し','まくり','まくり差し','他'];
+const KMCOL=['#5b9bd5','#43c59e','#e0a93b','#d9745c','#7e8796'];
+const KCBASE={1:[.954,0,0,0,.046],2:[0,.607,.292,0,.101],3:[0,.112,.395,.379,.115],
+  4:[0,.174,.479,.263,.084],5:[0,.063,.216,.604,.117],6:[0,.100,.318,.421,.161]};
+function winMethodDist(kd,course){
+  const base=KCBASE[course]; if(!base)return null;
+  if(!kd||!kd[0])return {d:base.slice(),n:0,w:0};   // 本人データ無し＝コース実測のみ
+  const n=kd[0], pers=kd.slice(1);                  // pers=[逃げ,差し,まくり,まくり差し,他]（全コース勝ち星）
+  const mask=base.map(x=>x>0?1:0);                  // このコースで起こり得る決まり手だけ残す
+  let pm=pers.map((x,i)=>x*mask[i]); const s=pm.reduce((a,b)=>a+b,0);
+  if(s<=0)return {d:base.slice(),n:n,w:0};
+  pm=pm.map(x=>x/s);                                // 条件付き個人内訳に正規化
+  const W=0.6, K=8, w=W*n/(n+K);                    // 強め(0.6)・ただし勝数少は実測へ縮小
+  let d=base.map((b,i)=>(1-w)*b+w*pm[i]); const t=d.reduce((a,b)=>a+b,0);
+  return {d:d.map(x=>x/t),n:n,w:w};
+}
+// 1レース分の「勝ち方（決まり手）予想」ブロック。各艇＝進入コース(枠)ベース＋本人内訳。
+function winMethodBlock(r){
+  const done=hasResult(r);
+  let rows='';
+  r.b.forEach((b,w)=>{
+    const md=winMethodDist(r.kd&&r.kd[w], w+1); if(!md)return;
+    const seg=md.d.map((v,i)=>v>0.001?'<span class="wmseg" style="width:'+(v*100).toFixed(1)+'%;background:'+KMCOL[i]+'" title="'+KMLAB[i]+' '+(v*100).toFixed(0)+'%"></span>':'').join('');
+    // 上位2つの決まり手をテキストで
+    const top=md.d.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]).filter(x=>x[0]>=0.10).slice(0,2)
+      .map(x=>KMLAB[x[1]]+(x[0]*100).toFixed(0)+'%').join(' / ');
+    const note=md.n?(md.w>=0.25?'本人傾向やや反映':'本人傾向を軽く反映')+'（勝'+md.n+'）':'コース実測のみ';
+    rows+='<div class="wmrow">'+chip(w+1,'mc')+'<span class="wmnm">'+b[0]+'</span>'
+      +'<div class="wmbarw">'+seg+'</div>'
+      +'<span class="wmtop">'+top+'</span>'
+      +'<span class="wmnote">'+note+'</span></div>';
+  });
+  const leg=KMLAB.map((l,i)=>'<span class="wmlg"><span class="wmdot" style="background:'+KMCOL[i]+'"></span>'+l+'</span>').join('');
+  return '<div class="sec">勝ち方の予想（決まり手の内訳）</div>'
+    +'<div class="wmleg">'+leg+'</div>'
+    +rows
+    +'<div style="font-size:11px;color:#7e8796;margin:3px 0 8px">※各艇の<b>進入コースの実測分布</b>（全Kファイル・1着）に、その選手の勝ち星内訳を'
+    +'今日のコースで可能な決まり手だけに条件付けして強めに反映（勝数が少ないほどコース実測へ寄せる）。'
+    +'決まり手はコースが主因（1コース逃げ95%等）で個人差は弱い（前後相関r≈0.24）ため<b>傾向・参考</b>。'
+    +(done?'':'進入が枠なり前提。前づけ等で実進入が変われば型も変わります。')+'</div>';
 }
 function dayRaces(){return D.races.filter(r=>r.d===selDate);}
 function hasResult(r){return r.b.some(x=>x[2]===1);}  // 1着が決まっていれば結果あり（F/失格混在でも可）
@@ -2537,6 +2623,7 @@ function detailView(r){
     +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
     +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
     +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
+  h+=winMethodBlock(r);   // 勝ち方（決まり手）の内訳%＝各艇の進入コース実測×本人傾向
   // 気象（K-file実況）。当日は中立化＝空なので「天候は当日未反映」と表示。
   // 展示(r.ex)取得済みなら気象は exView で実値表示するのでこの行は出さない。
   if(r.wx&&!r.ex){
