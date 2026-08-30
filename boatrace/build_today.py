@@ -2139,7 +2139,7 @@ function arRank(sb,kd,nMethods){
 }
 // 一本化した買い目（決まり手ベース）。返り値 {fuku:[[pair,p]..], tri:[[triple,p]..], meta}。
 //  鉄板/標準(hon≥0.45): 2連複＝従来確率上位(kEx)・3連単＝決まり手軸流し(kTri)＋対抗アタマ約2割。
-//  波乱(hon<0.45): 決まり手 上位3種から広く相手を拾い、均等に 2連複6点/3連単12点。
+//  波乱(hon<0.45): 決まり手 上位3種から広く相手を拾い、2連複6点/3連単12点。金額は全帯 各券種¥2,000配分。
 function unifiedBuy(sb,kd,hon){
   const ana=hon<0.45;
   if(!ana){
@@ -2165,7 +2165,7 @@ function unifiedBuy(sb,kd,hon){
     const tmd=winMethodDist(kd&&kd[taik],tkc).d,tmLab=KMLAB[tmd.indexOf(Math.max.apply(null,tmd))];
     return {fuku:fuku,tri:tri,band:'std',ax:R.ax,axc:R.axc,methods:R.methods,taik:tkc,tmLab:tmLab,altN:altN,altF:altF,honC:honC};
   }else{
-    const R=arRank(sb,kd,3),pool=R.aite.slice(0,5);              // 波乱＝上位3種・広く・均等
+    const R=arRank(sb,kd,3),pool=R.aite.slice(0,5);              // 波乱＝上位3種・広く
     const fc=[];
     for(const j of pool)fc.push([[Math.min(R.axc,j+1),Math.max(R.axc,j+1)],pfProb(sb,R.axc,j+1)]);
     for(let i=0;i<pool.length;i++)for(let j=i+1;j<pool.length;j++){const a=pool[i]+1,b=pool[j]+1;fc.push([[Math.min(a,b),Math.max(a,b)],pfProb(sb,a,b)]);}
@@ -2460,15 +2460,15 @@ function daySummary(date){
     const actEx=ord.slice(0,2),actTri=ord.slice(0,3);
     const UB=unifiedBuy(s,r.kd,hon);const ana=UB.band==='ana';   // 一本化した決まり手ベース買い目
     let hit=false;
-    // 2連複（std=¥2,000確率配分／波乱=均等¥100）
-    const exYen=ana?UB.fuku.map(function(){return 100;}):allocYen(meriW(UB.fuku.map(c=>c[1]),hon),2000);
+    // 2連複（全帯 各券種¥2,000確率配分）
+    const exYen=allocYen(meriW(UB.fuku.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.fuku.forEach((c,i)=>{
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=exYen[i];                                   // 返還ぶんは投資から除外
       if(actEx.length>=2&&eqPair(c[0],actEx)){ret+=(r.po&&r.po[2]!=null)?Math.round(r.po[2]*exYen[i]/100):0;hit=true;}
     });
-    // 3連単（全帯で購入＝波乱帯も広く均等・std=¥2,000確率配分）
-    const triYen=ana?UB.tri.map(function(){return 100;}):allocYen(meriW(UB.tri.map(c=>c[1]),hon),2000);
+    // 3連単（全帯で購入・各券種¥2,000確率配分。波乱帯も広く）
+    const triYen=allocYen(meriW(UB.tri.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.tri.forEach((c,i)=>{
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=triYen[i];
@@ -2501,7 +2501,7 @@ function summaryBar(){
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗2割・波乱帯は上位3種を均等広く）を実際に買った場合。鉄板/標準は各券種¥2,000配分・波乱帯は均等¥100・フライングは返還。</div>';
+  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱帯は上位3種を広く）を実際に買った場合。<b>全帯で各券種¥2,000配分</b>（¥100単位）・フライングは返還。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
     +'（非完走艇を含む買い目は投資から除外）</div>';
@@ -2732,17 +2732,17 @@ function detailView(r){
   bh+='<div class="sec">買い目（決まり手ベース・一本化）<span class="kbadge">本命'+chip(UB.axc,'mc')+(isAna?' 波乱・広く':' 軸')+'</span></div>';
   bh+='<div style="font-size:12px;color:#9aa3b2;margin:2px 0 6px">本命 '+chip(UB.axc,'mc')+' '+r.b[UB.ax][0]
     +'（決まり手 '+(isAna?'上位3種':'上位2種')+'＝<b>'+UB.methods.join('・')+'</b>）。'
-    +(isAna?'波乱含み＝上位3種から相手を広く拾い<b>均等（各¥100）</b>で2連複6点・3連単12点を手広く探る。'
+    +(isAna?'波乱含み＝上位3種から相手を広く拾い<b>2連複6点・3連単12点</b>を手広く探る（各券種¥2,000配分）。'
            :'2連複＝<b>確率上位（回収重視）</b>／3連単＝<b>決まり手で相手を絞る本命軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動）':'（本命濃厚につき対抗アタマは省略）')+'。')
     +'<span class="stdstat"></span></div>';
-  // 券種ブロック（結果マーク・賭け金・ライブEV再ランク対象）。std=¥2,000確率配分／波乱=均等¥100。
+  // 券種ブロック（結果マーク・賭け金・ライブEV再ランク対象）。全帯 各券種¥2,000確率配分。
   const kenBlock=(label,rows,act,pay,isFuku)=>{
-    const yen=isAna?rows.map(function(){return 100;}):allocYen(meriW(rows.map(c=>c[1]),honD),2000);
-    const budget=isAna?rows.length*100:2000;
+    const yen=allocYen(meriW(rows.map(c=>c[1]),honD),2000);   // 全帯 各券種¥2,000配分
+    const budget=2000;
     const hitI=act?rows.findIndex(c=>isFuku?eqPair(c[0],act):eqArr(c[0],act)):-1;const hit=hitI>=0;
     const rec=(act&&pay!=null)?(hit?Math.round(pay*yen[hitI]/budget*100):0):null;
     let s='<div class="sec">'+label+' '+rows.length+'点<span class="kbadge">'
-      +(isAna?'決まり手3種・均等':(isFuku?'確率上位・回収重視':'決まり手軸＋対抗2割'))+'</span>'+exTag
+      +(isAna?'決まり手3種・広く':(isFuku?'確率上位・回収重視':'決まり手軸＋対抗可変'))+'</span>'+exTag
       +'<span class="kbadge bud">計¥'+budget.toLocaleString()+'</span>'
       +(act?(hit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(rec)+'</div><div class="stdsub">';
     rows.forEach((c,i)=>{const cb=c[0];const hh=act&&(isFuku?eqPair(cb,act):eqArr(cb,act));
@@ -2841,7 +2841,7 @@ function detailView(r){
   h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率）。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'<b>買い目は決まり手ベースに一本化</b>：'
     +(isAna
-      ? '<b>波乱含み</b>（本線2連複予想率&lt;25%）は決まり手 上位3種から相手を広く拾い、<b>均等（各¥100）</b>で2連複6点・3連単12点を手広く探る。'
+      ? '<b>波乱含み</b>（本線2連複予想率&lt;25%）は決まり手 上位3種から相手を広く拾い、<b>2連複6点・3連単12点</b>を手広く探る（各券種¥2,000配分）。'
       : '<b>2連複＝確率上位</b>（回収重視・'+nEx+'点）／<b>3連単＝決まり手で相手を絞る本命'+chip(UB.axc,'mc')+'軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着＝本命が飛ぶ）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動＝低いほど厚く。検証で的中+0.9pt）':'（本命濃厚につき対抗アタマは省略）')+'。金額は各券種¥2,000を配分（¥100単位）。')
     +'相手は実測 P(2着コース｜1着コース,決まり手) で選定＝逃げ濃厚なら差し勢、まくり差しなら差し込まれた内が2着 等。決まり手はコースが主因で個人差は弱く<b>参考</b>。'
     +'<b>「オッズ更新」を押すと実オッズでEVを計算し、旨味（+EV★）の目を券種内で上へ並べ替え</b>ます（実オッズはライブのみ・発走前に取得）。'
