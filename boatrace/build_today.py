@@ -2161,15 +2161,32 @@ function stdBuy(r){
     cand.push([a,b,plProbOf(ps,[axc,a+1,b+1])]);}
   cand.sort((x,y)=>y[2]-x[2]);
   let t3='';cand.slice(0,nTri).forEach(c=>{t3+=rowTri(axc,c[0]+1,c[1]+1,c[2]);});
+  // 逃げ以外の決着（本命が勝たない＝対抗アタマのまくり/差し等）を約2割ぶん加える。
+  // 対抗＝本命以外で実力(モデル)最上位＝本命が飛んだ時に勝つ本命候補。
+  let taik=-1;for(let j=0;j<6;j++){if(j===ax)continue;if(taik<0||pn[j]>pn[taik])taik=j;}
+  const tkc=taik+1;
+  const tmd=winMethodDist(r.kd&&r.kd[taik],tkc).d;
+  const tmLab=KMLAB[tmd.indexOf(Math.max.apply(null,tmd))];   // 対抗の想定決まり手
+  const altTri=Math.max(2,Math.round(nTri*0.25));             // ≒2割
+  const tpool=[ax].concat(aite.filter(j=>j!==taik)).slice(0,4);  // 対抗の相手＝本命＋他相手
+  const tcand=[];
+  for(const a of tpool)for(const b of tpool){if(a===b)continue;
+    tcand.push([a,b,plProbOf(ps,[tkc,a+1,b+1])]);}
+  tcand.sort((x,y)=>y[2]-x[2]);
+  let at3='';tcand.slice(0,altTri).forEach(c=>{at3+=rowTri(tkc,c[0]+1,c[1]+1,c[2]);});
+  const otherA=aite.filter(j=>j!==taik)[0];                   // 対抗＝別相手（非本命ペア）を1点
+  let af2='';if(otherA!=null)af2=rowFuku(tkc,otherA+1,plProbOf(ps,[tkc,otherA+1])+plProbOf(ps,[otherA+1,tkc]));
   return '<div class="sec">標準の買い方（決まり手＋オッズ旨味）<span class="kbadge">本命'+mc(axc)+'軸流し</span></div>'
     +'<div class="stdbuy">'
     +'<div style="font-size:12px;color:#9aa3b2;margin:2px 0 4px">本命 '+mc(axc)+' '+r.b[ax][0]+'（決まり手 上位2種＝<b>'+m2lab+'</b>）。相手は上位2型×実力で選定＝'
     +aite.slice(0,poolN).map(j=>mc(j+1)).join(' ')+'。<span class="stdstat"></span></div>'
     +'<div class="stdsub"><div class="sechd">2連複（本命＝相手'+nFuku+'点）</div>'+f2+'</div>'
-    +'<div class="stdsub"><div class="sechd">3連単（本命→相手→相手'+nTri+'点）</div>'+t3+'</div>'
+    +'<div class="stdsub"><div class="sechd">3連単 本命アタマ（本命→相手→相手'+nTri+'点）</div>'+t3+'</div>'
+    +'<div class="stdsub"><div class="sechd" style="color:#c79bff">逃げ以外の決着＝対抗'+mc(tkc)+'アタマ（約2割・'+tmLab+'想定）</div>'+af2+at3+'</div>'
     +'<div style="font-size:11px;color:#7e8796;margin:4px 0 8px">※標準帯（本線2連複予想率25-50%）のレースのみ表示。本命＝学習モデル1番手を軸に、相手を'
     +'<b>決まり手予想の上位2種類（'+m2lab+'）で実測どおり2着に来やすい艇×各艇の実力</b>で選定。'
-    +'点数はこれまで通り（2連複'+nFuku+'点／3連単'+nTri+'点）。<b>「オッズ更新」を押すと実オッズでEVを計算し、旨味（+EV★）の目を上へ並べ替え</b>ます'
+    +'点数は本命アタマ（2連複'+nFuku+'点／3連単'+nTri+'点）＋<b style="color:#c79bff">逃げ以外の決着（本命が飛ぶ＝対抗'+mc(tkc)+'アタマ）を約2割</b>（'+tmLab+'想定・'+mc(tkc)+'頭'+altTri+'点＋非本命ペア'+(otherA!=null?1:0)+'点）追加。'
+    +'<b>「オッズ更新」を押すと実オッズでEVを計算し、旨味（+EV★）の目を券種内で上へ並べ替え</b>ます'
     +'（実オッズはライブのみ・発走前に取得）。決まり手はコースが主因で個人差は弱く<b>参考</b>。</div>'
     +'</div>';
 }
