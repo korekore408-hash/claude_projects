@@ -459,16 +459,23 @@ function unifiedBuy(sb,kd,hon){
     const fuku=plTopF(sb,nEx);                                   // 2連複＝従来確率上位（回収重視）
     const pool=R.aite.slice(0,4),cand=[];                        // 3連単＝本命アタマ 決まり手軸流し
     for(const a of pool)for(const b of pool)if(a!==b)cand.push([[R.axc,a+1,b+1],plProbOf(sb,[R.axc,a+1,b+1])]);
-    cand.sort((x,y)=>y[1]-x[1]);let tri=cand.slice(0,nTri);
+    cand.sort((x,y)=>y[1]-x[1]);
     let taik=-1;for(let j=0;j<6;j++){if(j===R.ax)continue;if(taik<0||R.pn[j]>R.pn[taik])taik=j;}
-    const tkc=taik+1,altN=Math.max(2,Math.round(nTri*0.25));     // 対抗アタマ 約2割（逃げ以外の決着）
+    const tkc=taik+1;
+    // 対抗アタマ（逃げ以外の決着）の割合＝本命が飛ぶ確率で可変。本命確率が低いほど厚く。
+    // 検証30,442R（5月以降でも安定）: 段階 40/25/15/5% が的中+0.9pt・回収ほぼ不変で最良。
+    const honC=R.pn[R.ax];                                        // 本命の1着確率（モデル）
+    const altF=honC<0.45?0.40:honC<0.60?0.25:honC<0.75?0.15:0.05;
+    const T=nTri+Math.max(2,Math.round(nTri*0.25));              // 総3連単点数（現行維持）
     const tpool=[R.ax].concat(R.aite.filter(j=>j!==taik)).slice(0,4),tc=[];
     for(const a of tpool)for(const b of tpool)if(a!==b)tc.push([[tkc,a+1,b+1],plProbOf(sb,[tkc,a+1,b+1])]);
     tc.sort((x,y)=>y[1]-x[1]);
+    const altN=Math.min(tc.length,Math.round(altF*T));const nHon=Math.max(0,T-altN);
+    let tri=cand.slice(0,nHon);
     const seen=new Set(tri.map(c=>c[0].join('-')));
-    for(const c of tc){if(tri.length>=nTri+altN)break;const k=c[0].join('-');if(!seen.has(k)){seen.add(k);tri.push(c);}}
+    for(const c of tc){if(tri.length>=T)break;const k=c[0].join('-');if(!seen.has(k)){seen.add(k);tri.push(c);}}
     const tmd=winMethodDist(kd&&kd[taik],tkc).d,tmLab=KMLAB[tmd.indexOf(Math.max.apply(null,tmd))];
-    return {fuku:fuku,tri:tri,band:'std',ax:R.ax,axc:R.axc,methods:R.methods,taik:tkc,tmLab:tmLab,altN:altN};
+    return {fuku:fuku,tri:tri,band:'std',ax:R.ax,axc:R.axc,methods:R.methods,taik:tkc,tmLab:tmLab,altN:altN,altF:altF,honC:honC};
   }else{
     const R=arRank(sb,kd,3),pool=R.aite.slice(0,5);              // 波乱＝上位3種・広く・均等
     const fc=[];
@@ -1038,7 +1045,7 @@ function detailView(r){
   bh+='<div style="font-size:12px;color:#9aa3b2;margin:2px 0 6px">本命 '+chip(UB.axc,'mc')+' '+r.b[UB.ax][0]
     +'（決まり手 '+(isAna?'上位3種':'上位2種')+'＝<b>'+UB.methods.join('・')+'</b>）。'
     +(isAna?'波乱含み＝上位3種から相手を広く拾い<b>均等（各¥100）</b>で2連複6点・3連単12点を手広く探る。'
-           :'2連複＝<b>確率上位（回収重視）</b>／3連単＝<b>決まり手で相手を絞る本命軸</b>＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着）約2割</b>。')
+           :'2連複＝<b>確率上位（回収重視）</b>／3連単＝<b>決まり手で相手を絞る本命軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動）':'（本命濃厚につき対抗アタマは省略）')+'。')
     +'<span class="stdstat"></span></div>';
   // 券種ブロック（結果マーク・賭け金・ライブEV再ランク対象）。std=¥2,000確率配分／波乱=均等¥100。
   const kenBlock=(label,rows,act,pay,isFuku)=>{
@@ -1147,7 +1154,7 @@ function detailView(r){
     +'<b>買い目は決まり手ベースに一本化</b>：'
     +(isAna
       ? '<b>波乱含み</b>（本線2連複予想率&lt;25%）は決まり手 上位3種から相手を広く拾い、<b>均等（各¥100）</b>で2連複6点・3連単12点を手広く探る。'
-      : '<b>2連複＝確率上位</b>（回収重視・'+nEx+'点）／<b>3連単＝決まり手で相手を絞る本命'+chip(UB.axc,'mc')+'軸</b>（'+nTri+'点）＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着＝本命が飛ぶ）を約2割</b>。金額は各券種¥2,000を配分（¥100単位）。')
+      : '<b>2連複＝確率上位</b>（回収重視・'+nEx+'点）／<b>3連単＝決まり手で相手を絞る本命'+chip(UB.axc,'mc')+'軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着＝本命が飛ぶ）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動＝低いほど厚く。検証で的中+0.9pt）':'（本命濃厚につき対抗アタマは省略）')+'。金額は各券種¥2,000を配分（¥100単位）。')
     +'相手は実測 P(2着コース｜1着コース,決まり手) で選定＝逃げ濃厚なら差し勢、まくり差しなら差し込まれた内が2着 等。決まり手はコースが主因で個人差は弱く<b>参考</b>。'
     +'<b>「オッズ更新」を押すと実オッズでEVを計算し、旨味（+EV★）の目を券種内で上へ並べ替え</b>ます（実オッズはライブのみ・発走前に取得）。'
     +'実オッズはモデル外なので各自で確認し「必要◯倍」（＝1÷確率）と比較してください。</div>';
