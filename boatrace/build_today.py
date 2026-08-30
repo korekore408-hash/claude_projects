@@ -1449,7 +1449,18 @@ def main():
             hon_canon[rid] = q2conf(pl_quinella_top(ps))
 
     all_dates = sorted({r["日付"] for r in rel})
-    base = args.date or all_dates[-1]
+    # base（当日）は必ず「レースデータが実在する日」にする。--date が渡っても、その日に
+    # レースが無い場合（UTC/JSTずれ・当日の出走表が未取得 等）は、その日以前で最新の
+    # データ日へフォールバック。これを怠ると D.base が実データに無い幽霊日付になり、
+    # D.base 基準の更新反映（直前情報/結果/締切時刻）が全て空振りする（＝日付の更新不良）。
+    if args.date and args.date in set(all_dates):
+        base = args.date
+    elif args.date:
+        prior = [d for d in all_dates if d <= args.date]
+        base = prior[-1] if prior else all_dates[-1]
+        print(f"  ⚠ 指定日 {args.date} にレースデータ無し → 最新データ日 {base} を当日に採用")
+    else:
+        base = all_dates[-1]
     keep = [d for d in all_dates if d <= base][-args.days:]
     keep_set = set(keep)
 
