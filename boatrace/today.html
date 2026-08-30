@@ -294,6 +294,10 @@
   .skbox{margin:10px 0 2px;border:1px solid #2a3852;border-radius:8px;background:#141a26;overflow:hidden}
   .skbox summary{cursor:pointer;padding:8px 14px;color:#8fa8d0;font-size:13px;font-weight:600;user-select:none}
   .sksub{font-size:11px;color:#7e8796;font-weight:400;margin-left:6px}
+  .miscbox{margin:16px 0 4px;border:1px solid #232833;border-radius:8px;background:#0f131a}
+  .miscbox>summary{cursor:pointer;padding:9px 14px;color:#7e8796;font-size:12px;font-weight:600;user-select:none}
+  .miscbox[open]>summary{border-bottom:1px solid #232833;margin-bottom:6px}
+  .miscbox>:not(summary){margin-left:12px;margin-right:12px}
   .skrow{display:flex;align-items:center;gap:8px;padding:5px 12px;border-top:0.5px solid #1c2433}
   .skn{font-size:13px;color:#cdd6e2;min-width:72px}
   .skq{display:flex;gap:3px;flex-wrap:wrap;flex:1}
@@ -450,8 +454,8 @@ function arRank(sb,kd,nMethods){
   return {ax:ax,axc:axc,aite:aite,pn:pn,methods:top.map(x=>KMLAB[x[1]])};
 }
 // 一本化した買い目（決まり手ベース）。返り値 {fuku:[[pair,p]..], tri:[[triple,p]..], meta}。
-//  鉄板/標準(hon≥0.45): 2連複＝従来確率上位(kEx)・3連単＝決まり手軸流し(kTri)＋対抗アタマ約2割。
-//  波乱(hon<0.45): 決まり手 上位3種から広く相手を拾い、均等に 2連複6点/3連単12点。
+//  鉄板/標準(hon≥0.45): 2連複＝従来確率上位(kEx)・3連単＝決まり手軸流し(kTri)＋対抗アタマ（本命確率連動の可変割合 40/25/15/5%）。
+//  波乱(hon<0.45): 決まり手 上位3種から広く相手を拾い、2連複6点/3連単12点。金額は全帯 各券種¥2,000配分。
 function unifiedBuy(sb,kd,hon){
   const ana=hon<0.45;
   if(!ana){
@@ -477,7 +481,7 @@ function unifiedBuy(sb,kd,hon){
     const tmd=winMethodDist(kd&&kd[taik],tkc).d,tmLab=KMLAB[tmd.indexOf(Math.max.apply(null,tmd))];
     return {fuku:fuku,tri:tri,band:'std',ax:R.ax,axc:R.axc,methods:R.methods,taik:tkc,tmLab:tmLab,altN:altN,altF:altF,honC:honC};
   }else{
-    const R=arRank(sb,kd,3),pool=R.aite.slice(0,5);              // 波乱＝上位3種・広く・均等
+    const R=arRank(sb,kd,3),pool=R.aite.slice(0,5);              // 波乱＝上位3種・広く
     const fc=[];
     for(const j of pool)fc.push([[Math.min(R.axc,j+1),Math.max(R.axc,j+1)],pfProb(sb,R.axc,j+1)]);
     for(let i=0;i<pool.length;i++)for(let j=i+1;j<pool.length;j++){const a=pool[i]+1,b=pool[j]+1;fc.push([[Math.min(a,b),Math.max(a,b)],pfProb(sb,a,b)]);}
@@ -772,15 +776,15 @@ function daySummary(date){
     const actEx=ord.slice(0,2),actTri=ord.slice(0,3);
     const UB=unifiedBuy(s,r.kd,hon);const ana=UB.band==='ana';   // 一本化した決まり手ベース買い目
     let hit=false;
-    // 2連複（std=¥2,000確率配分／波乱=均等¥100）
-    const exYen=ana?UB.fuku.map(function(){return 100;}):allocYen(meriW(UB.fuku.map(c=>c[1]),hon),2000);
+    // 2連複（全帯 各券種¥2,000確率配分）
+    const exYen=allocYen(meriW(UB.fuku.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.fuku.forEach((c,i)=>{
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=exYen[i];                                   // 返還ぶんは投資から除外
       if(actEx.length>=2&&eqPair(c[0],actEx)){ret+=(r.po&&r.po[2]!=null)?Math.round(r.po[2]*exYen[i]/100):0;hit=true;}
     });
-    // 3連単（全帯で購入＝波乱帯も広く均等・std=¥2,000確率配分）
-    const triYen=ana?UB.tri.map(function(){return 100;}):allocYen(meriW(UB.tri.map(c=>c[1]),hon),2000);
+    // 3連単（全帯で購入・各券種¥2,000確率配分。波乱帯も広く）
+    const triYen=allocYen(meriW(UB.tri.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.tri.forEach((c,i)=>{
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=triYen[i];
@@ -813,7 +817,7 @@ function summaryBar(){
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗2割・波乱帯は上位3種を均等広く）を実際に買った場合。鉄板/標準は各券種¥2,000配分・波乱帯は均等¥100・フライングは返還。</div>';
+  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱帯は上位3種を広く）を実際に買った場合。<b>全帯で各券種¥2,000配分</b>（¥100単位）・フライングは返還。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
     +'（非完走艇を含む買い目は投資から除外）</div>';
@@ -951,9 +955,12 @@ function detailView(r){
     +'<button class="pnav prev"'+(sel<=0?' disabled':'')+'>&lsaquo; 前のレース</button>'
     +'<button class="pnav next"'+(sel>=_nR-1?' disabled':'')+'>次のレース &rsaquo;</button>'
     +'</div></div>';
+  // ===== セクションを個別に組み立て、当日/前日/前々日で同一の順序に統一 =====
+  // #1 レース場・R・時間
   h+='<div class="dh">'+r.v+' '+r.no+'R'+(r.tm?' <span class="dhtm">'+r.tm+' 締切</span>':'')+'</div>';
-  h+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
-  // 1着確率（AI予想・学習モデル）＝直前情報の前に表示（2026-07-23 要望で先頭へ移動）。
+  // #2 配当一覧（結果確定レースのみ／未確定は非表示）
+  h+=payTable(r);
+  // #3 1着確率（AI予想・学習モデル）
   h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
     h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
@@ -964,44 +971,26 @@ function detailView(r){
      +kimBadge(r.km&&r.km[w],w+1)
      +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(pm/10).toFixed(1)+'%</span></div>';});
-  h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">'
-    +'<span class="rk">A1</span> 公式級別　｜　'
-    +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
-    +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
-    +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
-  h+=winMethodBlock(r);   // 勝ち方（決まり手）の内訳%＝各艇の進入コース実測×本人傾向
-  // 気象（K-file実況）。当日は中立化＝空なので「天候は当日未反映」と表示。
-  // 展示(r.ex)取得済みなら気象は exView で実値表示するのでこの行は出さない。
-  if(r.wx&&!r.ex){
-    const tk=r.wx[0], wd=r.wx[1], wv=r.wx[2];
-    if(tk||wd!=null||wv!=null){
-      h+='<div class="meta">🌤 '+(tk||'–')+(wd!=null?' ・ 風'+wd+'m':'')+(wv!=null?' ・ 波'+wv+'cm':'')+'<span style="color:#6b7280"> （荒れ度・気象を予想に反映）</span></div>';
-    }else{
-      h+='<div class="meta" style="color:#6b7280">🌤 天候は当日予想に未反映（場の荒れ度のみ反映・気象は後日反映予定）</div>';
-    }
-  }
-  h+=exView(r);   // 直前情報（展示）。更新で取得済みのときだけ表示。
-  if(r.mz)h+='<div class="warn">&#9888; 隊形警戒：前づけ常習者がいて枠なりが崩れやすく、本命の信頼度は割り引いて。</div>';
+  // #4 勝ち方の予想（決まり手の内訳）
+  h+=winMethodBlock(r);
+  // #5 予想コメント
   if(r.cm)h+='<div class="cmt"><span class="h">予想コメント</span>'+r.cm[0]+'<br><span class="h" style="visibility:hidden">予想コメント</span>'+r.cm[1]+'</div>';
-  // 本命確率 / 穴確率
+  // #6 決着イメージ
+  {const sh=raceShape(r);
+   const smx=Math.max.apply(null,sh.p.concat(0.001));
+   const bars=sh.p.map((v,i)=>'<span class="shbar" style="height:'+Math.max(v/smx*100,5).toFixed(0)+'%" title="'+(i+1)+'位 '+(v*100).toFixed(1)+'%"></span>').join('');
+   h+='<div class="shp '+sh.cls+'"><div class="shp-l"><span class="shp-bdg">'+sh.lab+'</span>'
+     +'<div class="shbars" title="本線2連複 上位5点の予想率（左=1位）。段差が大きいほど本線が抜け、平ら＝団子で大混戦">'+bars+'</div></div>'
+     +'<div class="shp-t"><b>決着イメージ</b>：'+sh.note
+     +'<br><span style="color:#9aa3b2">この型の実測（35,599R）：本命(1番人気)1着 <b>'+sh.hon+'</b> ／ 穴(4-6番人気)1着 <b>'+sh.ana+'</b></span></div></div>';}
+  // #7 本命確率 / 穴確率
   const ha=honAna(r);
-  h+='<div class="predhdr api">荒れ度の基準＝本線2連複予想率<span class="psub">鉄板＝本線2連複の予想率≥50%（実測的中≈47%）。1着の堅さでなく「買い目が当たる堅さ」で鉄板/標準/波乱・点数を判定</span></div>';
   h+='<div class="sec">本命確率 / 穴確率<span class="kbadge" title="過去の実測1着率にもとづく補正（isotonic較正）。素のAPI確率は高い帯で実力を1割ほど過小評価していたため、実測ベースに直して表示">実測補正</span></div>';
   h+='<div class="ha"><div class="hacell"><div class="hak">本命確率</div><div class="hav hon">'
     +Math.round(ha.honC*100)+'%</div><div class="hsub">'+chip(ha.hmLane,'mc')+' '+r.b[ha.hmLane-1][0]+'</div></div>'
     +'<div class="hacell"><div class="hak">穴確率（4-6番手）</div><div class="hav ana">'
     +Math.round(ha.anaC*100)+'%</div><div class="hsub"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span></div></div></div>';
-  h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 4px">※本命確率/穴確率は過去の実測1着率で較正済み（表示専用）。鉄板/標準/波乱の帯・点数は<b>本線2連複予想率</b>で判定＝1着だけでなく2着まで含めた「買い目が当たる堅さ」で分類（検証33,935R: 現行API基準とROI同等・賭け金-17%）。</div>';
-  // 決着の型（本線2連複 上位5点の形）＝本命/穴の見立て。団子ほど本命が飛び穴と拮抗、抜けるほど本命濃厚。
-  {const sh=raceShape(r);
-   const mx=Math.max.apply(null,sh.p.concat(0.001));
-   const bars=sh.p.map((v,i)=>'<span class="shbar" style="height:'+Math.max(v/mx*100,5).toFixed(0)+'%" title="'+(i+1)+'位 '+(v*100).toFixed(1)+'%"></span>').join('');
-   h+='<div class="shp '+sh.cls+'"><div class="shp-l"><span class="shp-bdg">'+sh.lab+'</span>'
-     +'<div class="shbars" title="本線2連複 上位5点の予想率（左=1位）。段差が大きいほど本線が抜け、平ら＝団子で大混戦">'+bars+'</div></div>'
-     +'<div class="shp-t"><b>決着イメージ</b>：'+sh.note
-     +'<br><span style="color:#9aa3b2">この型の実測（35,599R）：本命(1番人気)1着 <b>'+sh.hon+'</b> ／ 穴(4-6番人気)1着 <b>'+sh.ana+'</b></span></div></div>';}
-  // 本線(PL上位1点)の予想率＝『買い目が当たる堅さ(本命度)』。1着確率より「当たる堅さ」をよく表す
-  // （検証3.4万R: 同じ本命確率でもこの値が高いほど2連単的中+2〜11pt・較正良好）。表示のみ・点数据置。
+  // #8 本線の堅さ（本命度）
   {const q2f=plTopF(ps,1),q2t=plTop(ps,2,1);
    const p2f=q2f.length?q2f[0][1]:null,c2f=q2f.length?q2f[0][0]:null;
    const p2t=q2t.length?q2t[0][1]:null,c2t=q2t.length?q2t[0][0]:null;
@@ -1014,122 +1003,58 @@ function detailView(r){
       +(p2f*100).toFixed(1)+'%</div><div class="hsub">'+chip(c2f[0],'mc')+' = '+chip(c2f[1],'mc')+res(hit2f)+'</div></div>'
       +'<div class="hacell"><div class="hak">本線 2連単</div><div class="hav">'
       +(p2t*100).toFixed(1)+'%</div><div class="hsub">'+chip(c2t[0],'mc')+' &rarr; '+chip(c2t[1],'mc')+res(hit2t)+'</div></div></div>';
-    h+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">※本線1点の予想率（PL上位1点）。<b>1着確率より「買い目が当たる堅さ」をよく表す</b>＝同じ本命確率でもこの値が高いほど2連単的中が+2〜11pt（検証3.4万R・較正良好）。回収は全帯で2連複＞2連単。荒れ度帯・点数は従来どおり内部値で判定（参考指標）。</div>';
    }}
-  {const al=ha.anaLane, af=r.ft?r.ft[al-1]:null, afin=done?r.b[al-1][2]:null;
-   h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896"><span class="h" style="color:#b89a5a">穴候補</span>'
-     +chip(al,'mc')+' '+r.b[al-1][0]+' … '
-     +'モーター'+(af&&af[0]!=null?'レース内'+Math.round(af[0])+'位':'–')
-     +' / 直近勝率'+(af&&af[1]!=null?Math.round(af[1]*100)+'%':'–')
-     +' / ST'+(af&&af[2]!=null?'レース内'+Math.round(af[2])+'位':'–')
-     +'（1着確率'+(calP(r.ab[al-1]/1000)*100).toFixed(1)+'%・実測補正）'
-     +(done?' <b style="color:'+(afin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(afin===1?'1着！（穴的中）':(afin?afin+'着':'－'))+'</b>':'')
-     +'<br><span style="font-size:11px;color:#9aa3b2">※モデルはモーター・直近を織り込み済み（検証で確率を超える穴シグナルは無し）。材料が揃う穴ほど展開次第で1着の目。本命が弱いレースほど荒れやすい（本命&lt;40%で穴率約20%／≥70%で約8%）。</span></div>';}
-  // 対抗1艇（穴）＝本命を食う筆頭＋根拠タグ。betScore2番手（展示反映後）。
-  {const tk=taikou(r);const tkfin=done?r.b[tk.lane-1][2]:null;
-   h+='<div class="cause" style="border-left-color:#a56be0;color:#d9c8ef"><span class="h" style="color:#b98fe0">🐎 対抗1艇（穴）</span>'
-     +chip(tk.lane,'mc')+' '+tk.name+' … <b>本命'+chip(tk.fav,'mc')+'を食う筆頭</b>'
-     +'（1着確率目安'+(tk.prob*100).toFixed(1)+'%）'
-     +(tk.tags.length
-        ? '<div style="margin-top:5px">'+tk.tags.map(t=>'<span class="tkt" title="'+t[1]+'">'+t[0]+'</span>').join('')+'</div>'
-        : '<div style="margin-top:5px;font-size:11px;color:#9aa3b2">目立った武器なし（地力で予想2番手）</div>')
-     +(done?' <b style="color:'+(tkfin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(tkfin===1?'1着！（対抗的中）':(tkfin?tkfin+'着':'－'))+'</b>':'')
-     +'<br><span style="font-size:11px;color:#9aa3b2">※対抗＝betScore（'+(tk.ex?'展示反映後':'朝の学習')+'）の2番手。検証で隣接・展示・捲り屋は p_win に織込済＝当てる力は本命確率どまり（本命が飛んだ時に44%が1着）。回収率は本命軸に劣る<b>夢枠</b>。チルトは当日データのみ・過去検証不可の参考。</span></div>';}
-  // 買い目（2連複/3連単・穴予想）は先に bh へ組み立て、出走後は「結果の直下」・発走前は
-  // オッズ一覧の下（従来位置）へ挿入する（2026-07-20 出走後の成績を結果の下で見たい要望）。
+  // #9 直前情報（展示）。更新で取得済みのときだけ表示。
+  h+=exView(r);
+  // #10 直前情報あり本命（展示反映後の本命／展示取得時のみ表示）
+  if(exOn){let bi=0;for(let w=1;w<6;w++)if(sb[w]>sb[bi])bi=w;const stot=sb.reduce((a,b)=>a+b,0)||1;
+    h+='<div class="sec">直前情報あり本命<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span></div>';
+    h+='<div class="ha"><div class="hacell"><div class="hak">展示反映後の本命</div><div class="hav hon">'
+      +chip(bi+1,'mc')+' '+r.b[bi][0]+'</div><div class="hsub">1着確率 '+(sb[bi]/stot*100).toFixed(1)+'%（展示タイム/STを反映）</div></div></div>';
+  }
+  // #11 買い目（決まり手ベース・一本化）
   const honD=honBand;const nEx=kEx(honD),nTri=kTri(honD);const stdBand=honD>=0.45&&honD<0.65;
   const exTag=exOn?'<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span>':'';
-  const UB=unifiedBuy(sb,r.kd,honD);const isAna=UB.band==='ana';   // 一本化した買い目（決まり手ベース）
-  let bh='';
-  bh+='<div class="sec">買い目（決まり手ベース・一本化）<span class="kbadge">本命'+chip(UB.axc,'mc')+(isAna?' 波乱・広く':' 軸')+'</span></div>';
-  bh+='<div style="font-size:12px;color:#9aa3b2;margin:2px 0 6px">本命 '+chip(UB.axc,'mc')+' '+r.b[UB.ax][0]
+  const UB=unifiedBuy(sb,r.kd,honD);const isAna=UB.band==='ana';
+  h+='<div class="sec">買い目（決まり手ベース・一本化）<span class="kbadge">本命'+chip(UB.axc,'mc')+(isAna?' 波乱・広く':' 軸')+'</span></div>';
+  h+='<div style="font-size:12px;color:#9aa3b2;margin:2px 0 6px">本命 '+chip(UB.axc,'mc')+' '+r.b[UB.ax][0]
     +'（決まり手 '+(isAna?'上位3種':'上位2種')+'＝<b>'+UB.methods.join('・')+'</b>）。'
-    +(isAna?'波乱含み＝上位3種から相手を広く拾い<b>均等（各¥100）</b>で2連複6点・3連単12点を手広く探る。'
+    +(isAna?'波乱含み＝上位3種から相手を広く拾い<b>2連複6点・3連単12点</b>を手広く探る（各券種¥2,000配分）。'
            :'2連複＝<b>確率上位（回収重視）</b>／3連単＝<b>決まり手で相手を絞る本命軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動）':'（本命濃厚につき対抗アタマは省略）')+'。')
     +'<span class="stdstat"></span></div>';
-  // 券種ブロック（結果マーク・賭け金・ライブEV再ランク対象）。std=¥2,000確率配分／波乱=均等¥100。
   const kenBlock=(label,rows,act,pay,isFuku)=>{
-    const yen=isAna?rows.map(function(){return 100;}):allocYen(meriW(rows.map(c=>c[1]),honD),2000);
-    const budget=isAna?rows.length*100:2000;
+    const yen=allocYen(meriW(rows.map(c=>c[1]),honD),2000);   // 全帯 各券種¥2,000配分
+    const budget=2000;
     const hitI=act?rows.findIndex(c=>isFuku?eqPair(c[0],act):eqArr(c[0],act)):-1;const hit=hitI>=0;
     const rec=(act&&pay!=null)?(hit?Math.round(pay*yen[hitI]/budget*100):0):null;
-    let s='<div class="sec">'+label+' '+rows.length+'点<span class="kbadge">'
-      +(isAna?'決まり手3種・均等':(isFuku?'確率上位・回収重視':'決まり手軸＋対抗2割'))+'</span>'+exTag
+    let ss='<div class="sec">'+label+' '+rows.length+'点<span class="kbadge">'
+      +(isAna?'決まり手3種・広く':(isFuku?'確率上位・回収重視':'決まり手軸＋対抗可変'))+'</span>'+exTag
       +'<span class="kbadge bud">計¥'+budget.toLocaleString()+'</span>'
       +(act?(hit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(rec)+'</div><div class="stdsub">';
     rows.forEach((c,i)=>{const cb=c[0];const hh=act&&(isFuku?eqPair(cb,act):eqArr(cb,act));
       const alt=(!isFuku&&!isAna&&UB.taik&&cb[0]===UB.taik);
-      s+='<div class="crow'+(hh?' hit':'')+'" data-combo="'+cb.join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'
+      ss+='<div class="crow'+(hh?' hit':'')+'" data-combo="'+cb.join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'
         +chip(cb[0],'mc')+'<span class="arr">'+(isFuku?'=':'&rarr;')+'</span>'+chip(cb[1],'mc')+(isFuku?'':'<span class="arr">&rarr;</span>'+chip(cb[2],'mc'))
         +(alt?'<span class="ctag tg-ana" style="background:#2a1c3a;color:#c79bff" title="逃げ以外の決着＝対抗アタマ（本命が飛ぶ想定）">対抗頭</span>':'')
         +(hh?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(pay!=null?'<span class="hitpay">配当¥'+pay.toLocaleString()+'</span>':''):'')
         +'<span class="stake">¥'+yen[i].toLocaleString()+'</span>'
         +'<span class="cp">'+(c[1]*100).toFixed(1)+'%<span class="odds">必要'+(1/c[1]).toFixed(1)+'倍</span></span><span class="ev"></span></div>';});
-    if(act&&!hit){s+='<div class="crow"><span class="rk">実</span>'+(isFuku
+    if(act&&!hit){ss+='<div class="crow"><span class="rk">実</span>'+(isFuku
         ?chip(Math.min(act[0],act[1]),'mc')+'<span class="arr">=</span>'+chip(Math.max(act[0],act[1]),'mc')
         :chip(act[0],'mc')+'<span class="arr">&rarr;</span>'+chip(act[1],'mc')+'<span class="arr">&rarr;</span>'+chip(act[2],'mc'))
       +'<span class="cp ng">実際の結果</span></div>';}
-    return s+'</div>';
+    return ss+'</div>';
   };
-  bh+=kenBlock('2連複',UB.fuku,actEx,payEx,true);
-  bh+=kenBlock('3連単',UB.tri,actTri,payTri,false);
-  if(done){
-    h+='<div class="rbar"><span class="rlab">結果</span>';
-    ord.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
-    if(r.km)h+='<span class="kmlab">'+r.km+'</span>';
-    {const wk=winKind(r);
-     h+='<span class="lvl '+wk.cls+'" style="margin-left:6px">'+wk.lab+(wk.rank>1?'（モデル'+wk.rank+'番手）':'的中')+'</span>';}
-    h+='</div>';
-    if(r.cause)h+='<div class="cause"><span class="h">結果分析</span>'+r.cause+'</div>';
-    if(r.po){
-      const plOf=c=>{let p=1,rem=s.reduce((a,b)=>a+b,0);for(const w of c){p*=s[w-1]/rem;rem-=s[w-1];}return p;};
-      const pfOf=c=>plOf([c[0],c[1]])+plOf([c[1],c[0]]);   // 2連複＝両順序の和
-      const evrow=(lab,combo,po,probFn,sep)=>{if(!combo||po==null)return '';const need=1/probFn(combo),bai=po/100,ok=bai>=need;
-        return lab+' '+combo.join(sep||'-')+'：配当<b>'+bai.toFixed(1)+'倍</b> / 必要'+need.toFixed(1)+'倍 → '
-          +(ok?'<span class="ok">妙味◎(+EV)</span>':'<span style="color:#9aa3b2">届かず(-EV)</span>');};
-      h+='<div class="cause" style="border-left-color:#5dc7e0;color:#cdd6e2"><span class="h" style="color:#7fb2ff">買えてた場合の妙味</span>'
-        +evrow('2連複',actEx,(r.po.length>2?r.po[2]:null),pfOf,'=')+'<br>'+evrow('3連単',actTri,r.po[1],plOf)+'</div>';
-    }
-    h+=hansei(r);     // 反省会：その決着が本線何点目だったか＝何点買えば獲れたか
-    h+=payTable(r);   // 全7券種の配当一覧（結果が出たレースのみ）
-    h+=bh;            // 出走後は2連複/3連単の成績（的中/圏外・配当・回収）を結果の直下に表示
-  }
-  // 1着確率セクションは detailView 冒頭（直前情報の前）へ移動（2026-07-23 要望）。
-  // 相手（非本命5艇）の差＝2・3着の絞りやすさ。勝負どころ＝本命が強い×相手に差。
-  const rd=rivalDiff(r);
-  h+='<div class="rdbox'+(rd.prize?' prizebox':'')+'">'
-    +'<span class="h">相手の差</span><span class="lvl '+rd.cls+'">'+rd.lvl+'</span> '
-    +(rd.prize
-       ? '&#127919; <b>勝負どころ</b>：本命が強く、相手（2・3着）にも差がある。検証では同じ本命確率でも2連複/3連単の的中が一段高い帯（P(2着&#124;1着)が+7〜18pt）。点数を絞って2連複/3連単に厚く張る価値。'
-       : rd.lvl==='大'
-         ? '相手（2・3着）は絞りやすいが、本命確率が低め。1着が読みづらいので頭は広めに。'
-         : '相手が横一線で2・3着を絞りにくい。本命が強くても2連複/3連単は伸びにくい帯＝点数を欲張らない。')
-    +'<br><span style="font-size:11px;color:#7e8796">※「相手の差」＝非本命5艇の1着確率のばらつき（発走前にモデルから分かる量）。1着の精度は本命確率が決め、相手の差はもっぱら2・3着を絞れるかに効く（検証 OOS 7,862R）。</span></div>';
-  // 鉄板×実オッズの見送り判定（締切前・オッズ取得済のみ表示）。
-  // backtest(2026-06・鉄板81R・最終オッズ): 1点目2連単<2.0見送り＝回収88.8→98.9%(+10.1pt)、
-  // <3.0まで見送ると110.2%だが対象半減(n=33)のため2〜3倍帯は「妙味薄」の目安表示に留める。
-  if(!done){
-    const to=tetsuOdds(r);
-    if(to){
-      h+='<div class="rdbox"'+(to.skip?' style="border-color:#5a2a2a"':'')+'>'
-        +'<span class="h">実オッズ判定</span>本命サイド2連単 '+to.c[0]+'-'+to.c[1]+' の実オッズ <b>'+to.odds.toFixed(1)+'倍</b>（市場の堅さの物差し・購入は2連複） → '
-        +(to.skip
-          ?'<b style="color:#f09595">&#9888; 見送り推奨</b>：本命サイドが売れすぎ（2倍未満）＝当たっても戻りが薄い帯。検証（6月・鉄板81R）ではこの帯を見送るだけで回収88.8→98.9%(+10.1pt)・的中率も向上。'
-          :to.odds<3.0
-            ?'<span style="color:#e0a93b">△ 妙味薄</span>：2〜3倍帯。参考検証では3倍未満まで見送ると回収110.2%だが対象が半減（n=33）のため目安扱い。'
-            :'<b style="color:#43c59e">&#10003; オッズ妙味あり</b>：3倍以上。鉄板の回収を支えるのはこの帯。')
-        +'<br><span style="font-size:11px;color:#7e8796">※ 公式サイトの2連単オッズを直接取得（締切40分前から約3分毎に自動更新）。オッズは締切まで動くので最終判断は直前に。</span></div>';
-    }
-  }
-  // オッズ一覧ボタン（別ページ odds.html）: 2連複15点/2連単30点/3連単120点＋AI買い目ハイライト。
-  // bf=本線2連複・b3=本線3連単・ba=穴予想（穴帯=対抗6点/標準帯=穴候補6点）をURLで渡す。/api/odds はクラウドのみ。
+  h+=kenBlock('2連複',UB.fuku,actEx,payEx,true);
+  h+=kenBlock('3連単',UB.tri,actTri,payTri,false);
+  // #12 オッズ一覧（別ページ odds.html）
   if(IS_CLOUD){
     const _bf=UB.fuku.map(c=>c[0].join('-')).join(',');
     const _b3=UB.tri.map(c=>c[0].join('-')).join(',');
     const _ba='';
     h+='<div style="margin:10px 0 2px"><a href="odds.html?id='+r.id+'&v='+encodeURIComponent(r.v)+'&no='+r.no+(r.tm?'&tm='+encodeURIComponent(r.tm):'')+(_bf?'&bf='+_bf:'')+(_b3?'&b3='+_b3:'')+(_ba?'&ba='+_ba:'')+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #2a3852;border-radius:8px;background:#141a26;color:#8fa8d0;font-size:13px;font-weight:600;text-decoration:none">&#128202; オッズ一覧<span style="font-size:11px;color:#7e8796;font-weight:400">（別ページ・全買い目の実オッズ）</span></a></div>';
   }
-  // 節間成績（公式番組表「今節成績」＝当節ここまでの着順）。オッズ一覧の下の開閉パネル。
+  // #13 節間成績（公式番組表「今節成績」）
   if(r.sk&&r.sk.some(x=>x)){
     h+='<details class="skbox"><summary>&#128211; 節間成績<span class="sksub">今節ここまでの着順（左が節の初走）</span></summary>';
     r.b.forEach((b,w)=>{
@@ -1145,19 +1070,98 @@ function detailView(r){
     });
     h+='<div class="legend" style="margin:6px 12px 10px">※ 公式番組表の「今節成績」。数字＝着順、F＝フライング、S＝失格等。開催が進むほど走数が並びます。</div></details>';
   }
-  if(!done)h+=bh;   // 発走前の買い目はオッズ一覧の下（従来位置）。出走後は結果の直下で表示済み
-  // 実オッズ取得ボタンは一旦非表示（必要オッズ表示のみ残す）
-  h+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
+  // #14 反省会（結果確定レースのみ）
+  h+=hansei(r);
+  // ===== その他の情報・詳しい解説は下部に集約して折りたたむ =====
+  let misc='';
+  misc+='<div class="meta">'+r.d+' ・ race_id '+r.id+' ・ field_strength_std '+(r.fs!=null?(+r.fs).toFixed(2):'–')+' ・ 直前情報なしモデル（展示/オッズ不使用）</div>';
+  misc+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">'
+    +'<span class="rk">A1</span> 公式級別　｜　'
+    +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
+    +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
+    +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
+  if(r.wx&&!r.ex){
+    const tk=r.wx[0], wd=r.wx[1], wv=r.wx[2];
+    if(tk||wd!=null||wv!=null){
+      misc+='<div class="meta">🌤 '+(tk||'–')+(wd!=null?' ・ 風'+wd+'m':'')+(wv!=null?' ・ 波'+wv+'cm':'')+'<span style="color:#6b7280"> （荒れ度・気象を予想に反映）</span></div>';
+    }else{
+      misc+='<div class="meta" style="color:#6b7280">🌤 天候は当日予想に未反映（場の荒れ度のみ反映・気象は後日反映予定）</div>';
+    }
+  }
+  if(r.mz)misc+='<div class="warn">&#9888; 隊形警戒：前づけ常習者がいて枠なりが崩れやすく、本命の信頼度は割り引いて。</div>';
+  misc+='<div class="predhdr api">荒れ度の基準＝本線2連複予想率<span class="psub">鉄板＝本線2連複の予想率≥50%（実測的中≈47%）。1着の堅さでなく「買い目が当たる堅さ」で鉄板/標準/波乱・点数を判定</span></div>';
+  misc+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">※本命確率/穴確率は過去の実測1着率で較正済み（表示専用）。鉄板/標準/波乱の帯・点数は<b>本線2連複予想率</b>で判定＝1着だけでなく2着まで含めた「買い目が当たる堅さ」で分類（検証33,935R: 現行API基準とROI同等・賭け金-17%）。'
+    +'本線の堅さ（本命度）＝本線1点の予想率で、1着確率より「買い目が当たる堅さ」をよく表す（検証3.4万R・較正良好）。</div>';
+  {const al=ha.anaLane, af=r.ft?r.ft[al-1]:null, afin=done?r.b[al-1][2]:null;
+   misc+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896"><span class="h" style="color:#b89a5a">穴候補</span>'
+     +chip(al,'mc')+' '+r.b[al-1][0]+' … '
+     +'モーター'+(af&&af[0]!=null?'レース内'+Math.round(af[0])+'位':'–')
+     +' / 直近勝率'+(af&&af[1]!=null?Math.round(af[1]*100)+'%':'–')
+     +' / ST'+(af&&af[2]!=null?'レース内'+Math.round(af[2])+'位':'–')
+     +'（1着確率'+(calP(r.ab[al-1]/1000)*100).toFixed(1)+'%・実測補正）'
+     +(done?' <b style="color:'+(afin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(afin===1?'1着！（穴的中）':(afin?afin+'着':'－'))+'</b>':'')
+     +'<br><span style="font-size:11px;color:#9aa3b2">※モデルはモーター・直近を織り込み済み（検証で確率を超える穴シグナルは無し）。材料が揃う穴ほど展開次第で1着の目。本命が弱いレースほど荒れやすい（本命&lt;40%で穴率約20%／≥70%で約8%）。</span></div>';}
+  {const tk=taikou(r);const tkfin=done?r.b[tk.lane-1][2]:null;
+   misc+='<div class="cause" style="border-left-color:#a56be0;color:#d9c8ef"><span class="h" style="color:#b98fe0">🐎 対抗1艇（穴）</span>'
+     +chip(tk.lane,'mc')+' '+tk.name+' … <b>本命'+chip(tk.fav,'mc')+'を食う筆頭</b>'
+     +'（1着確率目安'+(tk.prob*100).toFixed(1)+'%）'
+     +(tk.tags.length
+        ? '<div style="margin-top:5px">'+tk.tags.map(t=>'<span class="tkt" title="'+t[1]+'">'+t[0]+'</span>').join('')+'</div>'
+        : '<div style="margin-top:5px;font-size:11px;color:#9aa3b2">目立った武器なし（地力で予想2番手）</div>')
+     +(done?' <b style="color:'+(tkfin===1?'#43c59e':'#9aa3b2')+'">→ 結果'+(tkfin===1?'1着！（対抗的中）':(tkfin?tkfin+'着':'－'))+'</b>':'')
+     +'<br><span style="font-size:11px;color:#9aa3b2">※対抗＝betScore（'+(tk.ex?'展示反映後':'朝の学習')+'）の2番手。検証で隣接・展示・捲り屋は p_win に織込済＝当てる力は本命確率どまり（本命が飛んだ時に44%が1着）。回収率は本命軸に劣る<b>夢枠</b>。チルトは当日データのみ・過去検証不可の参考。</span></div>';}
+  if(done){
+    misc+='<div class="rbar"><span class="rlab">結果</span>';
+    ord.forEach((w,i)=>{misc+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
+    if(r.km)misc+='<span class="kmlab">'+r.km+'</span>';
+    {const wk=winKind(r);
+     misc+='<span class="lvl '+wk.cls+'" style="margin-left:6px">'+wk.lab+(wk.rank>1?'（モデル'+wk.rank+'番手）':'的中')+'</span>';}
+    misc+='</div>';
+    if(r.cause)misc+='<div class="cause"><span class="h">結果分析</span>'+r.cause+'</div>';
+    if(r.po){
+      const plOf=c=>{let p=1,rem=s.reduce((a,b)=>a+b,0);for(const w of c){p*=s[w-1]/rem;rem-=s[w-1];}return p;};
+      const pfOf=c=>plOf([c[0],c[1]])+plOf([c[1],c[0]]);
+      const evrow=(lab,combo,po,probFn,sep)=>{if(!combo||po==null)return '';const need=1/probFn(combo),bai=po/100,ok=bai>=need;
+        return lab+' '+combo.join(sep||'-')+'：配当<b>'+bai.toFixed(1)+'倍</b> / 必要'+need.toFixed(1)+'倍 → '
+          +(ok?'<span class="ok">妙味◎(+EV)</span>':'<span style="color:#9aa3b2">届かず(-EV)</span>');};
+      misc+='<div class="cause" style="border-left-color:#5dc7e0;color:#cdd6e2"><span class="h" style="color:#7fb2ff">買えてた場合の妙味</span>'
+        +evrow('2連複',actEx,(r.po.length>2?r.po[2]:null),pfOf,'=')+'<br>'+evrow('3連単',actTri,r.po[1],plOf)+'</div>';
+    }
+  }
+  {const rd=rivalDiff(r);
+   misc+='<div class="rdbox'+(rd.prize?' prizebox':'')+'">'
+    +'<span class="h">相手の差</span><span class="lvl '+rd.cls+'">'+rd.lvl+'</span> '
+    +(rd.prize
+       ? '&#127919; <b>勝負どころ</b>：本命が強く、相手（2・3着）にも差がある。検証では同じ本命確率でも2連複/3連単の的中が一段高い帯（P(2着&#124;1着)が+7〜18pt）。点数を絞って2連複/3連単に厚く張る価値。'
+       : rd.lvl==='大'
+         ? '相手（2・3着）は絞りやすいが、本命確率が低め。1着が読みづらいので頭は広めに。'
+         : '相手が横一線で2・3着を絞りにくい。本命が強くても2連複/3連単は伸びにくい帯＝点数を欲張らない。')
+    +'<br><span style="font-size:11px;color:#7e8796">※「相手の差」＝非本命5艇の1着確率のばらつき（発走前にモデルから分かる量）。1着の精度は本命確率が決め、相手の差はもっぱら2・3着を絞れるかに効く（検証 OOS 7,862R）。</span></div>';}
+  if(!done){
+    const to=tetsuOdds(r);
+    if(to){
+      misc+='<div class="rdbox"'+(to.skip?' style="border-color:#5a2a2a"':'')+'>'
+        +'<span class="h">実オッズ判定</span>本命サイド2連単 '+to.c[0]+'-'+to.c[1]+' の実オッズ <b>'+to.odds.toFixed(1)+'倍</b>（市場の堅さの物差し・購入は2連複） → '
+        +(to.skip
+          ?'<b style="color:#f09595">&#9888; 見送り推奨</b>：本命サイドが売れすぎ（2倍未満）＝当たっても戻りが薄い帯。検証（6月・鉄板81R）ではこの帯を見送るだけで回収88.8→98.9%(+10.1pt)・的中率も向上。'
+          :to.odds<3.0
+            ?'<span style="color:#e0a93b">△ 妙味薄</span>：2〜3倍帯。参考検証では3倍未満まで見送ると回収110.2%だが対象が半減（n=33）のため目安扱い。'
+            :'<b style="color:#43c59e">&#10003; オッズ妙味あり</b>：3倍以上。鉄板の回収を支えるのはこの帯。')
+        +'<br><span style="font-size:11px;color:#7e8796">※ 公式サイトの2連単オッズを直接取得（締切40分前から約3分毎に自動更新）。オッズは締切まで動くので最終判断は直前に。</span></div>';
+    }
+  }
+  misc+='<div class="cause" style="border-left-color:#e0a93b;color:#e0c896;margin-top:10px"><span class="h" style="color:#b89a5a">期待値の見方</span>'
     +'<span class="odds" style="display:inline;color:#e0a93b">必要◯倍</span>＝この買い目が期待値プラスになる最低オッズ（＝1÷確率）。'
     +'発走前の実オッズがこれを超えていれば長期的に有利な買い目（必要倍＝AI予想確率の逆数）。</div>';
-  h+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率）。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
+  misc+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率）。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'<b>買い目は決まり手ベースに一本化</b>：'
     +(isAna
-      ? '<b>波乱含み</b>（本線2連複予想率&lt;25%）は決まり手 上位3種から相手を広く拾い、<b>均等（各¥100）</b>で2連複6点・3連単12点を手広く探る。'
+      ? '<b>波乱含み</b>（本線2連複予想率&lt;25%）は決まり手 上位3種から相手を広く拾い、<b>2連複6点・3連単12点</b>を手広く探る（各券種¥2,000配分）。'
       : '<b>2連複＝確率上位</b>（回収重視・'+nEx+'点）／<b>3連単＝決まり手で相手を絞る本命'+chip(UB.axc,'mc')+'軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着＝本命が飛ぶ）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動＝低いほど厚く。検証で的中+0.9pt）':'（本命濃厚につき対抗アタマは省略）')+'。金額は各券種¥2,000を配分（¥100単位）。')
     +'相手は実測 P(2着コース｜1着コース,決まり手) で選定＝逃げ濃厚なら差し勢、まくり差しなら差し込まれた内が2着 等。決まり手はコースが主因で個人差は弱く<b>参考</b>。'
     +'<b>「オッズ更新」を押すと実オッズでEVを計算し、旨味（+EV★）の目を券種内で上へ並べ替え</b>ます（実オッズはライブのみ・発走前に取得）。'
     +'実オッズはモデル外なので各自で確認し「必要◯倍」（＝1÷確率）と比較してください。</div>';
+  h+='<details class="miscbox"><summary>その他の情報・詳しい解説</summary>'+misc+'</details>';
   return h;
 }
 
