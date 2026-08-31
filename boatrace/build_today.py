@@ -2272,26 +2272,31 @@ function triOn(hon){return hon>=0.45;}
 function hanseiRank(list,eq,act){for(let i=0;i<list.length;i++){if(eq(list[i][0],act))return i+1;}return 0;}
 function hansei(r){
   if(!hasResult(r))return '';
-  const s=r.b.map(x=>x[1]);const ord=finishOrder(r);
-  const hon=q2conf(r),nEx=kEx(hon),nTri=kTri(hon),triBuy=triOn(hon);
+  const ps=r.b.map(x=>x[1]);const _tp=tenjiPred(r);const sb=_tp?_tp.prob.slice():ps;
+  const ord=finishOrder(r);
+  const hon=q2conf(r);
+  const ub=unifiedBuy(sb,r.kd,hon);   // 詳細ビューと同一の実際の買い目集合で的中/点数を判定
   const mc=w=>chip(w,'mc');
-  const verdict=(rk,buy,shown)=>{
+  // rk=朝の学習モデルでのPL序列（何番目に見ていたか）。hit/nBuy=現行の実際の買い目（unifiedBuy）で判定。
+  const verdict=(rk,nBuy,hit,total)=>{
     if(!rk)return '<span class="hn-x">この予想ツールの予想対象外（順位なし）</span>';
-    const need='この予想ツールで<b>'+rk+'番目</b>の予想';
-    if(!shown)return need+' → <span class="hn-x">この帯は本線見送り</span>（現行の買い対象外）';
-    if(rk<=buy)return need+' → <span class="hn-o">現行'+buy+'点の買いで的中</span>';
-    return need+' → <span class="hn-m">現行'+buy+'点では圏外（'+(rk-buy)+'番差で届かず）</span>';
+    const need='この予想ツールで<b>'+rk+'番目</b>の予想（全'+total+'通り中）';
+    if(nBuy<=0)return need+' → <span class="hn-x">この帯は見送り</span>（現行の買い対象外）';
+    if(hit)return need+' → <span class="hn-o">現行'+nBuy+'点の買いで的中</span>';
+    return need+' → <span class="hn-m">現行'+nBuy+'点の買いでは外れ</span>';
   };
   let body='';
   if(ord.length>=2){
-    const act=[ord[0],ord[1]];const rk=hanseiRank(plTopF(s,15),eqPair,act);
+    const act=[ord[0],ord[1]];const rk=hanseiRank(plTopF(ps,15),eqPair,act);
+    const hit=ub.fuku.some(c=>eqPair(c[0],act));
     body+='<div style="margin:2px 0">2連複 '+mc(Math.min(act[0],act[1]))+'='+mc(Math.max(act[0],act[1]))
-      +'：'+verdict(rk,nEx,true)+'</div>';
+      +'：'+verdict(rk,ub.fuku.length,hit,15)+'</div>';
   }
   if(ord.length>=3){
-    const act=[ord[0],ord[1],ord[2]];const rk=hanseiRank(plTop(s,3,120),eqArr,act);
+    const act=[ord[0],ord[1],ord[2]];const rk=hanseiRank(plTop(ps,3,120),eqArr,act);
+    const hit=ub.tri.some(c=>eqArr(c[0],act));
     body+='<div style="margin:2px 0">3連単 '+mc(act[0])+'&rarr;'+mc(act[1])+'&rarr;'+mc(act[2])
-      +'：'+verdict(rk,nTri,triBuy)+'</div>';
+      +'：'+verdict(rk,ub.tri.length,hit,120)+'</div>';
   }else{
     body+='<div style="margin:2px 0;color:#7e8796">3連単：3着まで確定せず（F/失格）＝反省対象外</div>';
   }
@@ -2299,7 +2304,7 @@ function hansei(r){
     +body
     +'<div style="font-size:11px;color:#7e8796;margin-top:3px">※順位＝この予想ツール（朝の学習モデル）が内部で持つ全'
     +'買い目のPL予想確率の序列＝何番目に可能性が高いと見ていたか（公式人気・オッズとは無関係／通常は非表示）。'
-    +'2連複は全15通り・3連単は全120通り中の順位。現行の買い点数（2連複'+nEx+'点／3連単'+(triBuy?nTri+'点':'見送り')+'）は参考。</div></div>';
+    +'2連複は全15通り・3連単は全120通り中の順位。的中/外れは現行の実際の買い目（2連複'+ub.fuku.length+'点／3連単'+ub.tri.length+'点）で判定。</div></div>';
 }
 // 本命確率/穴確率/荒れ度/穴筆頭。s=per-mille p_win 配列。
 // 本命=モデル1番手(p_win最大)。穴=モデル順位4-6(=軽視された艇)の1着。
