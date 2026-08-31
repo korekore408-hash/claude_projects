@@ -994,166 +994,6 @@ def recent_stats(out, payout, pmkey="b", hon_map=None):
     return {"from": dmin, "to": dmax, "rows": rows, "all": stat(T), "nf": nf}
 
 
-def game_ledger(rel, pred, model_map, hon_canon, payout, start_date,
-                daily_grant=100_000, base=None):
-    """毎日10万円チャレンジ（鉄板）: 毎日10万円を支給し、AI が選んだ鉄板レースに投票。
-    ★ルール（2026-07-23〜・繰越廃止）:
-      - 毎日 daily_grant(¥100,000) を支給し、その日はこの10万円だけで張る（毎日フラット・繰越なし）。
-        前日の勝ち分を翌日に回すルールは廃止（累計損益はそのまま日々加算）。
-      - 対象＝鉄板レース（本命確率 hon≥0.65）のみ厳選。1レース予算の約 F_RACE を
-        2連複（上位k_ex）＋3連単（上位k_tri・確率比例配分）に投票。予算超過時は比例縮小。
-      - 実配当で精算・フライング（非完走）を含む買い目は返還。
-      - 各日『何を買ったか（組番・金額）と結果（着順・的中・払戻）』を bets に記録して表示。
-    ★ステートレス: 毎ビルドで start_date〜前日の実結果から丸ごと再計算（永続化不要・自己修復）。
-    base 当日は結果待ち＝集計に反映せず「運用中」プレビューのみ返す。"""
-    from collections import defaultdict
-    F_RACE = 0.12                     # 1レース当たり資金比率（当日予算に対する割合）
-    HON_TETSU = 0.65
-    # レースを日付ごとに束ねる
-    races = {}
-    for r in rel:
-        d = r["日付"]
-        if d < start_date:
-            continue
-        rid = r["race_id"]
-        try:
-            w = int(r["枠番"])
-        except (ValueError, TypeError):
-            continue
-        pr = pred.get((rid, r["枠番"]), {})
-        try:
-            fin = int(pr.get("finish_rank"))
-        except (TypeError, ValueError):
-            fin = None
-        rc = races.setdefault(rid, {"d": d, "v": r.get("会場", ""),
-                                    "no": int(r["レース"]), "b": {}})
-        rc["b"][w] = (model_map.get((rid, w)), fin)
-    by_date = defaultdict(list)
-    for rid, rc in races.items():
-        by_date[rc["d"]].append((rid, rc))
-
-    def tetsu_picks(day_races):
-        """その日の鉄板レース（sv完備・hon≥0.65）を (rid, v, no, sv, fins, hon, settled)。"""
-        out = []
-        for rid, rc in day_races:
-            if len(rc["b"]) != 6:
-                continue
-            sv = [rc["b"][w][0] for w in range(1, 7)]
-            fins = [rc["b"][w][1] for w in range(1, 7)]
-            if any(x is None for x in sv):
-                continue
-            hon = hon_canon.get(rid)
-            if hon is None or hon < HON_TETSU:
-                continue
-            settled = any(f == 1 for f in fins)
-            out.append((rid, rc["v"], rc["no"], sv, fins, hon, settled))
-        return out
-
-    def play_day(picks, budget):
-        """budget を picks に配分して1日投票。(staked, returned, nbet, nhit, bets)。"""
-        raw = [budget * F_RACE for _ in picks]
-        tot = sum(raw) or 1
-        scale = min(1.0, budget / tot)
-        staked = returned = 0.0
-        nbet = nhit = 0
-        bets = []
-        for (rid, v, no, sv, fins, hon, _), rb in zip(picks, raw):
-            rbud = rb * scale
-            order = sorted([w for w in range(1, 7)
-                            if fins[w - 1] and fins[w - 1] >= 1],
-                           key=lambda w: fins[w - 1])
-            if not order or fins[order[0] - 1] != 1:
-                continue
-            fly = {w for w in range(1, 7) if not fins[w - 1]}
-            po = payout.get(rid, (0, 0, 0))
-            kx, kt = k_ex(hon), k_tri(hon)
-            r_stake = r_ret = 0.0
-            hit = False
-            e2, e3 = [], []
-            # 2連複（券種予算＝レース予算の半分）
-            buy2 = _pf_topk(sv, kx)
-            b2 = round(rbud * 0.5 / 100) * 100
-            act2 = tuple(sorted(order[:2])) if len(order) >= 2 else None
-            if buy2 and b2 >= len(buy2) * 100:
-                yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon), budget=b2)
-                for c, y in zip(buy2, yen2):
-                    refunded = any(w in fly for w in c)
-                    ch = (c == act2) and not refunded
-                    if not refunded:
-                        r_stake += y
-                    if ch:
-                        r_ret += round((po[2] if len(po) > 2 else 0) * y / 100)
-                        hit = True
-                    e2.append(["".join(str(w) for w in c), int(y), 1 if ch else 0])
-            # 3連単（鉄板は穴帯・穴型除外に非該当）
-            buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), kt, hon, _lane_rank_map(sv))
-            b3 = round(rbud * 0.5 / 100) * 100
-            act3 = tuple(order[:3]) if len(order) >= 3 else None
-            if buy3 and b3 >= len(buy3) * 100 and len(order) >= 3:
-                yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon), budget=b3)
-                for c, y in zip(buy3, yen3):
-                    refunded = any(w in fly for w in c)
-                    ch = (c == act3) and not refunded
-                    if not refunded:
-                        r_stake += y
-                    if ch:
-                        r_ret += round(po[1] * y / 100)
-                        hit = True
-                    e3.append(["".join(str(w) for w in c), int(y), 1 if ch else 0])
-            if not e2 and not e3:
-                continue
-            staked += r_stake
-            returned += r_ret
-            nbet += 1
-            nhit += 1 if hit else 0
-            bets.append({"v": v, "no": no,
-                         "res": "".join(str(w) for w in order[:3]),
-                         "e2": e2, "e3": e3,
-                         "stake": round(r_stake), "ret": round(r_ret),
-                         "hit": 1 if hit else 0})
-        return staked, returned, nbet, nhit, bets
-
-    grant = float(daily_grant)
-    all_rows = []
-    for d in sorted(by_date):
-        if d == base:
-            continue                       # 当日は下でプレビュー
-        picks = [p for p in tetsu_picks(by_date[d]) if p[6]]   # 精算済みのみ
-        if not picks:
-            continue
-        budget = grant                     # 毎日フラット10万円（繰越なし）
-        staked, returned, nbet, nhit, bets = play_day(picks, budget)
-        if nbet == 0:
-            continue
-        all_rows.append({"d": d, "mon": d[:7], "n": len(picks), "nbet": nbet,
-                         "nhit": nhit, "budget": round(budget),
-                         "stake": round(staked), "ret": round(returned),
-                         "pl": round(returned - staked), "bets": bets})
-
-    # 毎月リセット: パネルは最新月ぶんのみ。累計損益は月初にゼロへ戻す。
-    cur_mon = all_rows[-1]["mon"] if all_rows else (base[:7] if base else None)
-    rows = [r for r in all_rows if r["mon"] == cur_mon]
-    cum = peak = 0.0
-    for r in rows:
-        cum += r["pl"]
-        peak = max(peak, cum)
-        r["cum"] = round(cum)
-
-    # 当日プレビュー（結果待ち）: 予算＝毎日10万円。
-    pending = None
-    if base and base in by_date:
-        bp = tetsu_picks(by_date[base])
-        if bp:
-            pending = {"d": base, "n": len(bp), "budget": round(grant)}
-
-    return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
-            "peak": round(peak), "mon": cur_mon,
-            "staked": round(sum(r["stake"] for r in rows)),
-            "ret": round(sum(r["ret"] for r in rows)),
-            "rows": rows, "pending": pending,
-            "from": (cur_mon + "-01") if cur_mon else start_date}
-
-
 def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays=30):
     """今日から ndays 日さかのぼる「日別」回収率の時系列（券種別）。
     ★買い目＝サイト本体／上部サマリー(daySummary)と同一ポリシー（順位付け＝学習モデル、
@@ -1263,20 +1103,20 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
             "from": days[0] if days else None, "to": days[-1] if days else None}
 
 
-def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date,
-                    daily_grant=100_000, base=None):
-    """毎日10万円チャレンジ【穴帯】: 穴帯(本命確率<0.45)レースだけを狙い、
-    穴予想＝対抗(学習モデル2番手)アタマ6点(_taikou_ref／帯別方式・波乱帯)を3連単でフル購入。
-    ※backtest 波乱帯 対抗6点=回収88.2%（穴候補6点79.7%より上位）で統一。
-    ★ルール（2026-07-23〜・鉄板版と同じ・繰越廃止）:
-      - 毎日 daily_grant(¥100,000) 支給し、その日はこの10万円だけで張る（毎日フラット・繰越なし）。
-        前日の勝ち分を翌日に回すルールは廃止。
-      - 対象＝その日の穴帯レース全て。1レース予算の約 F_RACE を6点に均等配分(¥100単位)。
-      - 各日『何を買ったか（6点の組番）と結果（着順・的中・払戻）』を bets に記録して表示。
-    ★ステートレス（毎ビルド再計算）。base当日は結果待ち＝集計不変のプレビュー。"""
+def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
+                    daily_grant=100_000, base=None, topn=10):
+    """毎日10万円チャレンジ（2026-09〜新方式）: 本命確率(最有力艇の1着予想率)と
+    本命の堅さ(本線2連複予想率=hon)をミックス評価し、その日の上位 topn レースを厳選、
+    毎日10万円を均等配分して投票。
+    ★ルール（2026-09-01〜／穴帯版・鉄板版の旧方式は廃止）:
+      - 毎日 daily_grant(¥100,000) 支給・毎日フラット（繰越なし）。
+      - ミックス指標 = √(本命確率 × 本命の堅さ)。当日の全レースをこの指標で降順に並べ、
+        上位 topn(=10) レースだけを対象に 10万円を均等配分（各≈1万円）。
+      - 各レースの買い目はサイト本体と同一ポリシー（2連複=上位k_ex／3連単=上位k_tri・
+        確率比例配分／3連単は本命の堅さ hon≥0.45 のみ）。実配当で精算・フライング(非完走)は返還。
+      - 各日『何を買ったか（組番・金額）と結果』を bets に記録して表示。
+    ★ステートレス（毎ビルド再計算・自己修復）。base当日は結果待ち＝プレビューのみ。"""
     from collections import defaultdict
-    F_RACE = 0.01                      # 穴は高分散・対象レースが多い→1レース控えめ
-    HON_ANA = 0.45
     races = {}
     for r in rel:
         d = r["日付"]
@@ -1293,14 +1133,15 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         except (TypeError, ValueError):
             fin = None
         rc = races.setdefault(rid, {"d": d, "v": r.get("会場", ""),
-                                    "no": int(r["レース"]), "b": {}, "ab": {}})
+                                    "no": int(r["レース"]), "b": {}})
         rc["b"][w] = (model_map.get((rid, w)), fin)
-        rc["ab"][w] = api_map.get((rid, w))
     by_date = defaultdict(list)
     for rid, rc in races.items():
         by_date[rc["d"]].append((rid, rc))
 
-    def ana_picks(day_races):
+    def mix_picks(day_races):
+        """その日の全レース(sv完備)を (rid,v,no,sv,fins,hon,p1,score,settled)。
+        score=√(本命確率×本命の堅さ)。p1=最有力艇の正規化1着予想率（本命確率）。"""
         out = []
         for rid, rc in day_races:
             if len(rc["b"]) != 6:
@@ -1310,52 +1151,83 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
             if any(x is None for x in sv):
                 continue
             hon = hon_canon.get(rid)
-            if hon is None or hon >= HON_ANA:
+            if hon is None:
                 continue
+            tot = sum(sv) or 1
+            p1 = max(sv) / tot                         # 本命確率＝最有力艇の1着予想率
+            score = (max(p1, 0.0) * max(hon, 0.0)) ** 0.5   # ミックス指標（幾何平均）
             settled = any(f == 1 for f in fins)
-            out.append((rid, rc["v"], rc["no"], sv, fins, settled))
+            out.append((rid, rc["v"], rc["no"], sv, fins, hon, p1, score, settled))
         return out
 
+    def pick_top(day_races, need_settled):
+        picks = mix_picks(day_races)
+        if need_settled:
+            picks = [p for p in picks if p[8]]          # 精算済み（1着確定）のみ
+        picks.sort(key=lambda p: p[7], reverse=True)    # ミックス指標で降順
+        return picks[:topn]
+
     def play_day(picks, budget):
-        raw = [budget * F_RACE for _ in picks]
-        tot = sum(raw) or 1
-        scale = min(1.0, budget / tot)
+        """budget を picks(上位topn) に均等配分して1日投票。"""
+        nsel = len(picks)
+        if not nsel:
+            return 0.0, 0.0, 0, 0, []
+        per = budget / nsel                             # 各レース均等（通常 10万÷10=1万）
         staked = returned = 0.0
         nbet = nhit = 0
         bets = []
-        for (rid, v, no, sv, fins, _), rb in zip(picks, raw):
-            rbud = rb * scale
+        for (rid, v, no, sv, fins, hon, p1, score, _) in picks:
             order = sorted([w for w in range(1, 7)
                             if fins[w - 1] and fins[w - 1] >= 1],
                            key=lambda w: fins[w - 1])
-            if len(order) < 3 or fins[order[0] - 1] != 1:
+            if not order or fins[order[0] - 1] != 1:
                 continue
             fly = {w for w in range(1, 7) if not fins[w - 1]}
-            po = payout.get(rid, (0, 0))
-            cand = _taikou_ref(sv)
-            per = round(rbud / len(cand) / 100) * 100      # 6点均等・¥100単位
-            if per < 100:
-                continue
-            act3 = tuple(order[:3])
+            po = payout.get(rid, (0, 0, 0))
+            kx, kt = k_ex(hon), k_tri(hon)
             r_stake = r_ret = 0.0
             hit = False
-            e3 = []
-            for c in cand:
-                refunded = any(w in fly for w in c)
-                ch = (c == act3) and not refunded
-                if not refunded:
-                    r_stake += per
-                if ch:
-                    r_ret += round(po[1] * per / 100)
-                    hit = True
-                e3.append(["".join(str(w) for w in c), 1 if ch else 0])
+            e2, e3 = [], []
+            # 2連複（券種予算＝レース予算の半分）
+            buy2 = _pf_topk(sv, kx)
+            b2 = round(per * 0.5 / 100) * 100
+            act2 = tuple(sorted(order[:2])) if len(order) >= 2 else None
+            if buy2 and b2 >= len(buy2) * 100:
+                yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon), budget=b2)
+                for c, y in zip(buy2, yen2):
+                    refunded = any(w in fly for w in c)
+                    ch = (c == act2) and not refunded
+                    if not refunded:
+                        r_stake += y
+                    if ch:
+                        r_ret += round((po[2] if len(po) > 2 else 0) * y / 100)
+                        hit = True
+                    e2.append(["".join(str(w) for w in c), int(y), 1 if ch else 0])
+            # 3連単（triOn: 本命の堅さ hon≥0.45 のみ・標準帯は穴型除外）
+            if hon >= 0.45:
+                buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), kt, hon, _lane_rank_map(sv))
+                b3 = round(per * 0.5 / 100) * 100
+                act3 = tuple(order[:3]) if len(order) >= 3 else None
+                if buy3 and b3 >= len(buy3) * 100 and len(order) >= 3:
+                    yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon), budget=b3)
+                    for c, y in zip(buy3, yen3):
+                        refunded = any(w in fly for w in c)
+                        ch = (c == act3) and not refunded
+                        if not refunded:
+                            r_stake += y
+                        if ch:
+                            r_ret += round(po[1] * y / 100)
+                            hit = True
+                        e3.append(["".join(str(w) for w in c), int(y), 1 if ch else 0])
+            if not e2 and not e3:
+                continue
             staked += r_stake
             returned += r_ret
             nbet += 1
             nhit += 1 if hit else 0
             bets.append({"v": v, "no": no,
                          "res": "".join(str(w) for w in order[:3]),
-                         "e3": e3, "per": int(per),
+                         "e2": e2, "e3": e3,
                          "stake": round(r_stake), "ret": round(r_ret),
                          "hit": 1 if hit else 0})
         return staked, returned, nbet, nhit, bets
@@ -1365,20 +1237,20 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
     for d in sorted(by_date):
         if d == base:
             continue
-        picks = [p for p in ana_picks(by_date[d]) if p[5]]
+        picks = pick_top(by_date[d], True)     # 精算済みのみで上位topn
         if not picks:
             continue
-        budget = grant                     # 毎日フラット10万円（繰越なし）
-        staked, returned, nbet, nhit, bets = play_day(picks, budget)
+        staked, returned, nbet, nhit, bets = play_day(picks, grant)
         if nbet == 0:
             continue
         all_rows.append({"d": d, "mon": d[:7], "n": len(picks), "nbet": nbet,
-                         "nhit": nhit, "budget": round(budget),
+                         "nhit": nhit, "budget": round(grant),
                          "stake": round(staked), "ret": round(returned),
                          "pl": round(returned - staked), "bets": bets})
 
     # 毎月リセット: パネルは最新月ぶんのみ。累計損益は月初にゼロへ戻す。
-    cur_mon = all_rows[-1]["mon"] if all_rows else (base[:7] if base else None)
+    cur_mon = (all_rows[-1]["mon"] if all_rows
+               else max((base[:7] if base else start_date[:7]), start_date[:7]))
     rows = [r for r in all_rows if r["mon"] == cur_mon]
     cum = peak = 0.0
     for r in rows:
@@ -1386,14 +1258,15 @@ def game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout, start_date
         peak = max(peak, cum)
         r["cum"] = round(cum)
 
+    # 当日プレビュー（結果待ち）: 上位topn レース・予算＝毎日10万円。
     pending = None
     if base and base in by_date:
-        bp = ana_picks(by_date[base])
+        bp = pick_top(by_date[base], False)
         if bp:
             pending = {"d": base, "n": len(bp), "budget": round(grant)}
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
-            "peak": round(peak), "mon": cur_mon,
+            "peak": round(peak), "mon": cur_mon, "topn": topn,
             "staked": round(sum(r["stake"] for r in rows)),
             "ret": round(sum(r["ret"] for r in rows)),
             "rows": rows, "pending": pending,
@@ -1663,15 +1536,12 @@ def main():
     regime_api = regime_result(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
 
     rsp = rival_terciles(pred, args.stats_from)
-    # 毎日10万円チャレンジ（7/1〜）: 全履歴からステートレスに毎回再計算（永続化不要）。
-    game = game_ledger(rel, pred, model_map, hon_canon, payout_all,
-                       "2026-07-01", 100_000, base)
-    print(f"  毎日10万円チャレンジ: 累計損益 {'+' if game['pl']>=0 else ''}¥{game['pl']:,} "
+    # 毎日10万円チャレンジ（2026-09〜新方式）: 本命確率×本命の堅さのミックス上位10レースに
+    # 毎日10万円を均等配分。穴帯版は廃止。全履歴からステートレスに毎回再計算（永続化不要）。
+    game = game_ledger_mix(rel, pred, model_map, hon_canon, payout_all,
+                           "2026-09-01", 100_000, base, 10)
+    print(f"  毎日10万円チャレンジ（ミックス上位10）: 累計損益 {'+' if game['pl']>=0 else ''}¥{game['pl']:,} "
           f"（精算 {game['days']}日・払戻¥{game['ret']:,}/賭¥{game['staked']:,}）")
-    game_ana = game_ledger_ana(rel, pred, model_map, api_map, hon_canon, payout_all,
-                               "2026-07-01", 100_000, base)
-    print(f"  毎日10万円チャレンジ【穴】: 累計損益 {'+' if game_ana['pl']>=0 else ''}¥{game_ana['pl']:,} "
-          f"（精算 {game_ana['days']}日・払戻¥{game_ana['ret']:,}/賭¥{game_ana['staked']:,}）")
     # 直近30日の日別回収率（券種別：2連単／3連単／穴目）。折れ線グラフ用。
     daily_rec = daily_recovery(rel, pred, model_map, api_map, hon_canon,
                                payout_all, base, 30)
@@ -1685,7 +1555,7 @@ def main():
     payload = {"labels": labels, "base": base, "races": out,
                "vstats_api": vstats_api, "recent_api": recent_api,
                "regime_api": regime_api, "rsp": rsp, "game": game,
-               "game_ana": game_ana, "daily_rec": daily_rec, "cal": cal,
+               "daily_rec": daily_rec, "cal": cal,
                "vt": vt_base}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
                                                separators=(",", ":")))
@@ -2983,42 +2853,20 @@ function gameView(){
   const pl=G.pl, up=pl>=0, col=up?'#43c59e':'#e06b6b', grantTot=G.grant*G.days;
   const ml=G.mon?(+G.mon.slice(5,7))+'月':'';
   let h='<div style="margin-top:8px;border:1px solid #2a3550;border-radius:12px;padding:14px;background:linear-gradient(180deg,#141c2e,#0f1522)">';
-  h+='<div style="font-size:16px;font-weight:700;color:#ffd66b">💰 毎日10万円チャレンジ <span style="font-size:12px;color:#8b96a8;font-weight:500">（'+ml+'・鉄板・毎日10万円支給・毎月リセット）</span></div>';
+  const tn=G.topn||10;
+  h+='<div style="font-size:16px;font-weight:700;color:#ffd66b">💰 毎日10万円チャレンジ <span style="font-size:12px;color:#8b96a8;font-weight:500">（'+ml+'・本命確率×堅さ 上位'+tn+'R・毎日10万円支給・毎月リセット）</span></div>';
   h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:8px 0 2px">'
     +'<span style="font-size:30px;font-weight:800;color:'+col+'">'+(up?'+':'')+yen(pl)+'</span>'
     +'<span style="font-size:13px;font-weight:700;color:#8b96a8">'+ml+'の損益</span></div>';
   h+='<div style="font-size:11px;color:#8b96a8">精算 '+G.days+'日 ／ 支給総額 '+yen(grantTot)+' ／ 賭け金 '+yen(G.staked)+' ／ 払戻 '+yen(G.ret)+' ／ 最高到達 '+(G.peak>=0?'+':'')+yen(G.peak)+'</div>';
   if(G.pending&&G.pending.n)
-    h+='<div style="font-size:12px;color:#7fb2ff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：鉄板 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円）で投票予定（結果は翌朝反映）</div>';
+    h+='<div style="font-size:12px;color:#7fb2ff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：ミックス指標 上位'+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円・各≈1万円）で投票予定（結果は翌朝反映）</div>';
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,false);
-  else h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend"><b>新ルール</b>：<b>毎日10万円</b>を支給し、鉄板レース（本線2連複予想率50％以上）だけを厳選、1レース予算の約12％を2連複＋3連単（確率比例配分）に投票。'
-    +'<b>毎日フラットに10万円</b>で勝負（前日の勝ち分を翌日に回すルールは廃止）。実際の配当で精算し、フライングは返還。'
+  else h+='<div class="meta">まだ精算済みの日がありません（新方式は<b>9月から開始</b>。初日の結果は翌朝に反映されます）。</div>';
+  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、当日の全レースを<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに10万円を均等配分（各≈1万円）。各レースの買い目はサイト本体と同一（2連複＋3連単・確率比例配分／3連単は堅さ45％以上のみ）。'
+    +'<b>毎日フラットに10万円</b>で勝負（繰越なし）。実際の配当で精算し、フライングは返還。'
     +'各日の行を<b>タップするとその日に何を買ったか（組番・金額）と結果</b>が開きます。✓＝的中。※控除率25％の壁があり増え続ける保証はありません＝AIの実力を可視化する実験です。</div>';
-  h+='</div>';
-  return h;
-}
-// 毎日10万円チャレンジ【穴帯】パネル。本家(鉄板)の下に対比表示。
-function gameViewAna(){
-  const G=D.game_ana; if(!G||G.grant==null)return '';
-  const yen=v=>'¥'+Math.round(v).toLocaleString('en-US');
-  const pl=G.pl, up=pl>=0, col=up?'#43c59e':'#e06b6b', grantTot=G.grant*G.days;
-  const ml=G.mon?(+G.mon.slice(5,7))+'月':'';
-  let h='<div style="margin-top:12px;border:1px solid #3a2a50;border-radius:12px;padding:14px;background:linear-gradient(180deg,#1c1430,#140f22)">';
-  h+='<div style="font-size:16px;font-weight:700;color:#c79bff">🕳️ 毎日10万円チャレンジ【穴帯】 <span style="font-size:12px;color:#9a8bb8;font-weight:500">（'+ml+'・穴だけ追う実験・毎月リセット）</span></div>';
-  h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:8px 0 2px">'
-    +'<span style="font-size:30px;font-weight:800;color:'+col+'">'+(up?'+':'')+yen(pl)+'</span>'
-    +'<span style="font-size:13px;font-weight:700;color:#9a8bb8">'+ml+'の損益</span></div>';
-  h+='<div style="font-size:11px;color:#9a8bb8">精算 '+G.days+'日 ／ 支給総額 '+yen(grantTot)+' ／ 賭け金 '+yen(G.staked)+' ／ 払戻 '+yen(G.ret)+' ／ 最高到達 '+(G.peak>=0?'+':'')+yen(G.peak)+'</div>';
-  if(G.pending&&G.pending.n)
-    h+='<div style="font-size:12px;color:#c79bff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：穴帯 '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円）で投票予定（結果は翌朝反映）</div>';
-  h+=gameChart(G);
-  if(G.rows.length)h+=gameDays(G,true);
-  else h+='<div class="meta">まだ精算済みの日がありません（初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend">穴狙いルール（実験）：<b>毎日10万円</b>を支給し、<b>波乱帯レース（本線2連複予想率25％未満）だけ</b>を対象に、1レース予算の約1％を<b>穴予想＝対抗（予想2番手）アタマ6点</b>（3連単・帯別方式）に均等投票。'
-    +'毎日フラットに10万円で勝負（前日の勝ち分を翌日に回すルールは廃止）。各日の行を<b>タップすると6点の組番と結果</b>が開きます。'
-    +'※波乱帯の穴予想は対抗6点でbacktest回収88.2％だが高分散＝<b>「穴を追い続けるとどうなるか」を可視化する実験</b>。本家（鉄板）と見比べてください。</div>';
   h+='</div>';
   return h;
 }
@@ -3135,7 +2983,6 @@ function statsView(){
   const RG=D.regime_api;
   let h=nav();
   h+=gameView();
-  h+=gameViewAna();
   h+=recentRecoveryView();
   h+='<div class="meta" style="margin-top:6px">'
     +'<b style="color:#7fb2ff">AI予想（学習モデル）</b>の成績。'
