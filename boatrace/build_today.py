@@ -739,6 +739,101 @@ def regime_result(rel, pred, score_map, hist, payout, since, hon_map=None):
             for i, a in enumerate(agg)]
 
 
+# 買い目1点ごとの「想定オッズ帯」しきい値（=1/モデル予想確率）。券種別に持つのは、
+# サイトが上位k点しか買わない＝買い目がどれも堅い組に寄るため、統一尺度だと2連複が
+# ほぼ鉄板・3連単が標準〜穴目に偏りセルが空になるから。値は買い目の想定オッズの概ね
+# 三分位（backtest 2026年・2連複69,699点／3連単212,798点）＝各帯が十分な件数で埋まる。
+COMBO_ODDS_CUTS = {"ex": (3.5, 5.5), "tri": (15.0, 22.0)}
+
+
+def combo_class_result(rel, pred, score_map, payout, since, hon_map,
+                       cuts=COMBO_ODDS_CUTS):
+    """買い目（1点ずつ）を想定オッズ帯（鉄板目/標準目/穴目）に細分化し、券種別に
+    その帯ごとの的中率（点単位）・回収率を集計する。regime_result がレース単位の
+    荒れ度別なのに対し、こちらは「買い目そのもの」を分類する追加の軸。
+    分類基準＝各買い目のモデル予想確率の逆数＝想定オッズ（cuts＝券種別しきい値）。
+    買い目＝regime_result と同一の変動点数（2連複 k_ex≤3 / 3連単 k_tri≤8・各100円）。
+    的中率 = 的中点数 / 買った点数（点単位）。回収率 = Σ配当 /(点数×100)×100。
+    返り値 {"ex":[{lab,n,h,r}×3], "tri":[...×3], "cuts":{"ex":[..],"tri":[..]}}。"""
+    races = {}
+    for r in rel:
+        if r["日付"] < since:
+            continue
+        rid = r["race_id"]
+        pr = pred.get((rid, r["枠番"]), {})
+        try:
+            pm = score_map.get((rid, int(r["枠番"])))
+        except (TypeError, ValueError):
+            pm = None
+        try:
+            fin = int(pr.get("finish_rank"))
+        except (TypeError, ValueError):
+            fin = None
+        rc = races.setdefault(rid, {"b": {}})
+        rc["b"][int(r["枠番"])] = (pm, fin)
+
+    labs = ["鉄板目", "標準目", "穴目"]
+    ex_c, tri_c = cuts["ex"], cuts["tri"]
+    # agg[kind][band] = {"n","h","ret"}
+    agg = {"ex": [{"n": 0, "h": 0, "ret": 0} for _ in range(3)],
+           "tri": [{"n": 0, "h": 0, "ret": 0} for _ in range(3)]}
+
+    def band(odds, c):
+        return 0 if odds < c[0] else (1 if odds < c[1] else 2)
+
+    for rid, rc in races.items():
+        if len(rc["b"]) != 6:
+            continue
+        s = [rc["b"][w][0] for w in range(1, 7)]
+        fins = [rc["b"][w][1] for w in range(1, 7)]
+        if any(x is None for x in s):
+            continue
+        order = sorted([w for w in range(1, 7)
+                        if fins[w - 1] is not None and fins[w - 1] >= 1],
+                       key=lambda w: fins[w - 1])
+        if len(order) < 2 or fins[order[0] - 1] != 1:
+            continue
+        hon = hon_map.get(rid)
+        if hon is None:
+            continue
+        m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0)
+        po = payout.get(rid, (0, 0, 0))
+        # 2連複（順不同ペア・上位 k_ex）
+        b2 = min(k_ex(hon), m * (m - 1) // 2)
+        if b2 > 0:
+            act2 = frozenset(order[:2])
+            for pair in _pf_topk(s, b2):
+                p = _pf_prob(s, pair)
+                if p <= 0:
+                    continue
+                a = agg["ex"][band(1.0 / p, ex_c)]
+                a["n"] += 1
+                if frozenset(pair) == act2:
+                    a["h"] += 1
+                    a["ret"] += (po[2] if len(po) > 2 else 0)
+        # 3連単（上位 k_tri）
+        b3 = min(k_tri(hon), m * (m - 1) * (m - 2))
+        if len(order) >= 3 and b3 > 0:
+            act3 = tuple(order[:3])
+            for combo in _pl_topk(s, 3, b3):
+                p = _pl_prob(s, list(combo))
+                if p <= 0:
+                    continue
+                a = agg["tri"][band(1.0 / p, tri_c)]
+                a["n"] += 1
+                if tuple(combo) == act3:
+                    a["h"] += 1
+                    a["ret"] += po[1]
+
+    pct = lambda x, n: round(x / n * 100, 1) if n else 0
+    mk = lambda arr: [{"lab": labs[i], "n": a["n"],
+                       "h": pct(a["h"], a["n"]),
+                       "r": pct(a["ret"], a["n"] * 100)}
+                      for i, a in enumerate(arr)]
+    return {"ex": mk(agg["ex"]), "tri": mk(agg["tri"]),
+            "cuts": {"ex": list(ex_c), "tri": list(tri_c)}}
+
+
 def load_kresult(keep):
     """keep の K-file から race_id -> {km:決まり手, shin:{枠:進入}, st:{枠:ST}}。"""
     yy = {d[2:4] + d[5:7] + d[8:10] for d in keep}
@@ -1534,6 +1629,7 @@ def main():
     vstats_api = venue_stats(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
     recent_api = recent_stats(out, payout, "b", hon_canon)
     regime_api = regime_result(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
+    combo_api = combo_class_result(rel, pred, model_map, payout_all, args.stats_from, hon_canon)
 
     rsp = rival_terciles(pred, args.stats_from)
     # 毎日10万円チャレンジ（2026-09〜新方式）: 本命確率×本命の堅さのミックス上位10レースに
@@ -1554,7 +1650,8 @@ def main():
     print(f"  会場展示ベースライン: {len(vt_base)}場（展示タイムの会場補正z用）")
     payload = {"labels": labels, "base": base, "races": out,
                "vstats_api": vstats_api, "recent_api": recent_api,
-               "regime_api": regime_api, "rsp": rsp, "game": game,
+               "regime_api": regime_api, "combo_api": combo_api,
+               "rsp": rsp, "game": game,
                "daily_rec": daily_rec, "cal": cal,
                "vt": vt_base}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
@@ -3053,6 +3150,34 @@ function statsView(){
       +'回収率は払戻÷賭け金で、本命1着は単勝オッズが無いため対象外＝2連複・3連単のみ。'
       +'いずれの分類も回収率は100％（赤破線）未満が基本＝控除率約25％の壁で、確率だけで機械的に買うと長期では負ける。'
       +'「変動点数」は堅い予想ほど少点／荒れ予想ほど多点に自動調整。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
+  }
+  // 買い目（1点ずつ）を想定オッズ帯（鉄板目/標準目/穴目）に細分化した的中率・回収率
+  const CB=D.combo_api;
+  if(CB&&CB.ex&&(CB.ex.some(r=>r.n)||CB.tri.some(r=>r.n))){
+    const cE=CB.cuts.ex, cT=CB.cuts.tri;
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">買い目区分別（想定オッズ帯）の的中率と回収率（2026年〜）</div>';
+    h+='<div class="meta">上のレース単位の荒れ度（鉄板/標準/穴）を<b>さらに買い目1点ずつに細分化</b>。'
+      +'各買い目を<b>想定オッズ（＝1÷モデル予想確率）</b>で3区分：<b>鉄板目</b>＝堅い組（低オッズ）／<b>標準目</b>／<b>穴目</b>＝薄い組（高オッズ）。'
+      +'区切りは券種別（サイトは上位数点しか買わず買い目が堅い組に寄るため統一尺度だと帯が偏る）＝'
+      +'<b>2連複</b> '+cE[0]+'倍／'+cE[1]+'倍　<b>3連単</b> '+cT[0]+'倍／'+cT[1]+'倍（各券種の買い目想定オッズの概ね三分位）。'
+      +'的中率＝その帯の買い目が当たった<b>点の割合</b>（レース単位でなく点単位）・回収率＝Σ配当÷（点数×100円）。</div>';
+    const cell=(v,extra)=>'<td class="num'+(extra?' '+extra:'')+'">'+v+'%</td>';
+    const cbrow=(e,t)=>'<tr><td class="k">'+e.lab+'</td>'
+      +'<td class="num scol g2">'+e.n+'</td>'+cell(e.h,'g2')
+      +'<td class="num g2"><b class="'+recCls(e.r)+'">'+e.r+'%</b></td>'
+      +'<td class="num scol g3">'+t.n+'</td>'+cell(t.h,'g3')
+      +'<td class="num g3"><b class="'+recCls(t.r)+'">'+t.r+'%</b></td></tr>';
+    h+='<div class="swrap"><table class="st"><thead><tr>'
+      +'<th class="k">買い目区分</th>'
+      +'<th class="g2">2連複<br>点数</th><th class="g2">的中率</th><th class="g2">回収率</th>'
+      +'<th class="g3">3連単<br>点数</th><th class="g3">的中率</th><th class="g3">回収率</th></tr></thead><tbody>';
+    for(let i=0;i<3;i++)h+=cbrow(CB.ex[i],CB.tri[i]);
+    h+='</tbody></table></div>';
+    h+='<div class="legend">買い目を「堅い組か薄い組か」で分けた内訳。<b>想定オッズが上がるほど的中率は下がる</b>（当たりにくい薄い組）のが基本。'
+      +'回収率は帯ごとの旨味＝薄い組の方が高いか低いかを見る指標だが、'
+      +'サイトは元々<b>上位数点の堅い組しか買わない</b>ため「穴目」も相対的な薄さで、万舟級の大穴は含みません。'
+      +'※点単位の的中率はレース単位より低く出ます（1レースで複数点買い、当たるのは基本1点）。'
+      +'いずれの帯も回収率は100％未満が基本（控除率約25％の壁）。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
   }
   return h;
 }
