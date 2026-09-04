@@ -1488,7 +1488,7 @@ function statsView(){
   // 買い目（1点ずつ）を想定オッズ帯（鉄板目/標準目/穴目）に細分化した的中率・回収率
   const CB=D.combo_api;
   if(CB&&CB.ex&&(CB.ex.some(r=>r.n)||CB.tri.some(r=>r.n))){
-    const cE=CB.cuts.ex, cT=CB.cuts.tri;
+    const cE=CB.cuts.ex, cT=CB.cuts.tri;const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">買い目区分別（想定オッズ帯）の的中率と回収率（2026年〜）</div>';
     h+='<div class="meta">上のレース単位の荒れ度（鉄板/標準/穴）を<b>さらに買い目1点ずつに細分化</b>。'
       +'各買い目を<b>想定オッズ（＝1÷モデル予想確率）</b>で3区分：<b>鉄板目</b>＝堅い組（低オッズ）／<b>標準目</b>／<b>穴目</b>＝薄い組（高オッズ）。'
