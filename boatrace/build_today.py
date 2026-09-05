@@ -2133,8 +2133,8 @@ function arRank(sb,kd,nMethods){
 function unifiedBuy(sb,kd,hon){
   const ana=hon<0.45;
   if(!ana){
-    const R=arRank(sb,kd,2),nEx=kEx(hon),nTri=kTri(hon);
-    const fuku=plTopF(sb,nEx);                                   // 2連複＝従来確率上位（回収重視）
+    const R=arRank(sb,kd,2),nTri=kTri(hon);
+    const fuku=fukuStd(sb);                                      // 2連複＝標準目のみ（想定オッズ3.5〜5.5倍・全部）
     const pool=R.aite.slice(0,4),cand=[];                        // 3連単＝本命アタマ 決まり手軸流し
     for(const a of pool)for(const b of pool)if(a!==b)cand.push([[R.axc,a+1,b+1],plProbOf(sb,[R.axc,a+1,b+1])]);
     cand.sort((x,y)=>y[1]-x[1]);
@@ -2156,11 +2156,7 @@ function unifiedBuy(sb,kd,hon){
     return {fuku:fuku,tri:tri,band:'std',ax:R.ax,axc:R.axc,methods:R.methods,taik:tkc,tmLab:tmLab,altN:altN,altF:altF,honC:honC};
   }else{
     const R=arRank(sb,kd,3),pool=R.aite.slice(0,5);              // 波乱＝上位3種・広く
-    const fc=[];
-    for(const j of pool)fc.push([[Math.min(R.axc,j+1),Math.max(R.axc,j+1)],pfProb(sb,R.axc,j+1)]);
-    for(let i=0;i<pool.length;i++)for(let j=i+1;j<pool.length;j++){const a=pool[i]+1,b=pool[j]+1;fc.push([[Math.min(a,b),Math.max(a,b)],pfProb(sb,a,b)]);}
-    fc.sort((x,y)=>y[1]-x[1]);
-    const sf=new Set(),fuku=[];for(const c of fc){const k=c[0].join('-');if(!sf.has(k)){sf.add(k);fuku.push(c);}if(fuku.length>=4)break;}   // 2連複は最大4点（5点未満）
+    const fuku=fukuStd(sb);                                      // 2連複＝標準目のみ（全帯共通・想定オッズ3.5〜5.5倍）
     const heads=[R.ax].concat(pool.slice(0,3)),tset=[R.ax].concat(pool),tc=[];  // アタマ＝本命＋上位相手3
     for(const hh of heads)for(const a of tset)for(const b of tset)if(hh!==a&&hh!==b&&a!==b)tc.push([[hh+1,a+1,b+1],plProbOf(sb,[hh+1,a+1,b+1])]);
     tc.sort((x,y)=>y[1]-x[1]);
@@ -2186,6 +2182,14 @@ function plTopF(s,k){
   const out=Object.keys(m).map(key=>[key.split('-').map(Number),m[key]]);
   out.sort((x,y)=>y[1]-x[1]);
   return out.slice(0,k);
+}
+// 2連複「標準目のみ」運用（2026-09 backtest 30,599R）: 全15ペアのうち想定オッズが標準目帯
+// （＝D.combo_api.cuts.ex・既定3.5〜5.5倍）に入るペアだけを確率順に全部買う。検証では標準目のみ＝
+// 回収83.0%で、本命目/波乱目を混ぜる（現行全帯82.6%）より最良かつ安定（点数を増やしても83%で頭打ち・
+// 波乱目を足すほど悪化）。該当ペアが無いレースは2連複を見送る。
+function fukuStd(s){
+  const cu=(D.combo_api&&D.combo_api.cuts&&D.combo_api.cuts.ex)?D.combo_api.cuts.ex:[3.5,5.5];
+  return plTopF(s,15).filter(c=>{const p=c[1];if(!(p>0))return false;const od=1/p;return od>=cu[0]&&od<cu[1];});
 }
 // 荒れ度/点数の基準値＝本線2連複予想率(q2f・朝の学習モデル)を hon帯スケールへ写像。
 // q2f0.50→0.65(鉄板)/0.25→0.45(波乱境界)。下流の kEx/kTri/triOn/lvl 閾値は不変のまま
@@ -2707,16 +2711,24 @@ function detailView(r){
   h+='<div class="sec">買い目（決まり手ベース・一本化）<span class="kbadge">本命'+chip(UB.axc,'mc')+(isAna?' 波乱・広く':' 軸')+'</span></div>';
   h+='<div style="font-size:12px;color:#9aa3b2;margin:2px 0 6px">本命 '+chip(UB.axc,'mc')+' '+r.b[UB.ax][0]
     +'（決まり手 '+(isAna?'上位3種':'上位2種')+'＝<b>'+UB.methods.join('・')+'</b>）。'
-    +(isAna?'波乱含み＝上位3種から相手を広く拾い<b>2連複4点・3連単12点</b>を手広く探る（各券種¥2,000配分）。'
-           :'2連複＝<b>確率上位（回収重視）</b>／3連単＝<b>決まり手で相手を絞る本命軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動）':'（本命濃厚につき対抗アタマは省略）')+'。')
+    +'2連複＝<b>標準目のみ（想定オッズ3.5〜5.5倍・該当帯を全部）</b>。'
+    +(isAna?'3連単＝波乱含み＝上位3種から相手を広く拾い<b>12点</b>を手広く探る（各券種¥2,000配分）。'
+           :'3連単＝<b>決まり手で相手を絞る本命軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動）':'（本命濃厚につき対抗アタマは省略）')+'。')
     +'<span class="stdstat"></span></div>';
   const kenBlock=(label,rows,act,pay,isFuku)=>{
     const yen=allocYen(meriW(rows.map(c=>c[1]),honD),2000);   // 全帯 各券種¥2,000配分
     const budget=2000;
     const hitI=act?rows.findIndex(c=>isFuku?eqPair(c[0],act):eqArr(c[0],act)):-1;const hit=hitI>=0;
     const rec=(act&&pay!=null)?(hit?Math.round(pay*yen[hitI]/budget):0):null;   // 回収率%＝(配当/100×賭け金)/予算×100＝pay*yen/budget
+    if(isFuku&&rows.length===0){
+      return '<div class="sec">'+label+' 0点<span class="kbadge">標準目のみ</span>'
+        +(act?'<span class="tag m">見送り</span>':'')+'</div>'
+        +'<div class="stdsub" style="color:#8b96a8;font-size:12px;padding:4px 0">'
+        +'このレースは標準目（想定オッズ3.5〜5.5倍）に該当する2連複がないため見送り。'
+        +(act?'（実際の2連複：'+chip(Math.min(act[0],act[1]),'mc')+'＝'+chip(Math.max(act[0],act[1]),'mc')+'）':'')+'</div>';
+    }
     let ss='<div class="sec">'+label+' '+rows.length+'点<span class="kbadge">'
-      +(isAna?'決まり手3種・広く':(isFuku?'確率上位・回収重視':'決まり手軸＋対抗可変'))+'</span>'+exTag
+      +(isFuku?'標準目のみ':(isAna?'決まり手3種・広く':'決まり手軸＋対抗可変'))+'</span>'+exTag
       +'<span class="kbadge bud">計¥'+budget.toLocaleString()+'</span>'
       +(act?(hit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(rec)+'</div><div class="stdsub">';
     rows.forEach((c,i)=>{const cb=c[0];const hh=act&&(isFuku?eqPair(cb,act):eqArr(cb,act));
