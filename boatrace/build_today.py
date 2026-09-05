@@ -1745,7 +1745,7 @@ HTML = r"""<!DOCTYPE html>
   .predhdr.model{background:#1f2a18;color:#cfe0b8;border-left:4px solid #ffd54a}
   .predhdr.api{background:#15233a;color:#bcd3f2;border-left:4px solid #5dc7e0}
   .predhdr.ref{background:#1f2a18;color:#cfe0b8;border-left:4px solid #ffd54a;margin-top:26px}
-  .ctag{font-size:10px;font-weight:700;border-radius:5px;padding:1px 6px;margin-left:5px}
+  .ctag{font-size:10px;font-weight:700;border-radius:5px;padding:1px 6px;margin-left:5px;white-space:nowrap;flex:none}
   .tg-hon{color:#bcd3f2;background:#15233a;border:0.5px solid #2b4a6f}
   .tg-std{color:#cfe0b8;background:#1f2a18;border:0.5px solid #4a5a36}
   .tg-ana{color:#e8c08a;background:#2a2415;border:0.5px solid #5a4a23}
@@ -2358,6 +2358,15 @@ function allocYen(probs,budget){
 function laneRankMap(sArr){const o=[0,1,2,3,4,5].slice().sort((a,b)=>sArr[b]-sArr[a]);const m={};o.forEach((i,rk)=>m[i+1]=rk+1);return m;}
 // 買い目の型: 含む枠の最下位順位で 本命型(≤3)/標準型(=4)/穴型(≥5)。標準帯の3タイプ提示に使う。
 function comboKind(combo,rankMap){const mx=Math.max.apply(null,combo.map(w=>rankMap[w]));return mx>=5?['穴型','tg-ana']:mx>=4?['標準型','tg-std']:['本命型','tg-hon'];}
+// 買い目区分マーク: 想定オッズ(=1÷予想確率=必要倍)で 本命目/標準目/波乱目 に分類。
+// 成績タブ「レース荒れ度×買い目区分（9通り）」と同一基準（しきい値cutsはD.combo_apiから共有）。
+function buyBandTag(prob,isFuku){
+  if(!(prob>0))return '';
+  const cu=(D.combo_api&&D.combo_api.cuts)?(isFuku?D.combo_api.cuts.ex:D.combo_api.cuts.tri):(isFuku?[3.5,5.5]:[15,22]);
+  const od=1/prob;const b=od<cu[0]?0:(od<cu[1]?1:2);
+  const L=[['本命目','tg-hon'],['標準目','tg-std'],['波乱目','tg-ana']][b];
+  return '<span class="ctag '+L[1]+'" title="買い目区分：想定オッズ'+od.toFixed(1)+'倍（＝必要倍）で分類。成績タブの9通りと同基準（本命目&lt;'+cu[0]+'倍／標準目&lt;'+cu[1]+'倍／波乱目≧'+cu[1]+'倍）">'+L[0]+'</span>';
+}
 // 3連単の購入買い目: 標準帯(0.45-0.65)は穴型(5-6番手絡み)を購入対象から外す（穴型は参考表示のみ・買わない）。
 function triBuyList(allCombos,k,hon,rankMap){
   if(hon>=0.45&&hon<0.65)return allCombos.filter(c=>comboKind(c[0],rankMap)[0]!=='穴型').slice(0,k);
@@ -2714,6 +2723,7 @@ function detailView(r){
       const alt=(!isFuku&&!isAna&&UB.taik&&cb[0]===UB.taik);
       ss+='<div class="crow'+(hh?' hit':'')+'" data-combo="'+cb.join('-')+'" data-p="'+c[1]+'"><span class="rk">'+(i+1)+'</span>'
         +chip(cb[0],'mc')+'<span class="arr">'+(isFuku?'=':'&rarr;')+'</span>'+chip(cb[1],'mc')+(isFuku?'':'<span class="arr">&rarr;</span>'+chip(cb[2],'mc'))
+        +buyBandTag(c[1],isFuku)
         +(alt?'<span class="ctag tg-ana" style="background:#2a1c3a;color:#c79bff" title="逃げ以外の決着＝対抗アタマ（本命が飛ぶ想定）">対抗頭</span>':'')
         +(hh?'<span class="ok" style="font-size:11px;margin-left:4px">的中</span>'+(pay!=null?'<span class="hitpay">配当¥'+pay.toLocaleString()+'</span>':''):'')
         +'<span class="stake">¥'+yen[i].toLocaleString()+'</span>'
@@ -2726,6 +2736,9 @@ function detailView(r){
   };
   h+=kenBlock('2連複',UB.fuku,actEx,payEx,true);
   h+=kenBlock('3連単',UB.tri,actTri,payTri,false);
+  h+='<div class="meta" style="margin:4px 0 0;font-size:11px;color:#8b96a8">買い目区分（想定オッズ＝必要倍）：'
+    +'<span class="ctag tg-hon">本命目</span>堅い　<span class="ctag tg-std">標準目</span>中間　<span class="ctag tg-ana">波乱目</span>薄い'
+    +'　<span style="color:#6f7889">— 成績タブ「9通り」と同基準</span></div>';
   // #12 オッズ一覧（別ページ odds.html）
   if(IS_CLOUD){
     const _bf=UB.fuku.map(c=>c[0].join('-')).join(',');
