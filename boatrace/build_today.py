@@ -748,13 +748,16 @@ COMBO_ODDS_CUTS = {"ex": (3.5, 5.5), "tri": (15.0, 22.0)}
 
 def combo_class_result(rel, pred, score_map, payout, since, hon_map,
                        cuts=COMBO_ODDS_CUTS):
-    """買い目（1点ずつ）を想定オッズ帯（鉄板目/標準目/穴目）に細分化し、券種別に
-    その帯ごとの的中率（点単位）・回収率を集計する。regime_result がレース単位の
-    荒れ度別なのに対し、こちらは「買い目そのもの」を分類する追加の軸。
-    分類基準＝各買い目のモデル予想確率の逆数＝想定オッズ（cuts＝券種別しきい値）。
+    """レース単位の荒れ度（本命/標準/波乱）×買い目1点ずつの想定オッズ帯
+    （本命目/標準目/波乱目）の 3×3＝9通り で、券種別に的中率（点単位）・
+    回収率を集計する。regime_result（レース単位）をさらに買い目単位に細分化した軸。
+    レース荒れ度＝本線2連複予想率(hon): ≥0.65 本命 / 0.45-0.65 標準 / <0.45 波乱。
+    買い目区分＝各買い目のモデル予想確率の逆数＝想定オッズ（cuts＝券種別しきい値・
+    サイトは上位k点しか買わず買い目が堅い組に寄るため統一尺度だと帯が偏る対策）。
     買い目＝regime_result と同一の変動点数（2連複 k_ex≤3 / 3連単 k_tri≤8・各100円）。
     的中率 = 的中点数 / 買った点数（点単位）。回収率 = Σ配当 /(点数×100)×100。
-    返り値 {"ex":[{lab,n,h,r}×3], "tri":[...×3], "cuts":{"ex":[..],"tri":[..]}}。"""
+    返り値 {"ex":[{race,n,bands:[{lab,n,h,r}×3]}×3], "tri":[...×3], "cuts":{...}}
+    （外側＝レース荒れ度3・内側 bands＝買い目区分3）。"""
     races = {}
     for r in rel:
         if r["日付"] < since:
@@ -772,11 +775,13 @@ def combo_class_result(rel, pred, score_map, payout, since, hon_map,
         rc = races.setdefault(rid, {"b": {}})
         rc["b"][int(r["枠番"])] = (pm, fin)
 
-    labs = ["鉄板目", "標準目", "穴目"]
+    race_labs = ["本命", "標準", "波乱"]      # レース荒れ度（hon帯）
+    buy_labs = ["本命目", "標準目", "波乱目"]  # 買い目の想定オッズ帯
     ex_c, tri_c = cuts["ex"], cuts["tri"]
-    # agg[kind][band] = {"n","h","ret"}
-    agg = {"ex": [{"n": 0, "h": 0, "ret": 0} for _ in range(3)],
-           "tri": [{"n": 0, "h": 0, "ret": 0} for _ in range(3)]}
+    # agg[kind][race_band][buy_band] = {"n","h","ret"}
+    mkcell = lambda: {"n": 0, "h": 0, "ret": 0}
+    agg = {"ex": [[mkcell() for _ in range(3)] for _ in range(3)],
+           "tri": [[mkcell() for _ in range(3)] for _ in range(3)]}
 
     def band(odds, c):
         return 0 if odds < c[0] else (1 if odds < c[1] else 2)
@@ -796,6 +801,7 @@ def combo_class_result(rel, pred, score_map, payout, since, hon_map,
         hon = hon_map.get(rid)
         if hon is None:
             continue
+        gi = 0 if hon >= 0.65 else (2 if hon < 0.45 else 1)   # レース荒れ度帯
         m = sum(1 for w in range(1, 7) if s[w - 1] and s[w - 1] > 0)
         po = payout.get(rid, (0, 0, 0))
         # 2連複（順不同ペア・上位 k_ex）
@@ -806,7 +812,7 @@ def combo_class_result(rel, pred, score_map, payout, since, hon_map,
                 p = _pf_prob(s, pair)
                 if p <= 0:
                     continue
-                a = agg["ex"][band(1.0 / p, ex_c)]
+                a = agg["ex"][gi][band(1.0 / p, ex_c)]
                 a["n"] += 1
                 if frozenset(pair) == act2:
                     a["h"] += 1
@@ -819,17 +825,19 @@ def combo_class_result(rel, pred, score_map, payout, since, hon_map,
                 p = _pl_prob(s, list(combo))
                 if p <= 0:
                     continue
-                a = agg["tri"][band(1.0 / p, tri_c)]
+                a = agg["tri"][gi][band(1.0 / p, tri_c)]
                 a["n"] += 1
                 if tuple(combo) == act3:
                     a["h"] += 1
                     a["ret"] += po[1]
 
     pct = lambda x, n: round(x / n * 100, 1) if n else 0
-    mk = lambda arr: [{"lab": labs[i], "n": a["n"],
-                       "h": pct(a["h"], a["n"]),
-                       "r": pct(a["ret"], a["n"] * 100)}
-                      for i, a in enumerate(arr)]
+    mk = lambda arr: [
+        {"race": race_labs[gi], "n": sum(c["n"] for c in arr[gi]),
+         "bands": [{"lab": buy_labs[bj], "n": c["n"], "h": pct(c["h"], c["n"]),
+                    "r": pct(c["ret"], c["n"] * 100)}
+                   for bj, c in enumerate(arr[gi])]}
+        for gi in range(3)]
     return {"ex": mk(agg["ex"]), "tri": mk(agg["tri"]),
             "cuts": {"ex": list(ex_c), "tri": list(tri_c)}}
 
@@ -2850,7 +2858,7 @@ function grpBars(rows,series,opts){
   opts=opts||{};
   if(!rows||!rows.length)return '';
   const W=330,padL=30,padR=8,padT=16,padB=32,H=padT+150+padB;
-  let mx=Math.max(...rows.flatMap(r=>series.map(s=>r[s.k]||0)),opts.ref||0,1);
+  let mx=Math.max(...rows.flatMap(r=>series.map(s=>r[s.k]==null?0:r[s.k])),opts.ref||0,1);
   const step=mx>100?40:mx>50?20:mx>20?10:5;
   const M=Math.ceil(mx/step)*step;
   const plotW=W-padL-padR, plotH=H-padT-padB;
@@ -2869,12 +2877,17 @@ function grpBars(rows,series,opts){
   rows.forEach((r,i)=>{
     const c0=padL+gap*i+gap/2, tot=series.length*bw+(series.length-1)*3;
     series.forEach((s,j)=>{
-      const x=c0-tot/2+j*(bw+3), v=r[s.k]||0, yt=y(v);
-      g+='<rect x="'+x+'" y="'+yt+'" width="'+bw+'" height="'+Math.max((v/M)*plotH,1)+'" rx="2" fill="'+s.col+'"/>';
-      g+='<text x="'+(x+bw/2)+'" y="'+(yt-3)+'" fill="#e6e6e6" font-size="9" text-anchor="middle" font-weight="700">'+v+'</text>';
+      const x=c0-tot/2+j*(bw+3), raw=r[s.k];
+      if(raw==null){   // データ無し（該当買い目が無い帯）＝棒を描かず「–」。0%回収と誤読させない
+        g+='<text x="'+(x+bw/2)+'" y="'+(padT+plotH-2)+'" fill="#5b6270" font-size="9" text-anchor="middle">–</text>';
+        return;
+      }
+      const yt=y(raw);
+      g+='<rect x="'+x+'" y="'+yt+'" width="'+bw+'" height="'+Math.max((raw/M)*plotH,1)+'" rx="2" fill="'+s.col+'"/>';
+      g+='<text x="'+(x+bw/2)+'" y="'+(yt-3)+'" fill="#e6e6e6" font-size="9" text-anchor="middle" font-weight="700">'+raw+'</text>';
     });
     g+='<text x="'+c0+'" y="'+(H-padB+15)+'" fill="#cdd6e2" font-size="11" text-anchor="middle" font-weight="600">'+r.lab+'</text>';
-    g+='<text x="'+c0+'" y="'+(H-padB+26)+'" fill="#6b7280" font-size="8" text-anchor="middle">'+r.n+'R</text>';
+    g+='<text x="'+c0+'" y="'+(H-padB+26)+'" fill="#6b7280" font-size="8" text-anchor="middle">'+r.n+(opts.nsuf||'R')+'</text>';
   });
   g+='</svg>';
   return g;
@@ -3151,34 +3164,41 @@ function statsView(){
       +'いずれの分類も回収率は100％（赤破線）未満が基本＝控除率約25％の壁で、確率だけで機械的に買うと長期では負ける。'
       +'「変動点数」は堅い予想ほど少点／荒れ予想ほど多点に自動調整。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
   }
-  // 買い目（1点ずつ）を想定オッズ帯（鉄板目/標準目/穴目）に細分化した的中率・回収率
+  // レース荒れ度（本命/標準/波乱）×買い目区分（本命目/標準目/波乱目）の3×3=9通り
   const CB=D.combo_api;
   if(CB&&CB.ex&&(CB.ex.some(r=>r.n)||CB.tri.some(r=>r.n))){
     const cE=CB.cuts.ex, cT=CB.cuts.tri;
-    const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
-    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">買い目区分別（想定オッズ帯）の的中率と回収率（2026年〜）</div>';
-    h+='<div class="meta">上のレース単位の荒れ度（鉄板/標準/穴）を<b>さらに買い目1点ずつに細分化</b>。'
-      +'各買い目を<b>想定オッズ（＝1÷モデル予想確率）</b>で3区分：<b>鉄板目</b>＝堅い組（低オッズ）／<b>標準目</b>／<b>穴目</b>＝薄い組（高オッズ）。'
-      +'区切りは券種別（サイトは上位数点しか買わず買い目が堅い組に寄るため統一尺度だと帯が偏る）＝'
-      +'<b>2連複</b> '+cE[0]+'倍／'+cE[1]+'倍　<b>3連単</b> '+cT[0]+'倍／'+cT[1]+'倍（各券種の買い目想定オッズの概ね三分位）。'
-      +'的中率＝その帯の買い目が当たった<b>点の割合</b>（レース単位でなく点単位）・回収率＝Σ配当÷（点数×100円）。</div>';
-    const cell=(v,extra)=>'<td class="num'+(extra?' '+extra:'')+'">'+v+'%</td>';
-    const cbrow=(e,t)=>'<tr><td class="k">'+e.lab+'</td>'
-      +'<td class="num scol g2">'+e.n+'</td>'+cell(e.h,'g2')
-      +'<td class="num g2"><b class="'+recCls(e.r)+'">'+e.r+'%</b></td>'
-      +'<td class="num scol g3">'+t.n+'</td>'+cell(t.h,'g3')
-      +'<td class="num g3"><b class="'+recCls(t.r)+'">'+t.r+'%</b></td></tr>';
-    h+='<div class="swrap"><table class="st"><thead><tr>'
-      +'<th class="k">買い目区分</th>'
-      +'<th class="g2">2連複<br>点数</th><th class="g2">的中率</th><th class="g2">回収率</th>'
-      +'<th class="g3">3連単<br>点数</th><th class="g3">的中率</th><th class="g3">回収率</th></tr></thead><tbody>';
-    for(let i=0;i<3;i++)h+=cbrow(CB.ex[i],CB.tri[i]);
-    h+='</tbody></table></div>';
-    h+='<div class="legend">買い目を「堅い組か薄い組か」で分けた内訳。<b>想定オッズが上がるほど的中率は下がる</b>（当たりにくい薄い組）のが基本。'
-      +'回収率は帯ごとの旨味＝薄い組の方が高いか低いかを見る指標だが、'
-      +'サイトは元々<b>上位数点の堅い組しか買わない</b>ため「穴目」も相対的な薄さで、万舟級の大穴は含みません。'
-      +'※点単位の的中率はレース単位より低く出ます（1レースで複数点買い、当たるのは基本1点）。'
-      +'いずれの帯も回収率は100％未満が基本（控除率約25％の壁）。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
+    // 買い目区分の3系列（本命目=堅い/標準目/波乱目=薄い）
+    const buySeries=[{k:'b0',col:'#4a90d9',lab:'本命目'},{k:'b1',col:'#45b98a',lab:'標準目'},{k:'b2',col:'#d98a3b',lab:'波乱目'}];
+    // 荒れ度帯の配列→grpBars行（lab=レース帯・n=点数・b0/b1/b2=各買い目区分の値。点数0はnull＝棒なし）
+    const cbRows=(perBet,metric)=>perBet.map(rb=>{
+      const row={lab:rb.race,n:rb.n};
+      rb.bands.forEach((b,i)=>row['b'+i]=b.n?b[metric]:null);
+      return row;});
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">レース荒れ度 × 買い目区分（9通り）の的中率と回収率（2026年〜）</div>';
+    h+='<div class="meta"><b>レース荒れ度（本命/標準/波乱）</b>を、<b>さらに買い目1点ずつ</b>の'
+      +'<b>想定オッズ（＝1÷モデル予想確率）</b>で<b>本命目</b>（堅い組・低オッズ）／<b>標準目</b>／<b>波乱目</b>（薄い組・高オッズ）に細分化した'
+      +'<b>3×3＝9通り</b>。想定オッズの区切りは券種別＝<b>2連複</b> '+cE[0]+'倍／'+cE[1]+'倍　<b>3連単</b> '+cT[0]+'倍／'+cT[1]+'倍。'
+      +'的中率＝その組の買い目が当たった<b>点の割合</b>（点単位）・回収率＝Σ配当÷（点数×100円）。'
+      +'<b>「–」＝該当する買い目が無い組</b>（例：本命レースでは上位数点も堅い組ばかりで波乱目の買い目が出ない）。</div>';
+    h+='<div class="meta" style="text-align:center">買い目区分：'
+      +'<span style="color:#4a90d9">■</span> 本命目　<span style="color:#45b98a">■</span> 標準目　<span style="color:#d98a3b">■</span> 波乱目'
+      +'<br><span style="font-size:11px;color:#8b96a8">横軸＝レース荒れ度／棒＝その中の買い目区分</span></div>';
+    const chartPair=(perBet,ttl)=>{
+      let s='<div style="font-size:13px;color:#e0a93b;font-weight:700;margin:16px 0 2px;text-align:center">'+ttl+'</div>';
+      s+='<div style="text-align:center"><div style="font-size:12px;color:#cdd6e2;margin:6px 0 2px">① 的中率（％）</div>'
+        +grpBars(cbRows(perBet,'h'),buySeries,{nsuf:'点'})+'</div>';
+      s+='<div style="text-align:center"><div style="font-size:12px;color:#cdd6e2;margin:12px 0 2px">② 回収率（％・<span style="color:#d9745c">赤破線=100％</span>）</div>'
+        +grpBars(cbRows(perBet,'r'),buySeries,{ref:100,nsuf:'点'})+'</div>';
+      return s;};
+    h+=chartPair(CB.ex,'2連複');
+    h+=chartPair(CB.tri,'3連単');
+    h+='<div class="legend"><b>レース荒れ度と買い目区分は連動</b>します：本命（堅い）レースは上位数点も堅い組ばかり＝<b>本命目</b>に偏り、波乱レースは薄い組＝<b>波乱目</b>中心。'
+      +'そのため9通りのうち埋まるのは主に「標準レース」の行で、他は「–」（該当買い目なし）が出ます。'
+      +'<b>想定オッズが上がる（本命目→波乱目）ほど的中率は下がる</b>のが基本。回収率は組ごとの旨味で、'
+      +'サイトは元々<b>上位数点の堅い組しか買わない</b>ため「波乱目」も相対的な薄さ＝万舟級の大穴は含みません。'
+      +'※点単位の的中率はレース単位より低く出ます（1レースで複数点買い・当たるのは基本1点）。'
+      +'いずれも回収率は100％未満が基本（控除率約25％の壁）。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
   }
   return h;
 }
