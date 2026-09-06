@@ -1215,8 +1215,9 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
       - 毎日 daily_grant(¥100,000) 支給・毎日フラット（繰越なし）。
       - ミックス指標 = √(本命確率 × 本命の堅さ)。当日の全レースをこの指標で降順に並べ、
         上位 topn(=10) レースだけを対象に 10万円を均等配分（各≈1万円）。
-      - 各レースの買い目はサイト本体と同一ポリシー（2連複=上位k_ex／3連単=上位k_tri・
-        確率比例配分／3連単は本命の堅さ hon≥0.45 のみ）。実配当で精算・フライング(非完走)は返還。
+      - 各レースの買い目は3連単のみ（2026-09 2連複廃止）＝上位k_tri・確率比例配分・
+        レース予算を全額3連単に投下。本命の堅さ hon≥0.45 のみ（波乱帯は見送り）。
+        実配当で精算・フライング(非完走)は返還。
       - 各日『何を買ったか（組番・金額）と結果』を bets に記録して表示。
     ★ステートレス（毎ビルド再計算・自己修復）。base当日は結果待ち＝プレビューのみ。"""
     from collections import defaultdict
@@ -1287,29 +1288,15 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
                 continue
             fly = {w for w in range(1, 7) if not fins[w - 1]}
             po = payout.get(rid, (0, 0, 0))
-            kx, kt = k_ex(hon), k_tri(hon)
+            kt = k_tri(hon)
             r_stake = r_ret = 0.0
             hit = False
-            e2, e3 = [], []
-            # 2連複（券種予算＝レース予算の半分）
-            buy2 = _pf_topk(sv, kx)
-            b2 = round(per * 0.5 / 100) * 100
-            act2 = tuple(sorted(order[:2])) if len(order) >= 2 else None
-            if buy2 and b2 >= len(buy2) * 100:
-                yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon), budget=b2)
-                for c, y in zip(buy2, yen2):
-                    refunded = any(w in fly for w in c)
-                    ch = (c == act2) and not refunded
-                    if not refunded:
-                        r_stake += y
-                    if ch:
-                        r_ret += round((po[2] if len(po) > 2 else 0) * y / 100)
-                        hit = True
-                    e2.append(["".join(str(w) for w in c), int(y), 1 if ch else 0])
-            # 3連単（triOn: 本命の堅さ hon≥0.45 のみ・標準帯は穴型除外）
+            e2, e3 = [], []   # 2連複(e2)は2026-09廃止＝常に空。3連単(e3)のみ。
+            # 3連単のみ（2026-09〜2連複廃止でレース予算を全額3連単に投下）。
+            # triOn: 本命の堅さ hon≥0.45 のみ・標準帯は穴型除外。
             if hon >= 0.45:
                 buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), kt, hon, _lane_rank_map(sv))
-                b3 = round(per * 0.5 / 100) * 100
+                b3 = round(per / 100) * 100
                 act3 = tuple(order[:3]) if len(order) >= 3 else None
                 if buy3 and b3 >= len(buy3) * 100 and len(order) >= 3:
                     yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon), budget=b3)
@@ -2999,7 +2986,7 @@ function gameView(){
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,false);
   else h+='<div class="meta">まだ精算済みの日がありません（新方式は<b>9月から開始</b>。初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、当日の全レースを<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに10万円を均等配分（各≈1万円）。各レースの買い目はサイト本体と同一（2連複＋3連単・確率比例配分／3連単は堅さ45％以上のみ）。'
+  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、当日の全レースを<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに10万円を均等配分（各≈1万円）。各レースの買い目は<b>3連単のみ（2026-09に2連複は廃止）</b>＝レース予算を全額3連単に確率比例配分（本命の堅さ45％以上のみ・波乱帯は見送り）。'
     +'<b>毎日フラットに10万円</b>で勝負（繰越なし）。実際の配当で精算し、フライングは返還。'
     +'各日の行を<b>タップするとその日に何を買ったか（組番・金額）と結果</b>が開きます。✓＝的中。※控除率25％の壁があり増え続ける保証はありません＝AIの実力を可視化する実験です。</div>';
   h+='</div>';
