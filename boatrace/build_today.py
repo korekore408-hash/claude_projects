@@ -2059,8 +2059,10 @@ const root=document.getElementById('app');
 const mmdd=s=>s.slice(5);
 function chip(w,cls){const a=LC[w];return '<span class="'+(cls||'wk')+'" style="background:'+a[0]+';color:'+a[1]+'">'+w+'</span>';}
 // 展示反映後の予想: 朝の p_win(r.b[i][1]/1000) に展示タイム/展示STを軽くブレンド。
-// backtest(1032R,7日)で本命1着 55.9%→約57%(+0.5〜1.4pt)。係数は控えめ固定(過適合回避)・
-// 大きいβは逆効果を実測。展示が無ければ null（朝予想のまま）。
+// 係数はK-file全期間 33,451R で最適化（本命1着 朝57.1%→展示58.4%＝+1.3pt）。
+// BT/BS の掃引で 0.3/0.15 が前後半split ともに最良かつ安定（0.5超は逆効果を実測）。
+// ※「内側コース隣接艇との展示差」等のポジショナル特徴は追加検証で+0.05pt＝展示タイムz-scoreに
+//   ほぼ吸収済みのため入れない（過適合回避）。展示が無ければ null（朝予想のまま）。
 function tenjiPred(r){
   const e=r&&r.ex; if(!e||!e.time)return null;
   const ts=e.time, st=e.st||[];
@@ -2073,7 +2075,7 @@ function tenjiPred(r){
     return arr.map(x=>(x!=null&&isFinite(x))?(x-m)/sd:0);
   }
   const stEff=st.map(x=>(x!=null&&x<0)?0.30:x);   // 展示ST: F(負)は遅い扱い
-  const zt=zs(ts), zst=zs(stEff), BT=0.2, BS=0.1;
+  const zt=zs(ts), zst=zs(stEff), BT=0.3, BS=0.15;   // 展示タイム/STの重み（33k R最適点）
   let sc=[],mx=-1e9;
   for(let i=0;i<6;i++){
     const p=((r.b[i]?r.b[i][1]:0)||1)/1000;
