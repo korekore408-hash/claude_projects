@@ -357,6 +357,22 @@ def _pf_topk(s, k):
     return pairs[:k]
 
 
+def _fuku_std(s):
+    """2連複「標準目のみ」（サイト本体 fukuStd と同一）: PL確率上位15ペアのうち、
+    想定オッズ（=1÷PL確率）が標準帯 COMBO_ODDS_CUTS["ex"]=[3.5,5.5) に入る組を全部拾う。
+    2026-09 の買い目UI変更（本命1本を廃止＝標準目のみ）に回収率集計を合わせるため。"""
+    lo, hi = COMBO_ODDS_CUTS["ex"]
+    out = []
+    for pr in _pf_topk(s, 15):
+        p = _pf_prob(s, pr)
+        if p <= 0:
+            continue
+        od = 1.0 / p
+        if lo <= od < hi:
+            out.append(pr)
+    return out
+
+
 def _pf_rank(s, actual):
     """actual（枠tuple・順不同）の2連複PL順位（1=最尤）。"""
     act = tuple(sorted(actual))
@@ -1100,8 +1116,10 @@ def recent_stats(out, payout, pmkey="b", hon_map=None):
 def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays=30):
     """今日から ndays 日さかのぼる「日別」回収率の時系列（券種別）。
     ★買い目＝サイト本体／上部サマリー(daySummary)と同一ポリシー（順位付け＝学習モデル、
-      荒れ度・点数＝API本命確率）。折れ線グラフ用に各日の 2連複／3連単／穴目 を集計。
-      - 2連複＝確率上位 k_ex（全帯）・各¥2,000確率比例配分・F返還。
+      荒れ度・点数＝API本命確率）。各日の 2連複／3連単／穴目 と、直近窓のレース荒れ度帯別
+      （本命/標準/波乱）の券種別回収率を集計（棒グラフ用）。
+      - 2連複＝**標準目のみ（想定オッズ3.5〜5.5倍・fukuStd）**・各¥2,000確率比例配分・F返還。
+        （2026-09 の買い目UI変更＝本命1本を廃止・標準目のみに合わせて集計も更新）
       - 3連単＝triOn(hon≥0.45)のみ・確率上位 k_tri（標準帯は穴型除外）・¥2,000配分・F返還。
       - 穴目＝**買わない参考**。穴帯(hon<0.45)で対抗アタマ6点(_taikou_ref／帯別方式・波乱帯)を各¥100フル。
         購入はしないが「的中していれば穴予想的中」が分かるよう的中率／回収率を出す。
@@ -1124,7 +1142,11 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         rc["ab"][w] = api_map.get((rid, w))
     # 日別 [n,hit,inv,ret]
     day = defaultdict(lambda: {"ex": [0, 0, 0, 0], "tri": [0, 0, 0, 0],
-                               "ana_h": [0, 0, 0, 0], "ana_s": [0, 0, 0, 0]})
+                               "ana_h": [0, 0, 0, 0], "ana_s": [0, 0, 0, 0],
+                               # レース荒れ度帯別（0本命/1標準/2波乱）＝券種別の [n,hit,inv,ret]
+                               "ex0": [0, 0, 0, 0], "ex1": [0, 0, 0, 0], "ex2": [0, 0, 0, 0],
+                               "tri0": [0, 0, 0, 0], "tri1": [0, 0, 0, 0], "tri2": [0, 0, 0, 0],
+                               "nr": [0, 0, 0]})
     for rid, rc in races.items():
         if len(rc["b"]) != 6:
             continue
@@ -1150,29 +1172,41 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         act2 = tuple(sorted(order[:2]))
         act3 = tuple(order[:3]) if len(order) >= 3 else None
         D = day[rc["d"]]
-        # 2連複（全帯）
-        buy2 = _pf_topk(sv, k_ex(hon))
+        bi = 0 if hon >= 0.65 else (2 if hon < 0.45 else 1)   # レース荒れ度帯 本命/標準/波乱
+        D["nr"][bi] += 1
+        # 2連複（標準目のみ＝サイト本体 fukuStd と同一。本命1本は2026-09廃止）
+        buy2 = _fuku_std(sv)
         if buy2:
             yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon))
             D["ex"][0] += 1
+            D["ex" + str(bi)][0] += 1
             for c, y in zip(buy2, yen2):
                 if not any(w in fly for w in c):
                     D["ex"][2] += y
+                    D["ex" + str(bi)][2] += y
                 if c == act2:
-                    D["ex"][3] += round((po[2] if len(po) > 2 else 0) * y / 100)
+                    add = round((po[2] if len(po) > 2 else 0) * y / 100)
+                    D["ex"][3] += add
                     D["ex"][1] += 1
+                    D["ex" + str(bi)][3] += add
+                    D["ex" + str(bi)][1] += 1
         # 3連単（triOn＝hon≥0.45のみ・標準帯は穴型除外）
         if act3 and hon >= 0.45:
             buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), k_tri(hon), hon, _lane_rank_map(sv))
             if buy3:
                 yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon))
                 D["tri"][0] += 1
+                D["tri" + str(bi)][0] += 1
                 for c, y in zip(buy3, yen3):
                     if not any(w in fly for w in c):
                         D["tri"][2] += y
+                        D["tri" + str(bi)][2] += y
                     if c == act3:
-                        D["tri"][3] += round(po[1] * y / 100)
+                        add = round(po[1] * y / 100)
+                        D["tri"][3] += add
                         D["tri"][1] += 1
+                        D["tri" + str(bi)][3] += add
+                        D["tri" + str(bi)][1] += 1
         # 穴目（買わない参考・帯別方式・各¥100フル）。波乱帯(<0.45)=対抗6点／標準帯(0.45-0.65)=穴候補6点。
         # グラフ・券種別テーブルで 波乱/標準/合算 を選択表示できるよう帯別に分けて集計。
         if act3 and hon < 0.45:
@@ -1202,7 +1236,19 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         for k in keys:
             for i in range(4):
                 tot[k][i] += day[d][k][i]
-    return {"days": ser, "tot": {k: pack(v) for k, v in tot.items()},
+    # レース荒れ度帯別（本命/標準/波乱）＝直近窓での券種別 累計回収率グラフ用。
+    bands = []
+    for bi in range(3):
+        ex = [0, 0, 0, 0]
+        tri = [0, 0, 0, 0]
+        nr = 0
+        for d in days:
+            nr += day[d]["nr"][bi]
+            for i in range(4):
+                ex[i] += day[d]["ex" + str(bi)][i]
+                tri[i] += day[d]["tri" + str(bi)][i]
+        bands.append({"nr": nr, "ex": pack(ex), "tri": pack(tri)})
+    return {"days": ser, "tot": {k: pack(v) for k, v in tot.items()}, "bands": bands,
             "from": days[0] if days else None, "to": days[-1] if days else None}
 
 
@@ -3026,76 +3072,37 @@ function recoveryChart(days,series){
   s+='</svg>';
   return s;
 }
-// 【直近回収率結果】＝直近30日の日別回収率グラフ＋券種別（2連単/3連単/穴目）の累計成績。
+// 【直近回収率結果】＝①レース荒れ度別（本命/標準/波乱レース）の券種別回収率＋②券種別（2連複/3連単）当日・前日回収率、いずれも棒グラフ。
 function recentRecoveryView(){
   const R=D.daily_rec; if(!R||!R.days||!R.days.length)return '';
-  // 穴目の対象帯（波乱/標準/合算）＝global anaScope を共用（上部サマリーと連動）。
-  //   波乱帯(<0.45)=対抗6点(ana_h) / 標準帯(0.45-0.65)=穴候補6点(ana_s) / 合算=両者を合算。
-  const scLab={all:'合算',haran:'波乱帯',std:'標準帯'};
-  const merge=(a,b)=>({n:a.n+b.n,h:a.h+b.h,inv:a.inv+b.inv,ret:a.ret+b.ret});
-  const anaPick=o=>anaScope==='haran'?o.ana_h:anaScope==='std'?o.ana_s:merge(o.ana_h,o.ana_s);
-  const days=R.days.map(d=>Object.assign({},d,{ana:anaPick(d)}));   // 穴目=選択帯で合成
-  const tot=Object.assign({},R.tot,{ana:anaPick(R.tot)});
-  const series=[{k:'ex',col:'#43c59e',lab:'2連複'},{k:'tri',col:'#e0a93b',lab:'3連単'},{k:'ana',col:'#c79bff',lab:'穴目（'+scLab[anaScope]+'）'}];
   const pct=(a,b)=>b?Math.round(a/b*100):0;
-  const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
-  const yfmt=v=>'¥'+Math.round(v).toLocaleString();
+  const rr=o=>(o&&o.inv)?pct(o.ret,o.inv):null;          // 回収率（投資0＝null＝棒なし「–」）
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
-  h+='<div class="meta">買い目・金額はサイト本体と同一（各券種¥2,000を全帯爆発重視で配分＝薄い高配当目に振り切り・穴帯は3連単を買わない・フライングは返還）。'
-    +'折れ線＝日別の回収率（％）。<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
-  // 穴目の対象帯セレクタ（グラフ・券種別テーブルの穴目行に連動）
-  h+='<div class="anascope" style="justify-content:center;margin:6px 0 2px">穴目の対象：'
-    +['all','haran','std'].map(k=>'<button class="asb'+(anaScope===k?' on':'')+'" data-as="'+k+'">'+scLab[k]+'</button>').join('')+'</div>';
-  // 凡例
-  h+='<div class="meta" style="text-align:center">'
-    +series.map(s=>'<span style="color:'+s.col+'">■</span> '+s.lab).join('　')+'</div>';
-  h+=recoveryChart(days,series);
-  // ── 当日・前日・前々日（券種別 的中率／投資／回収／回収率）──────────────
-  // 直近3日を新しい順に 当日／前日／前々日 として券種別に並べる。
-  const cols=days.slice(-3).reverse();
-  const labs=['当日','前日','前々日'];
-  function tbl3(k,lab,isAna){
-    let t='<div class="swrap"><table class="st"><thead><tr><th class="k">'
-      +'<span style="color:'+series.find(s=>s.k===k).col+'">■</span> '+lab+'</th>';
-    cols.forEach((c,i)=>{t+='<th>'+labs[i]+'<br><small>'+c.d.slice(5)+'</small></th>';});
-    t+='</tr></thead><tbody>';
-    t+='<tr><td class="k">的中率</td>'+cols.map(c=>{const o=c[k];
-      return '<td class="num">'+(o.n?pct(o.h,o.n)+'%':'–')+'<small>'+o.h+'/'+o.n+'</small></td>';}).join('')+'</tr>';
-    t+='<tr><td class="k">投資</td>'+cols.map(c=>'<td class="num">'+yfmt(c[k].inv)+'</td>').join('')+'</tr>';
-    t+='<tr><td class="k">回収</td>'+cols.map(c=>'<td class="num">'+yfmt(c[k].ret)+'</td>').join('')+'</tr>';
-    t+='<tr><td class="k">回収率</td>'+cols.map(c=>{const o=c[k];const rr=pct(o.ret,o.inv);
-      return '<td class="num"><b class="'+recCls(rr)+'">'+(o.inv?rr+'%':'–')+'</b></td>';}).join('')+'</tr>';
-    if(isAna)  // 穴目は買わないので「的中していれば穴予想的中」を明示
-      t+='<tr><td class="k">穴目判定</td>'+cols.map(c=>{const o=c[k];
-        return '<td class="num">'+(o.n===0?'<small style="color:#7e8796">対象なし</small>'
-          :o.h>0?'<b style="color:#c79bff">🎯的中'+o.h+'R</b>'
-          :'<small style="color:#7e8796">不的中</small>')+'</td>';}).join('')+'</tr>';
-    t+='</tbody></table></div>';
-    return t;
-  }
-  if(cols.length){
-    h+='<div class="meta" style="margin-top:12px;color:#cdd6e2;font-weight:600">当日・前日・前々日（券種別）</div>';
-    h+=series.map(s=>tbl3(s.k,s.lab,s.k==='ana')).join('');
-  }
-  // 券種別 累計（的中率／投資／回収／回収率）
-  h+='<div class="swrap"><table class="st"><thead><tr>'
-    +'<th class="k">券種</th><th>的中率</th><th>投資</th><th>回収</th><th>回収率</th></tr></thead><tbody>';
-  series.forEach(s=>{const t=tot[s.k];const rr=pct(t.ret,t.inv);
-    h+='<tr><td class="k"><span style="color:'+s.col+'">■</span> '+s.lab
-      +(s.k==='ana'?'<small style="color:#9a8bb8"> 買わない参考</small>':'')+'</td>'
-      +'<td class="num">'+pct(t.h,t.n)+'%<small>'+t.h+'/'+t.n+'</small></td>'
-      +'<td class="num">'+yfmt(t.inv)+'</td>'
-      +'<td class="num">'+yfmt(t.ret)+'</td>'
-      +'<td class="num"><b class="'+recCls(rr)+'">'+rr+'%</b></td></tr>';});
-  h+='</tbody></table></div>';
-  const anaDesc={
-    all:'標準帯（本線2連複予想率25-50％）は穴候補（API4番人気）アタマ6点／波乱帯（2連複予想率25％未満）は対抗（予想2番手）アタマ6点',
-    haran:'波乱帯（本線2連複予想率25％未満）で穴予想＝対抗（予想2番手）アタマ6点',
-    std:'標準帯（本線2連複予想率25-50％）で穴予想＝穴候補（API4番人気）アタマ6点'};
-  h+='<div class="legend"><b>2連複・3連単</b>＝実際にサイトが買う買い目の回収率（購入対象）。'
-    +'<b style="color:#c79bff">穴目（'+scLab[anaScope]+'）</b>＝'+anaDesc[anaScope]+'を3連単で買った場合の<b>参考シミュレーション（実際は購入しない）</b>（帯別方式）。'
-    +'的中していれば「穴予想的中」＝万舟級の的中。帯別方式のbacktest回収＝標準帯73.3％／波乱帯88.2％（合算75.7％）だが高分散で日別は大きく振れます。'
-    +'※日別のため高配当1本で大きく振れます。控除率約25％の壁で、いずれの券種も長期回収率は100％未満が基本です。</div>';
+  h+='<div class="meta">買い目・金額はサイト本体と同一（<b>2連複＝標準目のみ</b>／<b>3連単＝上位数点</b>を確率比例配分・<b>波乱帯は3連単を見送り</b>・フライングは返還）。'
+    +'<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
+  // ── ① レース荒れ度別（本命/標準/波乱レース）の回収率（券種別2本の棒グラフ）──
+  const bandLab=['本命','標準','波乱'];
+  const rowsA=(R.bands||[]).map((b,i)=>({lab:bandLab[i]+'レ',n:b.nr,ex:rr(b.ex),tri:rr(b.tri)}));
+  const betSeries=[{k:'ex',col:'#43c59e',lab:'2連複'},{k:'tri',col:'#e0a93b',lab:'3連単'}];
+  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:14px 0 2px;text-align:center">① レース荒れ度別 回収率（％・直近'+R.days.length+'日）</div>';
+  h+='<div class="meta" style="text-align:center"><span style="color:#43c59e">■</span> 2連複　<span style="color:#e0a93b">■</span> 3連単'
+    +'<br><span style="font-size:11px;color:#8b96a8">横軸＝レース荒れ度（本命/標準/波乱）／棒＝券種</span></div>';
+  h+='<div style="text-align:center">'+grpBars(rowsA,betSeries,{ref:100})+'</div>';
+  // ── ② 券種別（2連複/3連単）当日・前日 回収率（棒グラフ）───────────────
+  const last=R.days[R.days.length-1], prev=R.days.length>=2?R.days[R.days.length-2]:null;
+  const dcur=last?last.d.slice(5):'', dprev=prev?prev.d.slice(5):'';
+  const rowsB=[
+    {lab:'2連複',n:last?last.ex.n:0,cur:last?rr(last.ex):null,prev:prev?rr(prev.ex):null},
+    {lab:'3連単',n:last?last.tri.n:0,cur:last?rr(last.tri):null,prev:prev?rr(prev.tri):null}];
+  const daySeries=[{k:'cur',col:'#5b9bd5',lab:'当日'},{k:'prev',col:'#9aa7bd',lab:'前日'}];
+  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:20px 0 2px;text-align:center">② 券種別 当日・前日 回収率（％）</div>';
+  h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 当日 '+dcur+'　<span style="color:#9aa7bd">■</span> 前日 '+dprev
+    +'<br><span style="font-size:11px;color:#8b96a8">横軸＝券種（2連複/3連単）／棒＝当日・前日</span></div>';
+  h+='<div style="text-align:center">'+grpBars(rowsB,daySeries,{ref:100})+'</div>';
+  h+='<div class="legend"><b>①</b>＝直近'+R.days.length+'日を通算した、レース荒れ度帯ごとの券種別回収率（本命＝本線2連複予想率65％以上／標準＝45-65％／波乱＝45％未満）。'
+    +'<b>波乱帯は3連単を買わない</b>＝棒なし「–」。本命帯は標準目の該当が少なく2連複が「–」寄りになります。'
+    +'<b>②</b>＝当日・前日の券種別回収率。<b>当日は結果確定ぶんのみ反映</b>（未確定レースは翌朝反映）。'
+    +'※日別・帯別は高配当1本で大きく振れます。控除率約25％の壁で長期回収率は100％未満が基本です。</div>';
   return h;
 }
 function statsView(){
