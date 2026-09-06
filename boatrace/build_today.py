@@ -1140,13 +1140,25 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         rc = races.setdefault(rid, {"d": r["日付"], "b": {}, "ab": {}})
         rc["b"][w] = (model_map.get((rid, w)), fin)
         rc["ab"][w] = api_map.get((rid, w))
+    ex_c, tri_c = COMBO_ODDS_CUTS["ex"], COMBO_ODDS_CUTS["tri"]
+
+    def oband(p, c):   # 買い目の想定オッズ(=1/PL確率)→区分 0本命目/1標準目/2波乱目
+        if not (p and p > 0):
+            return 1
+        od = 1.0 / p
+        return 0 if od < c[0] else (1 if od < c[1] else 2)
+
+    def grid():        # [荒れ度3][買い目区分3] の [pts,hit,inv,ret]
+        return [[[0, 0, 0, 0] for _ in range(3)] for _ in range(3)]
     # 日別 [n,hit,inv,ret]
     day = defaultdict(lambda: {"ex": [0, 0, 0, 0], "tri": [0, 0, 0, 0],
                                "ana_h": [0, 0, 0, 0], "ana_s": [0, 0, 0, 0],
                                # レース荒れ度帯別（0本命/1標準/2波乱）＝券種別の [n,hit,inv,ret]
                                "ex0": [0, 0, 0, 0], "ex1": [0, 0, 0, 0], "ex2": [0, 0, 0, 0],
                                "tri0": [0, 0, 0, 0], "tri1": [0, 0, 0, 0], "tri2": [0, 0, 0, 0],
-                               "nr": [0, 0, 0]})
+                               "nr": [0, 0, 0],
+                               # 荒れ度×買い目区分（点単位・実際の買い目の inv/ret）
+                               "exg": grid(), "trig": grid()})
     for rid, rc in races.items():
         if len(rc["b"]) != 6:
             continue
@@ -1177,36 +1189,48 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         # 2連複（標準目のみ＝サイト本体 fukuStd と同一。本命1本は2026-09廃止）
         buy2 = _fuku_std(sv)
         if buy2:
-            yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon))
+            probs2 = [_pf_prob(sv, c) for c in buy2]
+            yen2 = _alloc_yen(_meri_w(probs2, hon))
             D["ex"][0] += 1
             D["ex" + str(bi)][0] += 1
-            for c, y in zip(buy2, yen2):
+            for c, y, p in zip(buy2, yen2, probs2):
+                cell = D["exg"][bi][oband(p, ex_c)]   # 荒れ度×買い目区分
+                cell[0] += 1
                 if not any(w in fly for w in c):
                     D["ex"][2] += y
                     D["ex" + str(bi)][2] += y
+                    cell[2] += y
                 if c == act2:
                     add = round((po[2] if len(po) > 2 else 0) * y / 100)
                     D["ex"][3] += add
                     D["ex"][1] += 1
                     D["ex" + str(bi)][3] += add
                     D["ex" + str(bi)][1] += 1
+                    cell[3] += add
+                    cell[1] += 1
         # 3連単（triOn＝hon≥0.45のみ・標準帯は穴型除外）
         if act3 and hon >= 0.45:
             buy3 = _tri_buy_list(_pl_topk(sv, 3, 200), k_tri(hon), hon, _lane_rank_map(sv))
             if buy3:
-                yen3 = _alloc_yen(_meri_w([_pl_prob(sv, c) for c in buy3], hon))
+                probs3 = [_pl_prob(sv, c) for c in buy3]
+                yen3 = _alloc_yen(_meri_w(probs3, hon))
                 D["tri"][0] += 1
                 D["tri" + str(bi)][0] += 1
-                for c, y in zip(buy3, yen3):
+                for c, y, p in zip(buy3, yen3, probs3):
+                    cell = D["trig"][bi][oband(p, tri_c)]   # 荒れ度×買い目区分
+                    cell[0] += 1
                     if not any(w in fly for w in c):
                         D["tri"][2] += y
                         D["tri" + str(bi)][2] += y
+                        cell[2] += y
                     if c == act3:
                         add = round(po[1] * y / 100)
                         D["tri"][3] += add
                         D["tri"][1] += 1
                         D["tri" + str(bi)][3] += add
                         D["tri" + str(bi)][1] += 1
+                        cell[3] += add
+                        cell[1] += 1
         # 穴目（買わない参考・帯別方式・各¥100フル）。波乱帯(<0.45)=対抗6点／標準帯(0.45-0.65)=穴候補6点。
         # グラフ・券種別テーブルで 波乱/標準/合算 を選択表示できるよう帯別に分けて集計。
         if act3 and hon < 0.45:
@@ -1248,7 +1272,19 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
                 ex[i] += day[d]["ex" + str(bi)][i]
                 tri[i] += day[d]["tri" + str(bi)][i]
         bands.append({"nr": nr, "ex": pack(ex), "tri": pack(tri)})
-    return {"days": ser, "tot": {k: pack(v) for k, v in tot.items()}, "bands": bands,
+    # 券種×荒れ度×買い目区分（9通り）＝直近窓での回収率グラフ用（点単位・実際の買い目）。
+    def sum_grid(key):
+        g = [[[0, 0, 0, 0] for _ in range(3)] for _ in range(3)]
+        for d in days:
+            for gi in range(3):
+                for bj in range(3):
+                    for i in range(4):
+                        g[gi][bj][i] += day[d][key][gi][bj][i]
+        return [[pack(g[gi][bj]) for bj in range(3)] for gi in range(3)]
+    grid = {"ex": sum_grid("exg"), "tri": sum_grid("trig"),
+            "cuts": {"ex": list(ex_c), "tri": list(tri_c)}}
+    return {"days": ser, "tot": {k: pack(v) for k, v in tot.items()},
+            "bands": bands, "grid": grid,
             "from": days[0] if days else None, "to": days[-1] if days else None}
 
 
@@ -2486,6 +2522,24 @@ function isHit(r){
   const triHit=tri.length>=3&&UB.tri.some(c=>eqArr(c[0],tri));
   return exHit||triHit;
 }
+// 完了レースの決着＋配当（2連複/3連単）の共通表記。listView（場別）と realList（リアル）で同一。
+function resLines(r){
+  const s=betScore(r);const ord=finishOrder(r);      // 買い目＝展示反映後（展示無ければ朝の学習モデル）
+  const hon=q2conf(r);const UB=unifiedBuy(s,r.kd,hon);   // 一本化した決まり手ベース買い目
+  const ex=ord.slice(0,2),tri=ord.slice(0,3);
+  const exHit=ex.length>=2&&UB.fuku.some(c=>eqPair(c[0],ex));     // 2連複
+  const triHit=tri.length>=3&&UB.tri.some(c=>eqArr(c[0],tri));    // 3連単
+  const pay=r.po?r.po[1]:null;const pay2=(r.po&&r.po.length>2)?r.po[2]:null;   // po[1]=3連単/po[2]=2連複配当
+  let h='<div class="resline"><span class="rll">2連複</span>';
+  ex.forEach((w,i)=>{h+=(i?'<span class="arr">=</span>':'')+chip(w,'mc');});
+  if(exHit)h+='<span class="ok" style="font-size:11px">的中</span>';
+  h+='<span class="yen'+(exHit?' hit':'')+'">'+(pay2!=null?'¥'+pay2.toLocaleString():'配当 –')+'</span></div>';
+  h+='<div class="resline"><span class="rll">3連単</span>';
+  tri.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
+  if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>';
+  h+='<span class="yen'+(triHit?' hit':'')+'">'+(pay!=null?'¥'+pay.toLocaleString():'配当 –')+'</span></div>';
+  return {html:h,exHit:exHit,triHit:triHit,hit:exHit||triHit};
+}
 // 非完走（フライング等）艇＝着順なし。フライングは買い目が返還される＝賭け金は損失でなく戻る。
 function flySet(r){const f={};r.b.forEach((b,i)=>{if(!b[2])f[i+1]=1;});return f;}
 // 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
@@ -2573,17 +2627,18 @@ function realList(rs){
     const ps=r.b.map(x=>x[1]);let hm=0;for(let w=1;w<6;w++)if(ps[w]>ps[hm])hm=w;
     const ha=honAna(r);const done=hasResult(r);const vc=venueColor(r.c);
     const past=isToday&&r.tm&&tmv(r.tm)<nowMin;
+    let resHtml='';   // 完了レースの決着＋配当（場別と同一表記・行末で追記）
     h+='<div class="row rrow'+(i===tgt?' nowrow':'')+(past?' past':'')+'" data-i="'+i+'"'+(i===tgt?' id="nowtarget"':'')+'>'
       +'<span class="rtm2">'+(r.tm||'--:--')+'</span>'
       +'<span class="vpill" style="color:'+vc[0]+';background:'+vc[1]+';border-color:'+vc[2]+'">'+r.v+'</span>'
       +'<span class="rno">'+r.no+'R</span>'+chip(hm+1)
       +'<span class="nm">'+r.b[hm][0]+'</span>'+(r.mz?'<span class="wn">&#9888;</span>':'');
     if(done){
-      const hit=isHit(r);const shobu=r.ev!=null&&r.ev>=1.5;
+      const R=resLines(r);resHtml=R.html;const shobu=r.ev!=null&&r.ev>=1.5;
       const lvlTag=ha.lvlcls!=='std'?'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>':'';  // 鉄板/波乱含みは残す・標準は出さない
       h+='<span class="rrt">'+lvlTag
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
-        +(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
+        +(R.hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
     }else{
       const shobu=r.ev!=null&&r.ev>=1.5;
       const to=tetsuOdds(r);   // 鉄板×実オッズ<2.0＝見送り推奨（オッズ未取得は非表示）
@@ -2593,7 +2648,7 @@ function realList(rs){
         +(to&&to.skip?'<span class="skipb">&#9888;見送り</span>':'')
         +'<span class="hp">本命<b>'+Math.round(ha.honC*100)+'</b> 穴<b class="a">'+Math.round(ha.anaC*100)+'</b></span></span>';
     }
-    h+='<span class="chev">&rsaquo;</span></div>';
+    h+='<span class="chev">&rsaquo;</span>'+resHtml+'</div>';
   }
   if(!order.length)h+='<div class="meta" style="margin-top:14px">'+(lvlFilter==='tetsu'?'鉄板':'波乱')+'のレースはありません</div>';
   return h;
@@ -2639,23 +2694,9 @@ function listView(){
         +(chance?'<span class="chance">&#10024;チャンス</span>':'')
       +'<span class="hp">本命<b>'+Math.round(ha.honC*100)+'</b> 穴<b class="a">'+Math.round(ha.anaC*100)+'</b></span></span>';
     if(done){
-      const s=betScore(r);const ord=finishOrder(r);      // 買い目＝展示反映後（展示無ければ朝の学習モデル）
-      const hon=q2conf(r);const UB=unifiedBuy(s,r.kd,hon);   // 一本化した決まり手ベース買い目
-      const ex=ord.slice(0,2);const tri=ord.slice(0,3);
-      const exHit=ex.length>=2&&UB.fuku.some(c=>eqPair(c[0],ex));     // 2連複
-      const triHit=tri.length>=3&&UB.tri.some(c=>eqArr(c[0],tri));    // 3連単（全帯で購入）
-      const hit=exHit||triHit;
-      const pay=r.po?r.po[1]:null;const pay2=(r.po&&r.po.length>2)?r.po[2]:null;   // 2連複配当
-      h+='<span class="res">'+(hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
-        +'<span class="chev">&rsaquo;</span>';
-      h+='<div class="resline"><span class="rll">2連複</span>';
-      ex.forEach((w,i)=>{h+=(i?'<span class="arr">=</span>':'')+chip(w,'mc');});
-      if(exHit)h+='<span class="ok" style="font-size:11px">的中</span>';
-      h+='<span class="yen'+(exHit?' hit':'')+'">'+(pay2!=null?'¥'+pay2.toLocaleString():'配当 –')+'</span></div>';
-      h+='<div class="resline"><span class="rll">3連単</span>';
-      tri.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
-      if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>';
-      h+='<span class="yen'+(triHit?' hit':'')+'">'+(pay!=null?'¥'+pay.toLocaleString():'配当 –')+'</span></div>';
+      const R=resLines(r);
+      h+='<span class="res">'+(R.hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
+        +'<span class="chev">&rsaquo;</span>'+R.html;
     }else{
       h+='<span class="chev">&rsaquo;</span>';
     }
@@ -3074,7 +3115,7 @@ function recoveryChart(days,series){
   s+='</svg>';
   return s;
 }
-// 【直近回収率結果】＝①レース荒れ度別（本命/標準/波乱レース）の券種別回収率＋②券種別（2連複/3連単）当日・前日回収率、いずれも棒グラフ。
+// 【直近回収率結果】＝①券種×レース荒れ度×買い目区分（想定オッズ帯）の回収率＋②券種別（2連複/3連単）当日・前日回収率、いずれも棒グラフ。
 function recentRecoveryView(){
   const R=D.daily_rec; if(!R||!R.days||!R.days.length)return '';
   const pct=(a,b)=>b?Math.round(a/b*100):0;
@@ -3082,14 +3123,23 @@ function recentRecoveryView(){
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
   h+='<div class="meta">買い目・金額はサイト本体と同一（<b>2連複＝標準目のみ</b>／<b>3連単＝上位数点</b>を確率比例配分・<b>波乱帯は3連単を見送り</b>・フライングは返還）。'
     +'<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
-  // ── ① レース荒れ度別（本命/標準/波乱レース）の回収率（券種別2本の棒グラフ）──
+  // ── ① 券種×レース荒れ度×買い目区分（想定オッズ帯）の回収率（棒グラフ）──────
   const bandLab=['本命','標準','波乱'];
-  const rowsA=(R.bands||[]).map((b,i)=>({lab:bandLab[i]+'レ',n:b.nr,ex:rr(b.ex),tri:rr(b.tri)}));
-  const betSeries=[{k:'ex',col:'#43c59e',lab:'2連複'},{k:'tri',col:'#e0a93b',lab:'3連単'}];
-  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:14px 0 2px;text-align:center">① レース荒れ度別 回収率（％・直近'+R.days.length+'日）</div>';
-  h+='<div class="meta" style="text-align:center"><span style="color:#43c59e">■</span> 2連複　<span style="color:#e0a93b">■</span> 3連単'
-    +'<br><span style="font-size:11px;color:#8b96a8">横軸＝レース荒れ度（本命/標準/波乱）／棒＝券種</span></div>';
-  h+='<div style="text-align:center">'+grpBars(rowsA,betSeries,{ref:100})+'</div>';
+  const buySeries=[{k:'b0',col:'#4a90d9',lab:'本命目'},{k:'b1',col:'#45b98a',lab:'標準目'},{k:'b2',col:'#d98a3b',lab:'波乱目'}];
+  const G=R.grid;
+  const gridRows=kind=>(G&&G[kind]?G[kind]:[]).map((bs,gi)=>{
+    const row={lab:bandLab[gi]+'レ',n:bs.reduce((a,c)=>a+c.n,0)};
+    bs.forEach((c,bj)=>row['b'+bj]=(c.inv?pct(c.ret,c.inv):null));   // 投資0＝null＝棒なし「–」
+    return row;});
+  const cE=(G&&G.cuts)?G.cuts.ex:[3.5,5.5], cT=(G&&G.cuts)?G.cuts.tri:[15,22];
+  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:14px 0 2px;text-align:center">① 券種×レース荒れ度×買い目区分 回収率（％・直近'+R.days.length+'日）</div>';
+  h+='<div class="meta" style="text-align:center">買い目区分（想定オッズ＝1÷予想確率）：'
+    +'<span style="color:#4a90d9">■</span> 本命目　<span style="color:#45b98a">■</span> 標準目　<span style="color:#d98a3b">■</span> 波乱目'
+    +'<br><span style="font-size:11px;color:#8b96a8">区切り＝2連複 '+cE[0]+'/'+cE[1]+'倍・3連単 '+cT[0]+'/'+cT[1]+'倍／横軸＝レース荒れ度／棒＝買い目区分</span></div>';
+  h+='<div style="font-size:12px;color:#43c59e;font-weight:700;margin:10px 0 0;text-align:center">2連複（標準目のみ運用）</div>';
+  h+='<div style="text-align:center">'+grpBars(gridRows('ex'),buySeries,{ref:100,nsuf:'点'})+'</div>';
+  h+='<div style="font-size:12px;color:#e0a93b;font-weight:700;margin:10px 0 0;text-align:center">3連単</div>';
+  h+='<div style="text-align:center">'+grpBars(gridRows('tri'),buySeries,{ref:100,nsuf:'点'})+'</div>';
   // ── ② 券種別（2連複/3連単）当日・前日 回収率（棒グラフ）───────────────
   const last=R.days[R.days.length-1], prev=R.days.length>=2?R.days[R.days.length-2]:null;
   const dcur=last?last.d.slice(5):'', dprev=prev?prev.d.slice(5):'';
@@ -3101,10 +3151,10 @@ function recentRecoveryView(){
   h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 当日 '+dcur+'　<span style="color:#9aa7bd">■</span> 前日 '+dprev
     +'<br><span style="font-size:11px;color:#8b96a8">横軸＝券種（2連複/3連単）／棒＝当日・前日</span></div>';
   h+='<div style="text-align:center">'+grpBars(rowsB,daySeries,{ref:100})+'</div>';
-  h+='<div class="legend"><b>①</b>＝直近'+R.days.length+'日を通算した、レース荒れ度帯ごとの券種別回収率（本命＝本線2連複予想率65％以上／標準＝45-65％／波乱＝45％未満）。'
-    +'<b>波乱帯は3連単を買わない</b>＝棒なし「–」。本命帯は標準目の該当が少なく2連複が「–」寄りになります。'
+  h+='<div class="legend"><b>①</b>＝直近'+R.days.length+'日を通算し、券種（2連複/3連単）ごとに<b>レース荒れ度</b>（本命＝本線2連複予想率65％以上／標準＝45-65％／波乱＝45％未満）×<b>買い目1点ずつの想定オッズ帯</b>（本命目/標準目/波乱目）へ分解した回収率（点単位・実際の買い目のΣ配当÷Σ賭け金）。'
+    +'<b>2連複は標準目のみ運用</b>のため主に標準目の棒になります。<b>波乱帯の3連単は買わない</b>・該当買い目が無い組は棒なし「–」。'
     +'<b>②</b>＝当日・前日の券種別回収率。<b>当日は結果確定ぶんのみ反映</b>（未確定レースは翌朝反映）。'
-    +'※日別・帯別は高配当1本で大きく振れます。控除率約25％の壁で長期回収率は100％未満が基本です。</div>';
+    +'※帯別・区分別は高配当1本で大きく振れます。控除率約25％の壁で長期回収率は100％未満が基本です。</div>';
   return h;
 }
 function statsView(){
