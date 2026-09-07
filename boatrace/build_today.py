@@ -1254,7 +1254,10 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
     def pack(a):
         return {"n": a[0], "h": a[1], "inv": a[2], "ret": a[3]}
     keys = ("ex", "tri", "ana_h", "ana_s")
-    ser = [{"d": d, **{k: pack(day[d][k]) for k in keys}} for d in days]
+    # ser=日別。exb/trib＝レース荒れ度帯別（本命/標準/波乱）の日別回収率＝折れ線グラフ用。
+    ser = [{"d": d, **{k: pack(day[d][k]) for k in keys},
+            "exb": [pack(day[d]["ex" + str(bi)]) for bi in range(3)],
+            "trib": [pack(day[d]["tri" + str(bi)]) for bi in range(3)]} for d in days]
     tot = {k: [0, 0, 0, 0] for k in keys}
     for d in days:
         for k in keys:
@@ -1283,8 +1286,13 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
         return [[pack(g[gi][bj]) for bj in range(3)] for gi in range(3)]
     grid = {"ex": sum_grid("exg"), "tri": sum_grid("trig"),
             "cuts": {"ex": list(ex_c), "tri": list(tri_c)}}
+    # 当日・前日の 9通り（荒れ度×買い目区分）＝単日グリッド（末尾2日・時系列順）。②で使用。
+    def day_grid(d, key):
+        return [[pack(day[d][key][gi][bj]) for bj in range(3)] for gi in range(3)]
+    grid2 = [{"d": d, "ex": day_grid(d, "exg"), "tri": day_grid(d, "trig")}
+             for d in days[-2:]]
     return {"days": ser, "tot": {k: pack(v) for k, v in tot.items()},
-            "bands": bands, "grid": grid,
+            "bands": bands, "grid": grid, "grid2": grid2,
             "from": days[0] if days else None, "to": days[-1] if days else None}
 
 
@@ -3115,46 +3123,44 @@ function recoveryChart(days,series){
   s+='</svg>';
   return s;
 }
-// 【直近回収率結果】＝①券種×レース荒れ度×買い目区分（想定オッズ帯）の回収率＋②券種別（2連複/3連単）当日・前日回収率、いずれも棒グラフ。
+// 【直近回収率結果】＝①直近30日の日別回収率（折れ線・券種ごとに本命/標準/波乱レースの3本）＋②当日・前日の3連単を荒れ度×買い目区分（9通り）に分解した棒グラフ。
 function recentRecoveryView(){
   const R=D.daily_rec; if(!R||!R.days||!R.days.length)return '';
   const pct=(a,b)=>b?Math.round(a/b*100):0;
-  const rr=o=>(o&&o.inv)?pct(o.ret,o.inv):null;          // 回収率（投資0＝null＝棒なし「–」）
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
   h+='<div class="meta">買い目・金額はサイト本体と同一（<b>2連複＝標準目のみ</b>／<b>3連単＝上位数点</b>を確率比例配分・<b>波乱帯は3連単を見送り</b>・フライングは返還）。'
     +'<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
-  // ── ① 券種×レース荒れ度×買い目区分（想定オッズ帯）の回収率（棒グラフ）──────
   const bandLab=['本命','標準','波乱'];
+  // ── ① 直近30日の日別回収率（折れ線）：券種ごとに 本命/標準/波乱レース の3本 ────
+  const bandSeries=[{k:'b0',col:'#5b9bd5',lab:'本命レ'},{k:'b1',col:'#43c59e',lab:'標準レ'},{k:'b2',col:'#d98a3b',lab:'波乱レ'}];
+  const lineDays=key=>R.days.map(d=>({d:d.d,b0:d[key][0],b1:d[key][1],b2:d[key][2]}));   // 帯別日別[inv,ret]
+  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:14px 0 2px;text-align:center">① 日別回収率の推移（％・直近'+R.days.length+'日）</div>';
+  h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命レ　<span style="color:#43c59e">■</span> 標準レ　<span style="color:#d98a3b">■</span> 波乱レ'
+    +'<br><span style="font-size:11px;color:#8b96a8">折れ線＝各レース荒れ度帯の日別回収率／横軸＝日付</span></div>';
+  h+='<div style="font-size:12px;color:#43c59e;font-weight:700;margin:8px 0 0;text-align:center">2連複（標準目のみ運用）</div>';
+  h+=recoveryChart(lineDays('exb'),bandSeries);
+  h+='<div style="font-size:12px;color:#e0a93b;font-weight:700;margin:8px 0 0;text-align:center">3連単（波乱レは見送り）</div>';
+  h+=recoveryChart(lineDays('trib'),bandSeries);
+  // ── ② 当日・前日の3連単を レース荒れ度×買い目区分（9通り）の棒グラフで（各1枚）──
   const buySeries=[{k:'b0',col:'#4a90d9',lab:'本命目'},{k:'b1',col:'#45b98a',lab:'標準目'},{k:'b2',col:'#d98a3b',lab:'波乱目'}];
-  const G=R.grid;
-  const gridRows=kind=>(G&&G[kind]?G[kind]:[]).map((bs,gi)=>{
-    const row={lab:bandLab[gi]+'レ',n:bs.reduce((a,c)=>a+c.n,0)};
-    bs.forEach((c,bj)=>row['b'+bj]=(c.inv?pct(c.ret,c.inv):null));   // 投資0＝null＝棒なし「–」
-    return row;});
-  const cE=(G&&G.cuts)?G.cuts.ex:[3.5,5.5], cT=(G&&G.cuts)?G.cuts.tri:[15,22];
-  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:14px 0 2px;text-align:center">① 券種×レース荒れ度×買い目区分 回収率（％・直近'+R.days.length+'日）</div>';
+  const g2=(R.grid2||[]).slice().reverse();   // 末尾2日を [当日,前日] に
+  const dlabs=['当日','前日'];
+  const cT=(R.grid&&R.grid.cuts)?R.grid.cuts.tri:[15,22];
+  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:20px 0 2px;text-align:center">② 当日・前日の3連単 回収率（レース荒れ度×買い目区分・9通り）</div>';
   h+='<div class="meta" style="text-align:center">買い目区分（想定オッズ＝1÷予想確率）：'
     +'<span style="color:#4a90d9">■</span> 本命目　<span style="color:#45b98a">■</span> 標準目　<span style="color:#d98a3b">■</span> 波乱目'
-    +'<br><span style="font-size:11px;color:#8b96a8">区切り＝2連複 '+cE[0]+'/'+cE[1]+'倍・3連単 '+cT[0]+'/'+cT[1]+'倍／横軸＝レース荒れ度／棒＝買い目区分</span></div>';
-  h+='<div style="font-size:12px;color:#43c59e;font-weight:700;margin:10px 0 0;text-align:center">2連複（標準目のみ運用）</div>';
-  h+='<div style="text-align:center">'+grpBars(gridRows('ex'),buySeries,{ref:100,nsuf:'点'})+'</div>';
-  h+='<div style="font-size:12px;color:#e0a93b;font-weight:700;margin:10px 0 0;text-align:center">3連単</div>';
-  h+='<div style="text-align:center">'+grpBars(gridRows('tri'),buySeries,{ref:100,nsuf:'点'})+'</div>';
-  // ── ② 券種別（2連複/3連単）当日・前日 回収率（棒グラフ）───────────────
-  const last=R.days[R.days.length-1], prev=R.days.length>=2?R.days[R.days.length-2]:null;
-  const dcur=last?last.d.slice(5):'', dprev=prev?prev.d.slice(5):'';
-  const rowsB=[
-    {lab:'2連複',n:last?last.ex.n:0,cur:last?rr(last.ex):null,prev:prev?rr(prev.ex):null},
-    {lab:'3連単',n:last?last.tri.n:0,cur:last?rr(last.tri):null,prev:prev?rr(prev.tri):null}];
-  const daySeries=[{k:'cur',col:'#5b9bd5',lab:'当日'},{k:'prev',col:'#9aa7bd',lab:'前日'}];
-  h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:20px 0 2px;text-align:center">② 券種別 当日・前日 回収率（％）</div>';
-  h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 当日 '+dcur+'　<span style="color:#9aa7bd">■</span> 前日 '+dprev
-    +'<br><span style="font-size:11px;color:#8b96a8">横軸＝券種（2連複/3連単）／棒＝当日・前日</span></div>';
-  h+='<div style="text-align:center">'+grpBars(rowsB,daySeries,{ref:100})+'</div>';
-  h+='<div class="legend"><b>①</b>＝直近'+R.days.length+'日を通算し、券種（2連複/3連単）ごとに<b>レース荒れ度</b>（本命＝本線2連複予想率65％以上／標準＝45-65％／波乱＝45％未満）×<b>買い目1点ずつの想定オッズ帯</b>（本命目/標準目/波乱目）へ分解した回収率（点単位・実際の買い目のΣ配当÷Σ賭け金）。'
-    +'<b>2連複は標準目のみ運用</b>のため主に標準目の棒になります。<b>波乱帯の3連単は買わない</b>・該当買い目が無い組は棒なし「–」。'
-    +'<b>②</b>＝当日・前日の券種別回収率。<b>当日は結果確定ぶんのみ反映</b>（未確定レースは翌朝反映）。'
-    +'※帯別・区分別は高配当1本で大きく振れます。控除率約25％の壁で長期回収率は100％未満が基本です。</div>';
+    +'<br><span style="font-size:11px;color:#8b96a8">区切り＝3連単 '+cT[0]+'/'+cT[1]+'倍／横軸＝レース荒れ度／棒＝買い目区分</span></div>';
+  if(g2.length){
+    g2.forEach((dg,i)=>{
+      const rows=dg.tri.map((bs,gi)=>{const row={lab:bandLab[gi]+'レ',n:bs.reduce((a,c)=>a+c.n,0)};
+        bs.forEach((c,bj)=>row['b'+bj]=(c.inv?pct(c.ret,c.inv):null));return row;});   // 投資0＝null＝棒なし「–」
+      h+='<div style="font-size:12px;color:#5b9bd5;font-weight:700;margin:10px 0 0;text-align:center">'+dlabs[i]+' '+dg.d.slice(5)+'</div>';
+      h+='<div style="text-align:center">'+grpBars(rows,buySeries,{ref:100,nsuf:'点'})+'</div>';
+    });
+  }else h+='<div class="meta" style="text-align:center">当日・前日の結果がまだありません。</div>';
+  h+='<div class="legend"><b>①</b>＝直近'+R.days.length+'日の<b>日別回収率</b>を折れ線で表示。券種（2連複/3連単）ごとに<b>本命/標準/波乱レース</b>（本線2連複予想率 65％以上／45-65％／45％未満）の3本。3連単の波乱レースは買わないため線は出ません。'
+    +'<b>②</b>＝<b>当日・前日</b>の3連単を、<b>レース荒れ度×買い目1点ずつの想定オッズ帯</b>（本命目/標準目/波乱目）の<b>9通り</b>に分解した回収率（点単位・実際の買い目のΣ配当÷Σ賭け金）。当日は結果確定ぶんのみ反映（未確定レースは翌朝）。'
+    +'※日別・単日・区分別は<b>高配当1本で大きく振れます</b>（特に3連単）。控除率約25％の壁で長期回収率は100％未満が基本です。</div>';
   return h;
 }
 function statsView(){
