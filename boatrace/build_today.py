@@ -3415,6 +3415,21 @@ function exView(r){
   return h;
 }
 
+// ── 展示キャッシュ（localStorage）──
+// 一度取得した展示(r.ex)を端末に保存し、レースが終わって previews フィードから消えても
+// リロード後の詳細に残す。previews は発走前のレースしか持たず、静的ビルドは朝＝展示前に
+// 生成されるため、端末側で保持しないと終了後に展示が消えるのを防げない。
+// キーは当日(D.base)。前日以前のキャッシュは自動で掃除する。
+const EXKEY='bt_exCache_'+D.base;
+function exCacheLoad(){try{return JSON.parse(localStorage.getItem(EXKEY))||{};}catch(e){return {};}}
+function exCacheSave(m){try{
+  for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);
+    if(k&&k.indexOf('bt_exCache_')===0&&k!==EXKEY)localStorage.removeItem(k);}   // 旧日付を掃除
+  localStorage.setItem(EXKEY,JSON.stringify(m));
+}catch(e){}}
+function exCachePut(id,ex){if(!ex)return;try{const m=exCacheLoad();m[id]=ex;exCacheSave(m);}catch(e){}}
+function exCacheHydrate(){const m=exCacheLoad();let n=0;
+  D.races.forEach(r=>{if(r.d===D.base&&!r.ex&&m[r.id]){r.ex=m[r.id];n++;}});return n;}   // 欠けている展示だけ復元
 // 「更新」ボタン：当日(base)の展示＋結果を serve_odds.py 経由で取得し D.races へ反映。
 // 結果が出たレースは着順/決まり手/配当を入れて前日同様の結果表示に切替わる。
 // 取得結果 o={races,fetched_at} を当日(base)レースへ反映。戻り値=反映件数。
@@ -3423,7 +3438,7 @@ function applyUpd(o){
   D.races.forEach(r=>{
     if(r.d!==D.base)return;                      // 反映は当日のみ
     const rec=R[r.id]; if(!rec)return;
-    if(rec.ex){r.ex=rec.ex; nex++;}
+    if(rec.ex){r.ex=rec.ex; nex++; exCachePut(r.id,rec.ex);}
     if(rec.ev!=null){r.ev=rec.ev; nev++;}        // 鉄板×EV≥1.5 で 🎯勝負 点灯
     if(rec.result){
       const rs=rec.result, fin=rs.fin||[];
@@ -3490,7 +3505,7 @@ function applyPreviews(pj){
     if(r.exSrc==='official')return;                             // 公式直取り済み＝より新鮮なので previews で戻さない
     const pv=byId[r.id]; if(!pv)return;
     const ex=pvToEx(pv); if(!ex)return;                         // 展示前は上書きしない
-    r.ex=ex; n++;
+    r.ex=ex; n++; exCachePut(r.id,ex);
   });
   return n;
 }
@@ -3546,7 +3561,7 @@ function tenjiFetch(r){
   tenjiLast[r.id]=now;
   const q='jcd='+r.id.slice(0,2)+'&rno='+(+r.id.slice(10,12))+'&hd='+r.id.slice(2,10);
   return fetch('/api/tenji?'+q,{cache:'no-store'}).then(x=>{if(!x.ok)throw 0;return x.json();})
-    .then(o=>{ if(!o||!o.ex)return false; r.ex=o.ex; r.exSrc='official'; return true; })
+    .then(o=>{ if(!o||!o.ex)return false; r.ex=o.ex; r.exSrc='official'; exCachePut(r.id,o.ex); return true; })
     .catch(()=>false);                                // 失敗は previews/update.json にフォールバック
 }
 // 締切40分前〜締切後10分・結果未確定の当日レース（＋詳細表示中のレース）を直取り。
@@ -3801,6 +3816,16 @@ if(location.protocol==='file:'){
   // スマホでタブ/アプリに戻った瞬間も即時再取得（3分間隔を待たない）。
   document.addEventListener('visibilitychange',()=>{ if(!document.hidden)autoRefresh(); });
 }
+// odds.html「予想へ戻る」等からの ?race=<id> / #race=<id> で、見ていたレース詳細を直接開く。
+(function(){try{
+  const m=(location.search+location.hash).match(/[?&#]race=([^&#]+)/);
+  if(!m)return;
+  const rid=decodeURIComponent(m[1]);
+  const r=D.races.find(x=>x.id===rid); if(!r)return;
+  tab='pred'; selDate=r.d; cur='ALL';
+  const i=dayRaces().indexOf(r); if(i>=0)sel=i;
+}catch(e){}})();
+exCacheHydrate();   // 保存済みの展示を復元（終了レースでも詳細に残す）
 render();
 // サーバ版へ #update 付きで来たら、自動で更新を1回実行（file://から更新を押した導線）。
 if(location.protocol!=='file:'&&location.hash==='#update'){

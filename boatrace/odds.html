@@ -157,7 +157,10 @@ function render(){
   var app=document.getElementById('app');
   if(!OK){app.innerHTML='<div class="err">レース指定がありません。予想ページ（レース詳細）の「オッズ一覧」ボタンから開いてください。</div>';return;}
   var hd=HD.slice(0,4)+'-'+HD.slice(4,6)+'-'+HD.slice(6,8);
-  var h='<a class="back" href="javascript:history.length>1?history.back():location.assign(\'today.html\')">&lsaquo; 予想へ戻る</a>'
+  // 予想へ戻る＝見ていたレース詳細へ直接（このページは別タブ target=_blank/rel=noopener で開くため
+  // history.back() は効かない・today.html を素で開くとメイン画面に戻ってしまう）。race=<id> で詳細を復元。
+  var backHref=ID?'today.html?race='+encodeURIComponent(ID):'today.html';
+  var h='<a class="back" href="'+backHref+'">&lsaquo; 予想へ戻る</a>'
     +'<h1>'+esc(V)+' '+esc(NO)+'R オッズ'
     +'<button class="upbtn" id="upd"'+(busy?' disabled':'')+'>'+(busy?'取得中…':'更新')+'</button></h1>'
     +'<div class="meta">'+hd+(TM?'　締切 '+esc(TM):'')
