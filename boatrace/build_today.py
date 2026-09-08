@@ -707,7 +707,7 @@ def regime_result(rel, pred, score_map, hist, payout, since, hon_map=None):
         rc["cl"][w] = to_float(r.get("class_ord"))
         rc["lw"][w] = to_float(h.get("lane_win_rate"))
 
-    labs = ["鉄板", "標準", "穴"]
+    labs = ["鉄板", "ノーマル", "波乱"]   # レース荒れ度の統一名称（鉄板/ノーマル/波乱）
     agg = [{"n": 0, "win": 0, "n2": 0, "h2": 0, "pts2": 0, "p2": 0,
             "n3": 0, "h3": 0, "pts3": 0, "p3": 0} for _ in range(3)]
     for rid, rc in races.items():
@@ -791,8 +791,8 @@ def combo_class_result(rel, pred, score_map, payout, since, hon_map,
         rc = races.setdefault(rid, {"b": {}})
         rc["b"][int(r["枠番"])] = (pm, fin)
 
-    race_labs = ["本命", "標準", "波乱"]      # レース荒れ度（hon帯）
-    buy_labs = ["本命目", "標準目", "波乱目"]  # 買い目の想定オッズ帯
+    race_labs = ["鉄板", "ノーマル", "波乱"]   # レース荒れ度の統一名称（鉄板/ノーマル/波乱）
+    buy_labs = ["本命", "標準", "穴"]          # 買い目区分の統一名称（本命/標準/穴）
     ex_c, tri_c = cuts["ex"], cuts["tri"]
     # agg[kind][race_band][buy_band] = {"n","h","ret"}
     mkcell = lambda: {"n": 0, "h": 0, "ret": 0}
@@ -2373,7 +2373,7 @@ function honAnaS(s){
   const idx=[0,1,2,3,4,5].sort((a,b)=>s[b]-s[a]);   // 予想順位降順
   const hon=s[idx[0]]/1000;
   const ana=(s[idx[3]]+s[idx[4]]+s[idx[5]])/1000;    // 順位4-6の合計
-  const lvl = hon>=0.65?['鉄板','tetsu'] : hon<0.45?['波乱含み','haran'] : ['標準','std'];
+  const lvl = hon>=0.65?['鉄板','tetsu'] : hon<0.45?['波乱','haran'] : ['ノーマル','std'];
   // 表示用の較正値（実測1着率ベース）。帯判定(lvl)・点数は生値 hon のまま。
   const honC=Math.min(1,calP(hon));
   const anaC=Math.min(1,calP(s[idx[3]]/1000)+calP(s[idx[4]]/1000)+calP(s[idx[5]]/1000));
@@ -2381,7 +2381,7 @@ function honAnaS(s){
 }
 // 本命確率/穴確率はAPI(r.ab)由来のまま。荒れ度ラベル(lvl)だけ本線2連複予想率(q2conf)で判定。
 function honAna(r){const o=honAnaS(r.ab);const c=q2conf(r);
-  const lv=c>=0.65?['鉄板','tetsu']:c<0.45?['波乱含み','haran']:['標準','std'];
+  const lv=c>=0.65?['鉄板','tetsu']:c<0.45?['波乱','haran']:['ノーマル','std'];
   o.lvl=lv[0];o.lvlcls=lv[1];return o;}
 // 対抗1艇（穴）＝本命を食う可能性が最も高い1艇＋その根拠タグ。
 // ★検証(残差テスト OOS 6,497R): 隣接艇の弱さ・隣ST・捲り屋×高機は【すべて p_win に織込済】＝残差≈0。
@@ -2447,8 +2447,8 @@ function buyBandTag(prob,isFuku){
   if(!(prob>0))return '';
   const cu=(D.combo_api&&D.combo_api.cuts)?(isFuku?D.combo_api.cuts.ex:D.combo_api.cuts.tri):(isFuku?[3.5,5.5]:[15,22]);
   const od=1/prob;const b=od<cu[0]?0:(od<cu[1]?1:2);
-  const L=[['本命目','tg-hon'],['標準目','tg-std'],['波乱目','tg-ana']][b];
-  return '<span class="ctag '+L[1]+'" title="買い目区分：想定オッズ'+od.toFixed(1)+'倍（＝必要倍）で分類。成績タブの9通りと同基準（本命目&lt;'+cu[0]+'倍／標準目&lt;'+cu[1]+'倍／波乱目≧'+cu[1]+'倍）">'+L[0]+'</span>';
+  const L=[['本命','tg-hon'],['標準','tg-std'],['穴','tg-ana']][b];
+  return '<span class="ctag '+L[1]+'" title="買い目区分：想定オッズ'+od.toFixed(1)+'倍（＝必要倍）で分類。成績タブの9通りと同基準（本命&lt;'+cu[0]+'倍／標準&lt;'+cu[1]+'倍／穴≧'+cu[1]+'倍）">'+L[0]+'</span>';
 }
 // 3連単の購入買い目: 標準帯(0.45-0.65)は穴型(5-6番手絡み)を購入対象から外す（穴型は参考表示のみ・買わない）。
 function triBuyList(allCombos,k,hon,rankMap){
@@ -2606,7 +2606,7 @@ function summaryBar(){
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱帯は上位3種を広く）を実際に買った場合。<b>全帯で各券種¥2,000配分</b>（¥100単位）・フライングは返還。</div>';
+  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱レースは上位3種を広く）を実際に買った場合。<b>全帯で各券種¥2,000配分</b>（¥100単位）・フライングは返還。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
     +'（非完走艇を含む買い目は投資から除外）</div>';
@@ -2795,8 +2795,8 @@ function detailView(r){
   h+='<div class="sec">買い目（決まり手ベース・一本化）<span class="kbadge">本命'+chip(UB.axc,'mc')+(isAna?' 波乱・広く':' 軸')+'</span></div>';
   h+='<div style="font-size:12px;color:#9aa3b2;margin:2px 0 6px">本命 '+chip(UB.axc,'mc')+' '+r.b[UB.ax][0]
     +'（決まり手 '+(isAna?'上位3種':'上位2種')+'＝<b>'+UB.methods.join('・')+'</b>）。'
-    +'2連複＝<b>標準目のみ（想定オッズ3.5〜5.5倍・該当帯を全部）</b>。'
-    +(isAna?'3連単＝波乱含み＝上位3種から相手を広く拾い<b>12点</b>を手広く探る（各券種¥2,000配分）。'
+    +'2連複＝<b>標準のみ（想定オッズ3.5〜5.5倍・該当帯を全部）</b>。'
+    +(isAna?'3連単＝波乱＝上位3種から相手を広く拾い<b>12点</b>を手広く探る（各券種¥2,000配分）。'
            :'3連単＝<b>決まり手で相手を絞る本命軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動）':'（本命濃厚につき対抗アタマは省略）')+'。')
     +'<span class="stdstat"></span></div>';
   const kenBlock=(label,rows,act,pay,isFuku)=>{
@@ -2805,14 +2805,14 @@ function detailView(r){
     const hitI=act?rows.findIndex(c=>isFuku?eqPair(c[0],act):eqArr(c[0],act)):-1;const hit=hitI>=0;
     const rec=(act&&pay!=null)?(hit?Math.round(pay*yen[hitI]/budget):0):null;   // 回収率%＝(配当/100×賭け金)/予算×100＝pay*yen/budget
     if(isFuku&&rows.length===0){
-      return '<div class="sec">'+label+' 0点<span class="kbadge">標準目のみ</span>'
+      return '<div class="sec">'+label+' 0点<span class="kbadge">標準のみ</span>'
         +(act?'<span class="tag m">見送り</span>':'')+'</div>'
         +'<div class="stdsub" style="color:#8b96a8;font-size:12px;padding:4px 0">'
-        +'このレースは標準目（想定オッズ3.5〜5.5倍）に該当する2連複がないため見送り。'
+        +'このレースは標準（想定オッズ3.5〜5.5倍）に該当する2連複がないため見送り。'
         +(act?'（実際の2連複：'+chip(Math.min(act[0],act[1]),'mc')+'＝'+chip(Math.max(act[0],act[1]),'mc')+'）':'')+'</div>';
     }
     let ss='<div class="sec">'+label+' '+rows.length+'点<span class="kbadge">'
-      +(isFuku?'標準目のみ':(isAna?'決まり手3種・広く':'決まり手軸＋対抗可変'))+'</span>'+exTag
+      +(isFuku?'標準のみ':(isAna?'決まり手3種・広く':'決まり手軸＋対抗可変'))+'</span>'+exTag
       +'<span class="kbadge bud">計¥'+budget.toLocaleString()+'</span>'
       +(act?(hit?'<span class="tag h">的中</span>':'<span class="tag m">圏外</span>'):'')+recBadge(rec)+'</div><div class="stdsub">';
     rows.forEach((c,i)=>{const cb=c[0];const hh=act&&(isFuku?eqPair(cb,act):eqArr(cb,act));
@@ -2833,7 +2833,7 @@ function detailView(r){
   h+=kenBlock('2連複',UB.fuku,actEx,payEx,true);
   h+=kenBlock('3連単',UB.tri,actTri,payTri,false);
   h+='<div class="meta" style="margin:4px 0 0;font-size:11px;color:#8b96a8">買い目区分（想定オッズ＝必要倍）：'
-    +'<span class="ctag tg-hon">本命目</span>堅い　<span class="ctag tg-std">標準目</span>中間　<span class="ctag tg-ana">波乱目</span>薄い'
+    +'<span class="ctag tg-hon">本命</span>堅い　<span class="ctag tg-std">標準</span>中間　<span class="ctag tg-ana">穴</span>薄い'
     +'　<span style="color:#6f7889">— 成績タブ「9通り」と同基準</span></div>';
   // #12 オッズ一覧（別ページ odds.html）
   if(IS_CLOUD){
@@ -2944,7 +2944,7 @@ function detailView(r){
   misc+='<div class="legend">※ 予想＝AI学習モデル（本命・1着確率）。確率は朝の出走表のみから算出（展示・オッズ不使用）。本命=1着確率最大の枠。前日・前々日は結果と的中可否を表示。'
     +'<b>買い目は決まり手ベースに一本化</b>：'
     +(isAna
-      ? '<b>波乱含み</b>（本線2連複予想率&lt;25%）は決まり手 上位3種から相手を広く拾い、<b>2連複4点・3連単12点</b>を手広く探る（各券種¥2,000配分）。'
+      ? '<b>波乱</b>（本線2連複予想率&lt;25%）は決まり手 上位3種から相手を広く拾い、<b>2連複4点・3連単12点</b>を手広く探る（各券種¥2,000配分）。'
       : '<b>2連複＝確率上位</b>（回収重視・'+nEx+'点）／<b>3連単＝決まり手で相手を絞る本命'+chip(UB.axc,'mc')+'軸</b>'+(UB.altN>0?'＋<b style="color:#c79bff">対抗'+chip(UB.taik,'mc')+'アタマ（逃げ以外の決着＝本命が飛ぶ）'+Math.round(UB.altF*100)+'％</b>（本命確率'+Math.round(UB.honC*100)+'％連動＝低いほど厚く。検証で的中+0.9pt）':'（本命濃厚につき対抗アタマは省略）')+'。金額は各券種¥2,000を配分（¥100単位）。')
     +'相手は実測 P(2着コース｜1着コース,決まり手) で選定＝逃げ濃厚なら差し勢、まくり差しなら差し込まれた内が2着 等。決まり手はコースが主因で個人差は弱く<b>参考</b>。'
     +'<b>「オッズ更新」を押すと実オッズでEVを計算し、旨味（+EV★）の目を券種内で上へ並べ替え</b>ます（実オッズはライブのみ・発走前に取得）。'
@@ -3083,7 +3083,7 @@ function gameView(){
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,false);
   else h+='<div class="meta">まだ精算済みの日がありません（新方式は<b>9月から開始</b>。初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、当日の全レースを<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに10万円を均等配分（各≈1万円）。各レースの買い目は<b>3連単のみ（2026-09に2連複は廃止）</b>＝レース予算を全額3連単に確率比例配分（本命の堅さ45％以上のみ・波乱帯は見送り）。'
+  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、当日の全レースを<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに10万円を均等配分（各≈1万円）。各レースの買い目は<b>3連単のみ（2026-09に2連複は廃止）</b>＝レース予算を全額3連単に確率比例配分（本命の堅さ45％以上のみ・波乱レースは見送り）。'
     +'<b>毎日フラットに10万円</b>で勝負（繰越なし）。実際の配当で精算し、フライングは返還。'
     +'各日の行を<b>タップするとその日に何を買ったか（組番・金額）と結果</b>が開きます。✓＝的中。※控除率25％の壁があり増え続ける保証はありません＝AIの実力を可視化する実験です。</div>';
   h+='</div>';
@@ -3123,32 +3123,32 @@ function recoveryChart(days,series){
   s+='</svg>';
   return s;
 }
-// 【直近回収率結果】＝①直近30日の日別回収率（折れ線・券種ごとに本命/標準/波乱レースの3本）＋②当日・前日の3連単を荒れ度×買い目区分（9通り）に分解した棒グラフ。
+// 【直近回収率結果】＝①直近30日の日別回収率（折れ線・券種ごとに鉄板/ノーマル/波乱レースの3本）＋②当日・前日の3連単を荒れ度×買い目区分（9通り）に分解した棒グラフ。
 function recentRecoveryView(){
   const R=D.daily_rec; if(!R||!R.days||!R.days.length)return '';
   const pct=(a,b)=>b?Math.round(a/b*100):0;
   let h='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:15px;font-weight:700">📈 直近回収率結果 <span style="font-size:11px;color:#8b96a8;font-weight:500">（'+R.from.slice(5)+'〜'+R.to.slice(5)+'・直近'+R.days.length+'日）</span></div>';
-  h+='<div class="meta">買い目・金額はサイト本体と同一（<b>2連複＝標準目のみ</b>／<b>3連単＝上位数点</b>を確率比例配分・<b>波乱帯は3連単を見送り</b>・フライングは返還）。'
+  h+='<div class="meta">買い目・金額はサイト本体と同一（<b>2連複＝標準のみ</b>／<b>3連単＝上位数点</b>を確率比例配分・<b>波乱レースは3連単を見送り</b>・フライングは返還）。'
     +'<span style="color:#d9745c">赤破線＝100％（損益分岐）</span>。</div>';
-  const bandLab=['本命','標準','波乱'];
-  // ── ① 直近30日の日別回収率（折れ線）：券種ごとに 本命/標準/波乱レース の3本 ────
-  const bandSeries=[{k:'b0',col:'#5b9bd5',lab:'本命レ'},{k:'b1',col:'#43c59e',lab:'標準レ'},{k:'b2',col:'#d98a3b',lab:'波乱レ'}];
+  const bandLab=['鉄板','ノーマル','波乱'];   // レース荒れ度の統一名称
+  // ── ① 直近30日の日別回収率（折れ線）：券種ごとに 鉄板/ノーマル/波乱レース の3本 ────
+  const bandSeries=[{k:'b0',col:'#5b9bd5',lab:'鉄板レ'},{k:'b1',col:'#43c59e',lab:'ノーマルレ'},{k:'b2',col:'#d98a3b',lab:'波乱レ'}];
   const lineDays=key=>R.days.map(d=>({d:d.d,b0:d[key][0],b1:d[key][1],b2:d[key][2]}));   // 帯別日別[inv,ret]
   h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:14px 0 2px;text-align:center">① 日別回収率の推移（％・直近'+R.days.length+'日）</div>';
-  h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命レ　<span style="color:#43c59e">■</span> 標準レ　<span style="color:#d98a3b">■</span> 波乱レ'
-    +'<br><span style="font-size:11px;color:#8b96a8">折れ線＝各レース荒れ度帯の日別回収率／横軸＝日付</span></div>';
-  h+='<div style="font-size:12px;color:#43c59e;font-weight:700;margin:8px 0 0;text-align:center">2連複（標準目のみ運用）</div>';
+  h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 鉄板レ　<span style="color:#43c59e">■</span> ノーマルレ　<span style="color:#d98a3b">■</span> 波乱レ'
+    +'<br><span style="font-size:11px;color:#8b96a8">折れ線＝各レース荒れ度の日別回収率／横軸＝日付</span></div>';
+  h+='<div style="font-size:12px;color:#43c59e;font-weight:700;margin:8px 0 0;text-align:center">2連複（標準のみ運用）</div>';
   h+=recoveryChart(lineDays('exb'),bandSeries);
   h+='<div style="font-size:12px;color:#e0a93b;font-weight:700;margin:8px 0 0;text-align:center">3連単（波乱レは見送り）</div>';
   h+=recoveryChart(lineDays('trib'),bandSeries);
   // ── ② 当日・前日の3連単を レース荒れ度×買い目区分（9通り）の棒グラフで（各1枚）──
-  const buySeries=[{k:'b0',col:'#4a90d9',lab:'本命目'},{k:'b1',col:'#45b98a',lab:'標準目'},{k:'b2',col:'#d98a3b',lab:'波乱目'}];
+  const buySeries=[{k:'b0',col:'#4a90d9',lab:'本命'},{k:'b1',col:'#45b98a',lab:'標準'},{k:'b2',col:'#d98a3b',lab:'穴'}];
   const g2=(R.grid2||[]).slice().reverse();   // 末尾2日を [当日,前日] に
   const dlabs=['当日','前日'];
   const cT=(R.grid&&R.grid.cuts)?R.grid.cuts.tri:[15,22];
   h+='<div style="font-size:13px;color:#cdd6e2;font-weight:600;margin:20px 0 2px;text-align:center">② 当日・前日の3連単 回収率（レース荒れ度×買い目区分・9通り）</div>';
   h+='<div class="meta" style="text-align:center">買い目区分（想定オッズ＝1÷予想確率）：'
-    +'<span style="color:#4a90d9">■</span> 本命目　<span style="color:#45b98a">■</span> 標準目　<span style="color:#d98a3b">■</span> 波乱目'
+    +'<span style="color:#4a90d9">■</span> 本命　<span style="color:#45b98a">■</span> 標準　<span style="color:#d98a3b">■</span> 穴'
     +'<br><span style="font-size:11px;color:#8b96a8">区切り＝3連単 '+cT[0]+'/'+cT[1]+'倍／横軸＝レース荒れ度／棒＝買い目区分</span></div>';
   if(g2.length){
     g2.forEach((dg,i)=>{
@@ -3158,8 +3158,8 @@ function recentRecoveryView(){
       h+='<div style="text-align:center">'+grpBars(rows,buySeries,{ref:100,nsuf:'点'})+'</div>';
     });
   }else h+='<div class="meta" style="text-align:center">当日・前日の結果がまだありません。</div>';
-  h+='<div class="legend"><b>①</b>＝直近'+R.days.length+'日の<b>日別回収率</b>を折れ線で表示。券種（2連複/3連単）ごとに<b>本命/標準/波乱レース</b>（本線2連複予想率 65％以上／45-65％／45％未満）の3本。3連単の波乱レースは買わないため線は出ません。'
-    +'<b>②</b>＝<b>当日・前日</b>の3連単を、<b>レース荒れ度×買い目1点ずつの想定オッズ帯</b>（本命目/標準目/波乱目）の<b>9通り</b>に分解した回収率（点単位・実際の買い目のΣ配当÷Σ賭け金）。当日は結果確定ぶんのみ反映（未確定レースは翌朝）。'
+  h+='<div class="legend"><b>①</b>＝直近'+R.days.length+'日の<b>日別回収率</b>を折れ線で表示。券種（2連複/3連単）ごとに<b>鉄板/ノーマル/波乱レース</b>（本線2連複予想率 65％以上／45-65％／45％未満）の3本。3連単の波乱レースは買わないため線は出ません。'
+    +'<b>②</b>＝<b>当日・前日</b>の3連単を、<b>レース荒れ度×買い目1点ずつの想定オッズ帯</b>（本命/標準/穴）の<b>9通り</b>に分解した回収率（点単位・実際の買い目のΣ配当÷Σ賭け金）。当日は結果確定ぶんのみ反映（未確定レースは翌朝）。'
     +'※日別・単日・区分別は<b>高配当1本で大きく振れます</b>（特に3連単）。控除率約25％の壁で長期回収率は100％未満が基本です。</div>';
   return h;
 }
@@ -3205,7 +3205,7 @@ function statsView(){
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
     h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連複≤3/3連単≤8点）。'
-      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を全帯爆発重視で配分（薄い高配当目に振り切り・EVフラット）・波乱帯(本線2連複予想率&lt;25%)は3連単を買わない・標準帯は穴型を除外・フライングは返還。'
+      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を全帯爆発重視で配分（薄い高配当目に振り切り・EVフラット）・波乱レース(本線2連複予想率&lt;25%)は3連単を買わない・ノーマルレースは穴型を除外・フライングは返還。'
       +'回収率＝Σ(配当×賭け金/100)÷Σ賭け金。100%超で利益。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
@@ -3222,10 +3222,10 @@ function statsView(){
       +'確率帯別バックテスト(2026全体)ではどの帯も回収率100%未満（控除率約25%の壁）＝確率だけで機械的に買うと負ける。'
       +'各レース詳細の「買えてた場合の妙味」で、実配当が必要オッズを超えたか（＝買えてたら+EVか）を確認できる。</div>';
   }
-  // 鉄板・標準・穴 と予想した場合の 的中率／回収率（系統は上のトグルに連動）
+  // 鉄板・ノーマル・波乱 と予想した場合の 的中率／回収率（系統は上のトグルに連動）
   if(RG&&RG.length&&RG.some(r=>r.n)){
-    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・標準・穴 別の的中率と回収率（2026年〜）</div>';
-    h+='<div class="meta">予想の荒れ度で3分類：<b>鉄板</b>＝本線2連複予想率≥50％ ／ <b>標準</b>＝25–50％ ／ <b>穴</b>＝本線2連複予想率&lt;25％（波乱含み）。'
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">鉄板・ノーマル・波乱 別の的中率と回収率（2026年〜）</div>';
+    h+='<div class="meta">レース荒れ度で3分類：<b>鉄板</b>＝本線2連複予想率≥50％ ／ <b>ノーマル</b>＝25–50％ ／ <b>波乱</b>＝本線2連複予想率&lt;25％。'
       +'<b>荒れ度・点数は本線2連複予想率で判定</b>（1着の堅さでなく買い目が当たる堅さ）。'
       +'買い目＝確率連動の変動点数（2連複≤3／3連単≤8点・各100円）。</div>';
     h+='<div class="meta" style="text-align:center"><span style="color:#5b9bd5">■</span> 本命1着　'
@@ -3241,25 +3241,25 @@ function statsView(){
       +'いずれの分類も回収率は100％（赤破線）未満が基本＝控除率約25％の壁で、確率だけで機械的に買うと長期では負ける。'
       +'「変動点数」は堅い予想ほど少点／荒れ予想ほど多点に自動調整。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
   }
-  // レース荒れ度（本命/標準/波乱）×買い目区分（本命目/標準目/波乱目）の3×3=9通り
+  // レース荒れ度（鉄板/ノーマル/波乱）×買い目区分（本命/標準/穴）の3×3=9通り
   const CB=D.combo_api;
   if(CB&&CB.ex&&(CB.ex.some(r=>r.n)||CB.tri.some(r=>r.n))){
     const cE=CB.cuts.ex, cT=CB.cuts.tri;
-    // 買い目区分の3系列（本命目=堅い/標準目/波乱目=薄い）
-    const buySeries=[{k:'b0',col:'#4a90d9',lab:'本命目'},{k:'b1',col:'#45b98a',lab:'標準目'},{k:'b2',col:'#d98a3b',lab:'波乱目'}];
+    // 買い目区分の3系列（本命=堅い/標準/穴=薄い）
+    const buySeries=[{k:'b0',col:'#4a90d9',lab:'本命'},{k:'b1',col:'#45b98a',lab:'標準'},{k:'b2',col:'#d98a3b',lab:'穴'}];
     // 荒れ度帯の配列→grpBars行（lab=レース帯・n=点数・b0/b1/b2=各買い目区分の値。点数0はnull＝棒なし）
     const cbRows=(perBet,metric)=>perBet.map(rb=>{
       const row={lab:rb.race,n:rb.n};
       rb.bands.forEach((b,i)=>row['b'+i]=b.n?b[metric]:null);
       return row;});
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">レース荒れ度 × 買い目区分（9通り）の的中率と回収率（2026年〜）</div>';
-    h+='<div class="meta"><b>レース荒れ度（本命/標準/波乱）</b>を、<b>さらに買い目1点ずつ</b>の'
-      +'<b>想定オッズ（＝1÷モデル予想確率）</b>で<b>本命目</b>（堅い組・低オッズ）／<b>標準目</b>／<b>波乱目</b>（薄い組・高オッズ）に細分化した'
+    h+='<div class="meta"><b>レース荒れ度（鉄板/ノーマル/波乱）</b>を、<b>さらに買い目1点ずつ</b>の'
+      +'<b>想定オッズ（＝1÷モデル予想確率）</b>で<b>本命</b>（堅い組・低オッズ）／<b>標準</b>／<b>穴</b>（薄い組・高オッズ）に細分化した'
       +'<b>3×3＝9通り</b>。想定オッズの区切りは券種別＝<b>2連複</b> '+cE[0]+'倍／'+cE[1]+'倍　<b>3連単</b> '+cT[0]+'倍／'+cT[1]+'倍。'
       +'的中率＝その組の買い目が当たった<b>点の割合</b>（点単位）・回収率＝Σ配当÷（点数×100円）。'
-      +'<b>「–」＝該当する買い目が無い組</b>（例：本命レースでは上位数点も堅い組ばかりで波乱目の買い目が出ない）。</div>';
+      +'<b>「–」＝該当する買い目が無い組</b>（例：鉄板レースでは上位数点も堅い組ばかりで穴の買い目が出ない）。</div>';
     h+='<div class="meta" style="text-align:center">買い目区分：'
-      +'<span style="color:#4a90d9">■</span> 本命目　<span style="color:#45b98a">■</span> 標準目　<span style="color:#d98a3b">■</span> 波乱目'
+      +'<span style="color:#4a90d9">■</span> 本命　<span style="color:#45b98a">■</span> 標準　<span style="color:#d98a3b">■</span> 穴'
       +'<br><span style="font-size:11px;color:#8b96a8">横軸＝レース荒れ度／棒＝その中の買い目区分</span></div>';
     const chartPair=(perBet,ttl)=>{
       let s='<div style="font-size:13px;color:#e0a93b;font-weight:700;margin:16px 0 2px;text-align:center">'+ttl+'</div>';
@@ -3270,10 +3270,10 @@ function statsView(){
       return s;};
     h+=chartPair(CB.ex,'2連複');
     h+=chartPair(CB.tri,'3連単');
-    h+='<div class="legend"><b>レース荒れ度と買い目区分は連動</b>します：本命（堅い）レースは上位数点も堅い組ばかり＝<b>本命目</b>に偏り、波乱レースは薄い組＝<b>波乱目</b>中心。'
-      +'そのため9通りのうち埋まるのは主に「標準レース」の行で、他は「–」（該当買い目なし）が出ます。'
-      +'<b>想定オッズが上がる（本命目→波乱目）ほど的中率は下がる</b>のが基本。回収率は組ごとの旨味で、'
-      +'サイトは元々<b>上位数点の堅い組しか買わない</b>ため「波乱目」も相対的な薄さ＝万舟級の大穴は含みません。'
+    h+='<div class="legend"><b>レース荒れ度と買い目区分は連動</b>します：鉄板（堅い）レースは上位数点も堅い組ばかり＝<b>本命</b>に偏り、波乱レースは薄い組＝<b>穴</b>中心。'
+      +'そのため9通りのうち埋まるのは主に「ノーマルレース」の行で、他は「–」（該当買い目なし）が出ます。'
+      +'<b>想定オッズが上がる（本命→穴）ほど的中率は下がる</b>のが基本。回収率は組ごとの旨味で、'
+      +'サイトは元々<b>上位数点の堅い組しか買わない</b>ため「穴」も相対的な薄さ＝万舟級の大穴は含みません。'
       +'※点単位の的中率はレース単位より低く出ます（1レースで複数点買い・当たるのは基本1点）。'
       +'いずれも回収率は100％未満が基本（控除率約25％の壁）。※4月までは学習期間を含むため的中・回収はやや高め。</div>';
   }
