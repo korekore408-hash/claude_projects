@@ -82,19 +82,23 @@ def main():
     prev = today - datetime.timedelta(days=1)
     print(f"=== 当日予想デイリー: {today} ===")
 
-    # 0. 前日Kの強制取り直し（再発防止）。
-    #    ナイター場(蒲郡/若松/大村等)は終了が遅く、前日の夕方に取得したKは不完全版になる。
-    #    download_lzh は既存ファイルがあると再DLしないので、消してから取り直すことで
-    #    翌朝に揃う完全版へ上書きする（前日結果の欠落を自動修復）。
+    # 0. 前日・前々日Kの強制取り直し（再発防止）。
+    #    ナイター場(蒲郡/若松/大村等)は終了が遅く、その日の夕方に取得したKは不完全版に
+    #    なる（一部レースの着順・配当が欠落）。サマリー(当日/前日/前々日)はKの完走レース
+    #    だけを集計するため、Kが後から埋まると前日・前々日の数字が動いてしまう。
+    #    download_lzh は既存ファイルがあると再DLしないので、前日と前々日のKを消してから
+    #    取り直し、完全版へ上書きする（前日だけでなく前々日も確定させ、数字のブレを止める）。
+    prev2 = today - datetime.timedelta(days=2)
     prev_key = prev.strftime("%y%m%d")
-    for ext in ("lzh", "txt", "csv"):
-        p = os.path.join("data", f"k{prev_key}.{ext}")
-        if os.path.exists(p):
-            os.remove(p)
-            print(f"  前日K 再取得のため削除: {p}")
+    for _d in (prev, prev2):
+        for ext in ("lzh", "txt", "csv"):
+            p = os.path.join("data", f"k{_d.strftime('%y%m%d')}.{ext}")
+            if os.path.exists(p):
+                os.remove(p)
+                print(f"  {_d} K 再取得のため削除: {p}")
 
-    # 1. 取得（前日Kで履歴を最新化 ＋ 当日Bで出走表）。当日Kはまだ無いので404でOK。
-    run(["fetch_range.py", "--start", prev.isoformat(),
+    # 1. 取得（前々日〜前日Kで履歴を最新化 ＋ 当日Bで出走表）。当日Kはまだ無いので404でOK。
+    run(["fetch_range.py", "--start", prev2.isoformat(),
          "--end", today.isoformat(), "--which", "both"])
     # 2. 変換（未変換のみ）
     run(["convert_all.py"])
