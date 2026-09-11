@@ -45,6 +45,7 @@ FEATURE_SOURCE = {
     "lane_win_rate": "hist", "lane_top3_rate": "hist",
     "local_win_rate": "hist", "local_top3_rate": "hist",
     "flying_rate": "hist", "st_avg": "hist", "st_std": "hist",
+    "setsu_f": "hist",
     "recent30_winrate": "hist", "recent30_avgrank": "hist",
     "recentN_winrate": "hist", "recentN_avgrank": "hist",
     "venue_own_lane_winrate": "hist",
@@ -73,6 +74,10 @@ CONT_FEATURES = [
     "venue_own_lane_winrate", "motor_intrinsic_win", "motor_intrinsic_top2",
     "age", "top2_rate_local", "motor_rank_in_race", "weight",
     "local_win_rate", "st_std", "winrate_rank_in_race", "winrate_diff_top",
+    # 今節F持ち（フライング明けの慎重スタート＝F待ち）。as-of・リーク無し。
+    # 検証（K全期間・OOS）で F持ち艇は同コースでST +0.03秒・実勝率がモデル期待を約2pt下回る
+    # ＝現行特徴では取りこぼす残差があるため追加。
+    "setsu_f",
     # 場の荒れ度 × 実力差 / 風速 × 枠 / 波高 × 枠 の交互作用。
     # time-split 検証では重み ±0.03 以下・OOS 的中ほぼ不変（構造的上限）だが、
     # 「場ごとの荒れ・気象を反映」する方針として配線（当日の気象は中立化＝未反映）。

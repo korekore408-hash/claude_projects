@@ -163,6 +163,25 @@ def main():
 
     # ラインナップ日と結果日の和集合を昇順に1パス処理。
     all_dates = sorted(set(lineup_by_date) | set(kresults_by_date))
+    # 今節F持ち（as-of）: 会場×連続開催日で「節」を復元し、その節で先にFを出した
+    # 登番を以降のレースで setsu_f=1 とする。当日Fは step(2) で反映するため、
+    # 出力(step1)時点では「前日以前のF」のみが立つ＝リーク無し（朝のB-file今節成績と同等）。
+    v_dates = defaultdict(set)
+    for _d in all_dates:
+        for _r in lineup_by_date.get(_d, []):
+            v_dates[_r["会場"]].add(_d)
+        for _r in kresults_by_date.get(_d, []):
+            v_dates[_r["会場"]].add(_d)
+    series_id = {}                              # (会場, 日付) -> 節ID（会場内の連続日ブロック）
+    for _v, _ds in v_dates.items():
+        _sid = 0
+        _prev = None
+        for _dd in sorted(_ds):
+            if _prev is not None and (_dd - _prev).days > 1:
+                _sid += 1
+            series_id[(_v, _dd)] = _sid
+            _prev = _dd
+    setsu_fset = set()                          # (登番, 場コード, 節ID) がこの節で既にF済み
     for d in all_dates:
         # ── (1) D 未満の状態で当日ラインナップの特徴量を出力 ──────────
         for r in lineup_by_date.get(d, []):
@@ -186,6 +205,9 @@ def main():
             # flying_rate（F回数 / 出走数。出走は欠場を除く）
             sc = starts[toban]
             flying_rate = (flying[toban] / sc) if sc else None
+
+            # 今節F持ち（この節で既にFを出しているか＝F待ちの慎重スタート傾向。当日Fは step2 で反映）
+            setsu_f = 1 if (toban, code, series_id.get((venue, d))) in setsu_fset else 0
 
             # 5.4 wakunari_rate / maezuke_rate（過去の進入挙動。as-of。当日の進入は使わない）
             cn, cw, cm = course[toban]
@@ -252,6 +274,7 @@ def main():
                 "flying_rate": flying_rate,
                 "flying_n": flying[toban],
                 "starts_n": sc,
+                "setsu_f": setsu_f,
                 "wakunari_rate": wakunari_rate,
                 "maezuke_rate": maezuke_rate,
                 "course_n": cn,
@@ -285,6 +308,9 @@ def main():
                 starts[toban] += 1
                 if status == "F":
                     flying[toban] += 1
+                    # この節はF持ちに（以降の同節レースで setsu_f=1）
+                    setsu_fset.add((toban, VENUE_CODE.get(r["会場"], "00"),
+                                    series_id.get((r["会場"], d))))
 
             # 着順ベースの集計は完走行のみ（lane/local/st/recent/total）。
             if status != "finish":
