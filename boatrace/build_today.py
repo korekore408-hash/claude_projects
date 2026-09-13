@@ -2586,7 +2586,7 @@ function fBadge(r){
 // 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
 // 当日は update.json 反映後の D.races を使うので、なるべく最新状態を表す。
 function daySummary(date){
-  let nDone=0,nHit=0,inv=0,ret=0,nF=0;
+  let nDone=0,nHit=0,inv=0,gross=0,ret=0,nF=0;
   D.races.forEach(r=>{
     if(r.d!==date||!hasResult(r))return;
     nDone++;
@@ -2599,20 +2599,22 @@ function daySummary(date){
     // 2連複（全帯 各券種¥2,000確率配分）
     const exYen=allocYen(meriW(UB.fuku.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.fuku.forEach((c,i)=>{
+      gross+=exYen[i];                                          // グロス（各券種¥2,000の総額・端数なし）
       const kept=!c[0].some(w=>fly[w]);
-      if(kept)inv+=exYen[i];                                   // 返還ぶんは投資から除外
+      if(kept)inv+=exYen[i];                                   // 実質投資（返還ぶんは除外）
       if(actEx.length>=2&&eqPair(c[0],actEx)){ret+=(r.po&&r.po[2]!=null)?Math.round(r.po[2]*exYen[i]/100):0;hit=true;}
     });
     // 3連単（全帯で購入・各券種¥2,000確率配分。波乱帯も広く）
     const triYen=allocYen(meriW(UB.tri.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.tri.forEach((c,i)=>{
+      gross+=triYen[i];
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=triYen[i];
       if(actTri.length>=3&&eqArr(c[0],actTri)){ret+=r.po?Math.round(r.po[1]*triYen[i]/100):0;hit=true;}
     });
     if(hit)nHit++;
   });
-  return {nDone,nHit,inv,ret,nF};
+  return {nDone,nHit,inv,gross,refund:gross-inv,ret,nF};
 }
 // 最上部サマリー: 当日/前日/前々日 の 的中率・投資・回収・回収率 を横並び（当日は最新反映）。
 function summaryBar(){
@@ -2631,16 +2633,18 @@ function summaryBar(){
   h+='<tr><td class="rl">的中率</td>';
   cols.forEach(c=>h+='<td>'+(c.s.nDone?pct(c.s.nHit,c.s.nDone)+'%<small>'+c.s.nHit+'/'+c.s.nDone+'</small>':'–')+'</td>');
   h+='</tr><tr><td class="rl">投資</td>';
-  cols.forEach(c=>h+=cellY(c,c.s.inv));
+  cols.forEach(c=>h+=cellY(c,c.s.gross));                      // グロス＝各券種¥2,000固定（端数なし）
+  h+='</tr><tr><td class="rl">うち返還</td>';
+  cols.forEach(c=>h+='<td>'+(c.s.nDone?(c.s.refund?'−'+yen(c.s.refund):'¥0'):'–')+'</td>');
   h+='</tr><tr><td class="rl">回収</td>';
   cols.forEach(c=>h+=cellY(c,c.s.ret));
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱レースは上位3種を広く）を実際に買った場合。<b>全帯で各券種¥2,000配分</b>（¥100単位）・フライングは返還。</div>';
+  h+='<div class="sumf">※<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱レースは上位3種を広く）を実際に買った場合。<b>投資＝各券種¥2,000のグロス</b>（¥100単位・端数なし）。<b>うち返還</b>＝フライング(非完走)を含む買い目の返還額。<b>回収率＝回収÷実質投資（投資−返還）</b>。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
-    +'（非完走艇を含む買い目は投資から除外）</div>';
+    +'（非完走艇を含む買い目は返還＝上の「うち返還」に計上）</div>';
   h+='</div>';
   return h;
 }
