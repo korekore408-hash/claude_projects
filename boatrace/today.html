@@ -1720,17 +1720,22 @@ const WX_NUM=[null,'晴','曇り','雨','雪','風','霧'];   // race_weather_nu
 function pad2(n){return (n<10?'0':'')+n;}
 // previews の1レース → r.ex（{time,st,tilt,course,parts,weather}）。展示未計測(タイム全0/欠)なら null。
 function pvToEx(pv){
-  const bo=pv.boats||{};
+  const bo=pv.boats;
   const time=[null,null,null,null,null,null], st=time.slice(), tilt=time.slice(), course=time.slice();
   let any=false;
-  for(let w=1;w<=6;w++){
-    const b=bo[w]; if(!b)continue;
+  // boats は openapi の 0始まり配列（艇番は各要素の racer_boat_number）。
+  // 位置で引くと艇番とズレて6号艇が欠落するため、必ず racer_boat_number で振り分ける。
+  // オブジェクト形式（"1".."6"）にも後方互換で対応。
+  const list = Array.isArray(bo) ? bo : (bo ? Object.values(bo) : []);
+  list.forEach(b=>{
+    if(!b)return;
+    const w = +(b.racer_boat_number); if(!(w>=1&&w<=6))return;
     const t=b.racer_exhibition_time;
     if(t!=null&&t>0){time[w-1]=t; any=true;}                    // 0=未計測 は null 扱い
     if(b.racer_start_timing!=null)st[w-1]=b.racer_start_timing; // 負=F（既存 tenjiPred が F 扱い）
     if(b.racer_tilt_adjustment!=null)tilt[w-1]=b.racer_tilt_adjustment;
     if(b.racer_course_number!=null)course[w-1]=b.racer_course_number;
-  }
+  });
   if(!any)return null;                                          // 展示タイムが1つも無い＝展示前
   const weather={tenki:WX_NUM[pv.race_weather_number]||null,
                  winddir:pv.race_wind_direction_number!=null?pv.race_wind_direction_number:null,
