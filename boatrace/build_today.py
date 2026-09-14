@@ -881,6 +881,30 @@ def load_kresult(keep):
     return kres
 
 
+def load_flying(keep):
+    """keep の K-file から race_id -> [艇番...]（status='F'＝フライングの艇）。
+    非完走のうち F(フライング) だけを抽出（S=出遅れ/失格・K=欠場 は含めない）。"""
+    yy = {d[2:4] + d[5:7] + d[8:10] for d in keep}
+    out = {}
+    for kp in glob.glob("data/k*.csv"):
+        m = re.search(r"k(\d{6})", kp)
+        if not m or m.group(1) not in yy:
+            continue
+        for r in load(kp):
+            if (r.get("status") or "").strip() != "F":
+                continue
+            code = VENUE_CODE.get(r["会場"], "00")
+            try:
+                y, mo, dd = r["日付"].split("/")
+                rid = f"{code}{int(y):04d}{int(mo):02d}{int(dd):02d}{int(r['レース']):02d}"
+                out.setdefault(rid, []).append(int(r["艇番"]))
+            except (ValueError, KeyError):
+                pass
+    for rid in out:
+        out[rid] = sorted(out[rid])
+    return out
+
+
 def makuri_rates(glob_pat="data/k*.csv", min_wins=5):
     """全K-fileから 登番 → まくり率（勝ち星のうち まくり/まくり差し の割合）。
     「対抗1艇（穴）」の根拠タグ『捲り屋』表示用。検証(残差テスト OOS)では
@@ -1560,6 +1584,7 @@ def main():
         }
 
     kres = load_kresult(keep)
+    flying = load_flying(keep)                        # race_id→[フライング艇番]（表示用）
     mk_map = makuri_rates()                          # 登番→まくり率（根拠タグ用）
     km_map = kimarite_rates()                         # 登番→[まくり系率,差し率]（型バッジ用）
     kd_map = kimarite_dist()                           # 登番→[勝数,逃げ,差し,まくり,まくり差し,他]（勝ち方内訳用）
@@ -1616,6 +1641,7 @@ def main():
                     "ab": ab,
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
+                    "f": flying.get(rid) or None,    # フライング艇番リスト（無ければnull）
                     "pay": _paylist(rid),            # 配当一覧（全7券種・結果表示用）
                     # 気象（当日は空＝未反映）。表示用。tenki/wind(m)/wave(cm)
                     "wx": [rc.get("wx_tenki", ""), rc.get("wx_wind"), rc.get("wx_wave")],
@@ -1992,6 +2018,7 @@ HTML = r"""<!DOCTYPE html>
   .lvl.rdhi{background:#13294a;color:#7db1ff}
   .lvl.rdmid{background:#2a2f3a;color:#9aa3b2}
   .lvl.rdlo{background:#26262a;color:#7e8796}
+  .fmark{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;background:#4a1420;color:#ff8a9c;border:1px solid #7a2436;letter-spacing:.3px}
   .prize{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
     background:#3a2a4a;color:#d6a8ff;margin-left:4px}
   .chance{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
@@ -2548,12 +2575,18 @@ function resLines(r){
 }
 // 非完走（フライング等）艇＝着順なし。フライングは買い目が返還される＝賭け金は損失でなく戻る。
 function flySet(r){const f={};r.b.forEach((b,i)=>{if(!b[2])f[i+1]=1;});return f;}
+// フライング表示バッジ。r.f=[フライング艇番...]（K-file status='F'）。例: F2 / F2・5（複数）。
+// フライングのあったレースが一目で分かるように出す（返還の理由）。無ければ空文字。
+function fBadge(r){
+  if(!r||!r.f||!r.f.length)return '';
+  return '<span class="fmark" title="フライング（返還）：'+r.f.join('・')+'号艇">F'+r.f.join('・')+'</span>';
+}
 // 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
 // （betScore＝展示反映後・確率連動点数・各¥2,000配分・穴帯3連単は見送り）。
 // 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
 // 当日は update.json 反映後の D.races を使うので、なるべく最新状態を表す。
 function daySummary(date){
-  let nDone=0,nHit=0,inv=0,ret=0,nF=0;
+  let nDone=0,nHit=0,inv=0,gross=0,ret=0,nF=0;
   D.races.forEach(r=>{
     if(r.d!==date||!hasResult(r))return;
     nDone++;
@@ -2566,20 +2599,22 @@ function daySummary(date){
     // 2連複（全帯 各券種¥2,000確率配分）
     const exYen=allocYen(meriW(UB.fuku.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.fuku.forEach((c,i)=>{
+      gross+=exYen[i];                                          // グロス（各券種¥2,000の総額・端数なし）
       const kept=!c[0].some(w=>fly[w]);
-      if(kept)inv+=exYen[i];                                   // 返還ぶんは投資から除外
+      if(kept)inv+=exYen[i];                                   // 実質投資（返還ぶんは除外）
       if(actEx.length>=2&&eqPair(c[0],actEx)){ret+=(r.po&&r.po[2]!=null)?Math.round(r.po[2]*exYen[i]/100):0;hit=true;}
     });
     // 3連単（全帯で購入・各券種¥2,000確率配分。波乱帯も広く）
     const triYen=allocYen(meriW(UB.tri.map(c=>c[1]),hon),2000);   // 全帯 各券種¥2,000配分
     UB.tri.forEach((c,i)=>{
+      gross+=triYen[i];
       const kept=!c[0].some(w=>fly[w]);
       if(kept)inv+=triYen[i];
       if(actTri.length>=3&&eqArr(c[0],actTri)){ret+=r.po?Math.round(r.po[1]*triYen[i]/100):0;hit=true;}
     });
     if(hit)nHit++;
   });
-  return {nDone,nHit,inv,ret,nF};
+  return {nDone,nHit,inv,gross,refund:gross-inv,ret,nF};
 }
 // 最上部サマリー: 当日/前日/前々日 の 的中率・投資・回収・回収率 を横並び（当日は最新反映）。
 function summaryBar(){
@@ -2598,16 +2633,18 @@ function summaryBar(){
   h+='<tr><td class="rl">的中率</td>';
   cols.forEach(c=>h+='<td>'+(c.s.nDone?pct(c.s.nHit,c.s.nDone)+'%<small>'+c.s.nHit+'/'+c.s.nDone+'</small>':'–')+'</td>');
   h+='</tr><tr><td class="rl">投資</td>';
-  cols.forEach(c=>h+=cellY(c,c.s.inv));
+  cols.forEach(c=>h+=cellY(c,c.s.gross));                      // グロス＝各券種¥2,000固定（端数なし）
+  h+='</tr><tr><td class="rl">うち返還</td>';
+  cols.forEach(c=>h+='<td>'+(c.s.nDone?(c.s.refund?'−'+yen(c.s.refund):'¥0'):'–')+'</td>');
   h+='</tr><tr><td class="rl">回収</td>';
   cols.forEach(c=>h+=cellY(c,c.s.ret));
   h+='</tr><tr><td class="rl">回収率</td>';
   cols.forEach(c=>{const rr=pct(c.s.ret,c.s.inv);h+='<td>'+(c.s.nDone?'<b class="'+recCls(rr)+'">'+rr+'%</b>':'–')+'</td>';});
   h+='</tr></tbody></table>';
-  h+='<div class="sumf">※的中率・回収率は<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱レースは上位3種を広く）を実際に買った場合。<b>全帯で各券種¥2,000配分</b>（¥100単位）・フライングは返還。</div>';
+  h+='<div class="sumf">※<b>一本化した決まり手ベースの買い目</b>（2連複＝確率上位／3連単＝決まり手軸＋対抗アタマ可変割合・波乱レースは上位3種を広く）を実際に買った場合。<b>投資＝各券種¥2,000のグロス</b>（¥100単位・端数なし）。<b>うち返還</b>＝フライング(非完走)を含む買い目の返還額。<b>回収率＝回収÷実質投資（投資−返還）</b>。</div>';
   const fcols=cols.filter(c=>c.s.nF);
   if(fcols.length)h+='<div class="sumf">F返還：'+fcols.map(c=>c.lab+' '+c.s.nF+'R').join(' / ')
-    +'（非完走艇を含む買い目は投資から除外）</div>';
+    +'（非完走艇を含む買い目は返還＝上の「うち返還」に計上）</div>';
   h+='</div>';
   return h;
 }
@@ -2643,6 +2680,7 @@ function realList(rs){
       const R=resLines(r);resHtml=R.html;const shobu=r.ev!=null&&r.ev>=1.5;
       const lvlTag=ha.lvlcls!=='std'?'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>':'';  // 鉄板/波乱含みは残す・標準は出さない
       h+='<span class="rrt">'+lvlTag
+        +fBadge(r)
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
         +(R.hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
     }else{
@@ -2701,7 +2739,7 @@ function listView(){
       +'<span class="hp">本命<b>'+Math.round(ha.honC*100)+'</b> 穴<b class="a">'+Math.round(ha.anaC*100)+'</b></span></span>';
     if(done){
       const R=resLines(r);
-      h+='<span class="res">'+(R.hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
+      h+='<span class="res">'+fBadge(r)+(R.hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>'
         +'<span class="chev">&rsaquo;</span>'+R.html;
     }else{
       h+='<span class="chev">&rsaquo;</span>';
@@ -2737,7 +2775,8 @@ function detailView(r){
   // #3 1着確率（AI予想・学習モデル）
   h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
-    h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':'<span style="color:#6b7280">－</span>'))+'</span>':'')
+    const isF=r.f&&r.f.indexOf(w+1)>=0;   // この艇はフライング（返還）
+    h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':(isF?'<b style="color:#ff8a9c">F</b>':'<span style="color:#6b7280">－</span>')))+'</span>':'')
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
         +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
@@ -3441,6 +3480,7 @@ function applyUpd(o){
     if(rec.result){
       const rs=rec.result, fin=rs.fin||[];
       for(let w=1;w<=6;w++)r.b[w-1][2]=fin[w-1];   // 着順→前日同様の結果表示
+      if(rs.fly)r.f=rs.fly;                          // フライング艇番（表示用）
       if(rs.km)r.km=rs.km;
       if(rs.po2!=null||rs.po3!=null||rs.po2f!=null)r.po=[rs.po2,rs.po3,rs.po2f!=null?rs.po2f:null];
       nres++;
@@ -3596,6 +3636,7 @@ function resultFetch(r){
     .then(o=>{
       const rs=o&&o.result; if(!rs||!rs.fin)return false;
       const fin=rs.fin; for(let w=1;w<=6;w++)r.b[w-1][2]=fin[w-1];   // 着順→結果表示に切替
+      if(rs.fly)r.f=rs.fly;                          // フライング艇番（表示用）
       if(rs.km)r.km=rs.km;
       if(rs.po2!=null||rs.po3!=null||rs.po2f!=null)r.po=[rs.po2,rs.po3,rs.po2f!=null?rs.po2f:null];
       r.resSrc='official'; return true;
