@@ -39,6 +39,7 @@ export function parseResult(html) {
   if (!html) return null;
   // 着順td（全角/半角数字・Ｆ/Ｌ/失/欠）→ 直後の is-boatColor td（中身＝枠番）
   const fin = [null, null, null, null, null, null];
+  const fly = [];                                  // フライング(Ｆ)艇番
   const seen = new Set();
   const re = /<td[^>]*>\s*([０-９0-9ＦFＬL失欠]+)\s*<\/td>\s*<td[^>]*is-boatColor([1-6])/g;
   let m;
@@ -48,6 +49,7 @@ export function parseResult(html) {
     seen.add(w);
     const c = zen2han(m[1]);
     fin[w - 1] = /^\d+$/.test(c) ? +c : null;   // 非完走(F/L/失/欠)は null
+    if (/[ＦF]/.test(m[1])) fly.push(w);         // フライングだけ抽出（L/失/欠は除く）
     if (seen.size === 6) break;
   }
   if (!fin.some((f) => f === 1)) return null;    // 1着が無い＝未確定
@@ -63,7 +65,7 @@ export function parseResult(html) {
   const two = rows.filter((x) => x[0].length === 2);
   const po2 = two.length ? two[0][1] : null;
   const po2f = two.length > 1 ? two[1][1] : null;   // 2連複（2026-07-07 券種切替で追加）
-  return { fin, order, km, po2, po3, po2f };
+  return { fin, order, km, po2, po3, po2f, fly: fly.length ? fly.sort((a, b) => a - b) : undefined };
 }
 
 function json(obj, status) {
