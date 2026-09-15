@@ -2581,6 +2581,12 @@ function fBadge(r){
   if(!r||!r.f||!r.f.length)return '';
   return '<span class="fmark" title="フライング（返還）：'+r.f.join('・')+'号艇">F'+r.f.join('・')+'</span>';
 }
+// 今節成績(r.sk[w]=この開催のこれまでの着順文字列)からフライング回数を数える。
+// F持ち＝この開催でフライング済み＝残りは2本目を避けて慎重スタート（F待ち）の傾向。
+function setsuFN(sq){return sq?(String(sq).match(/[FＦ]/g)||[]).length:0;}
+// 選手の今節フライング バッジ（1着確率の各艇に表示）。無ければ空文字。
+function setsuFBadge(r,w){const n=r&&r.sk?setsuFN(r.sk[w]):0;
+  return n?'<span class="fmark" title="今節フライング'+n+'回＝この開催でフライング（F持ち・スタート慎重の傾向）">F'+(n>1?n:'')+'</span>':'';}
 // 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
 // （betScore＝展示反映後・確率連動点数・各¥2,000配分・穴帯3連単は見送り）。
 // 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
@@ -2780,6 +2786,7 @@ function detailView(r){
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
         +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
+     +setsuFBadge(r,w)
      +(r.sth&&r.sth[w]!=null?(r.sth[w]<=-0.015?'<span class="sthb go" title="過去約1年の平均STがこのコース標準より'+(Math.abs(r.sth[w])*100).toFixed(1)+'/100秒速い＝スタート行く型（傾向。前後半相関0.74で安定・1走の予言力は弱い参考）">⚡先手</span>':(r.sth[w]>=0.020?'<span class="sthb slow" title="過去約1年の平均STがこのコース標準より'+(r.sth[w]*100).toFixed(1)+'/100秒遅い＝出遅れ気味（傾向・参考）">△出遅れ</span>':'')):'')
      +kimBadge(r.km&&r.km[w],w+1)
      +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
