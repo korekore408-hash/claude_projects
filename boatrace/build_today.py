@@ -18,6 +18,7 @@ import argparse
 import csv
 import glob
 import json
+import os
 import re
 
 from features_player_history import VENUE_CODE
@@ -560,6 +561,73 @@ def load_payouts(keep):
                 pof = 0
             payout[rid] = (po2, po3, pof)
     return payout
+
+
+def load_tenji_k(keep):
+    """keep の日付の K-file から race_id -> {枠番int: 展示タイム(float)}。
+    過去日の買い目を、当日ライブ表示と同じ「展示反映後(betScore)」で再ランクするための
+    展示タイム。K-file には展示STが無いので time のみ（STは load_before_ex で補完）。"""
+    yy = {d[2:4] + d[5:7] + d[8:10] for d in keep}
+    tj = {}
+    for kp in glob.glob("data/k*.csv"):
+        m = re.search(r"k(\d{6})", kp)
+        if not m or m.group(1) not in yy:
+            continue
+        for r in load(kp):
+            code = VENUE_CODE.get(r.get("会場"))
+            if not code:
+                continue
+            try:
+                y, mo, dd = r["日付"].split("/")
+                rid = f"{code}{int(y):04d}{int(mo):02d}{int(dd):02d}{int(r['レース']):02d}"
+                w = int(r["艇番"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            t = to_float(r.get("展示タイム"))
+            if t is not None and 6.0 <= t <= 7.5 and 1 <= w <= 6:
+                tj.setdefault(rid, {})[w] = t
+    return tj
+
+
+def load_before_ex(keep):
+    """committed data/before/before_YYYYMMDD.json から race_id -> {"time":[6],"st":[6]}。
+    当日ライブ更新(serve_odds)が保存した展示（展示タイム＋展示ST）。当日と同じ材料で
+    過去日を焼き込み、投資・回収を一致させる。無い/欠損分は load_tenji_k で補完。"""
+    want = {d[0:4] + d[5:7] + d[8:10] for d in keep}
+    ex = {}
+    for hd in want:
+        fp = os.path.join("data", "before", f"before_{hd}.json")
+        if not os.path.exists(fp):
+            continue
+        try:
+            with open(fp, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        for rid, obj in d.items():
+            e = (obj or {}).get("ex") or {}
+            tm = e.get("time")
+            if isinstance(tm, list) and any(x is not None for x in tm):
+                st = e.get("st")
+                ex[rid] = {"time": tm[:6] + [None] * max(0, 6 - len(tm)),
+                           "st": (st[:6] + [None] * max(0, 6 - len(st))) if isinstance(st, list) else [None] * 6}
+    return ex
+
+
+def build_ex_for(rid, before_ex, tenji_k):
+    """過去日レースの展示オブジェクト {"time":[6],"st":[6]}。before(展示ST込み)を優先、
+    無ければ K-file の展示タイム(STなし)。有効な展示タイムが無ければ None。"""
+    be = before_ex.get(rid)
+    if be and any(x is not None for x in be["time"]):
+        return {"time": be["time"], "st": be.get("st") or [None] * 6}
+    tk = tenji_k.get(rid)
+    if tk:
+        time = [tk.get(w) for w in range(1, 7)]
+        if any(x is not None for x in time):
+            return {"time": time, "st": [None] * 6}
+    return None
 
 
 def venue_tenji_baseline():
@@ -1479,6 +1547,8 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pred", default="predict_win.csv")
+    ap.add_argument("--pred-history", default="predict_win_history.csv",
+                    help="当日に使った最新モデル予測の履歴（過去日を当日と同じ予測で統一）")
     ap.add_argument("--rel", default="features_race_relative.csv")
     ap.add_argument("--hist", default="features_player_history.csv")
     ap.add_argument("--date", default=None, help="基準日（当日）。既定=データ最新日")
@@ -1491,6 +1561,22 @@ def main():
     rel = load(args.rel)
     pred = {(r["race_id"], r["枠番"]): r for r in load(args.pred)}
     hist = {(r["race_id"], r["枠番"]): r for r in load(args.hist)}
+
+    # 予測履歴オーバーレイ: 過去日を「その日に当日として使った最新モデル(前日まで学習)」の
+    # 予測で統一する。daily.py が当日ぶんの p_win を predict_win_history.csv に追記＝以後その日は
+    # 同じ予測で固定される。predict_win.csv は評価用の固定split(4/30学習)で過去日を毎回上書き
+    # するため、これが無いと「当日=最新／翌日=固定split」でモデルが入れ替わり、買い目(帯・点数・
+    # 当たり目)が変わって投資グロス・回収がブレていた。ここで pred の p_win を履歴で上書きすると、
+    # 以降の model_map / hon_canon / 焼き込み(pm) / ②チャート(daily_recovery) / 場別(recent_stats) が
+    # すべて同じ予測を使う＝当日・前日・前々日で数値が一致する。無ければ何もしない(後方互換)。
+    if os.path.exists(args.pred_history):
+        nov = 0
+        for hr in load(args.pred_history):
+            k = (hr.get("race_id"), hr.get("枠番"))
+            if k in pred and to_float(hr.get("p_win")) is not None:
+                pred[k] = {**pred[k], "p_win": hr["p_win"]}
+                nov += 1
+        print(f"  予測履歴オーバーレイ: {nov} 行を最新モデル(その日基準)に統一 [{args.pred_history}]")
 
     # 予想スコア: api_map=API予想(簡易合成・主系統)。荒れ度/割合/穴/点数の基準。
     api_map = build_api_scores(rel)
@@ -1586,6 +1672,10 @@ def main():
 
     kres = load_kresult(keep)
     flying = load_flying(keep)                        # race_id→[フライング艇番]（表示用）
+    # 過去日の展示（当日ライブ表示と同じ betScore 再ランクに使う）。before(展示ST込み)優先・
+    # K-file展示タイムで補完。当日(base)は朝ビルド時点で展示が無いのでクライアントがライブ付与。
+    tenji_k = load_tenji_k(keep)
+    before_ex = load_before_ex(keep)
     mk_map = makuri_rates()                          # 登番→まくり率（根拠タグ用）
     km_map = kimarite_rates()                         # 登番→[まくり系率,差し率]（型バッジ用）
     kd_map = kimarite_dist()                           # 登番→[勝数,逃げ,差し,まくり,まくり差し,他]（勝ち方内訳用）
@@ -1637,9 +1727,13 @@ def main():
         po = payout.get(rid)                          # (2連単配当, 3連単配当, 2連複配当)
         # API予想（簡易合成）の per-mille 配列。割合・荒れ度・点数はこのAPI確率で共通判定。
         ab = [round((api_map.get((rid, w)) or 0) * 1000) for w in range(1, 7)]
+        # 過去日の展示を焼き込む（当日は None＝クライアントがライブ付与）。これにより betScore が
+        # 過去日でも tenjiPred(展示反映後)を使い、当日ライブ表示と買い目・投資・回収が一致する。
+        ex_obj = build_ex_for(rid, before_ex, tenji_k) if rc["d"] != base else None
         out.append({"id": rid, "d": rc["d"], "c": rc["c"], "v": rc["v"],
                     "no": rc["no"], "mz": rc["mz"],
                     "ab": ab,
+                    "ex": ex_obj,                    # 過去日の展示 {time:[6],st:[6]}（無ければnull）
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
                     "f": flying.get(rid) or None,    # フライング艇番リスト（無ければnull）
