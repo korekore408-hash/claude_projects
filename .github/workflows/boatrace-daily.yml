@@ -36,7 +36,10 @@ jobs:
 
       - name: compute JST day
         id: day
-        run: echo "d=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "d=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "d1=$(date -d 'yesterday' +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "d2=$(date -d '2 days ago' +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         with:
@@ -46,6 +49,20 @@ jobs:
 
       - name: install deps
         run: pip install -r boatrace/requirements.txt
+
+      # 前日・前々日の展示（当日ライブ更新が保存した before_YYYYMMDD.json＝展示タイム＋展示ST）を
+      # update ジョブの intraday キャッシュから取り出し、過去日の買い目を当日ライブ表示と一致させる。
+      # commit（下の git add boatrace/data）でリポジトリへ確定＝以後もその日の展示で固定表示。
+      # キャッシュが無ければ何もしない（build_today が K-file の展示タイムで補完＝縮退安全）。
+      - name: restore prev-day exhibition cache (before json)
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: boatrace/data/before
+          key: boatrace-before-${{ steps.day.outputs.d1 }}
+          restore-keys: |
+            boatrace-before-${{ steps.day.outputs.d1 }}-
+            boatrace-before-${{ steps.day.outputs.d2 }}-
 
       - name: run daily pipeline
         working-directory: boatrace
@@ -68,8 +85,9 @@ jobs:
           git config user.name  "boatrace-bot"
           git config user.email "actions@users.noreply.github.com"
           # 派生CSV(predict_win/features_*)は .gitignore 済み＝commit対象外（cacheで配布）。
+          # predict_win_history.csv は当日予測の履歴（過去日を当日と同じ予測で固定）＝commitして永続化。
           git add boatrace/today.html boatrace/today.pdf boatrace/viewer.html \
-                  boatrace/race_flags.csv boatrace/data
+                  boatrace/race_flags.csv boatrace/predict_win_history.csv boatrace/data
           if git diff --cached --quiet; then
             echo "no changes"; exit 0
           fi

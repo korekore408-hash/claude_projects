@@ -72,6 +72,33 @@ def merge_today(today, base="predict_win.csv", latest="predict_win_latest.csv"):
     print(f"  当日 {nrep} 行を最新モデル予測に差し替え")
 
 
+def append_history(today, base="predict_win.csv", hist="predict_win_history.csv"):
+    """当日のレース行の p_win（＝前日まで学習した最新モデル予測＝merge_today で当日に差し替え
+    済みの値）を予測履歴に保存する。build_today がこれで過去日を「その日に当日として使った
+    予測」に統一＝翌日以降も投資・回収がブレない（predict_win.csv は評価用の固定split で過去日を
+    毎回上書きするため、履歴が無いと当日=最新／翌日=固定split でモデルが入れ替わってしまう）。
+    列は最小限（race_id,枠番,p_win）。当日の再ビルドでは同じ (race_id,枠番) を上書き（last-write）。"""
+    ymd = today.strftime("%Y%m%d")
+    with open(base, encoding="cp932") as f:
+        day_rows = [{"race_id": r["race_id"], "枠番": r["枠番"], "p_win": r.get("p_win", "")}
+                    for r in csv.DictReader(f) if r["race_id"][2:10] == ymd]
+    if not day_rows:
+        print("  予測履歴: 当日行なし・保存スキップ")
+        return
+    existing = []
+    if os.path.exists(hist):
+        with open(hist, encoding="cp932") as f:
+            existing = list(csv.DictReader(f))
+    keyset = {(r["race_id"], r["枠番"]) for r in day_rows}
+    merged = [r for r in existing if (r.get("race_id"), r.get("枠番")) not in keyset] + day_rows
+    fn = ["race_id", "枠番", "p_win"]
+    with open(hist, "w", encoding="cp932", newline="", errors="replace") as f:
+        w = csv.DictWriter(f, fieldnames=fn)
+        w.writeheader()
+        w.writerows(merged)
+    print(f"  予測履歴に当日 {len(day_rows)} 行を保存（累計 {len(merged)} 行）: {hist}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=None, help="対象日 YYYY-MM-DD（既定=今日）")
@@ -120,6 +147,9 @@ def main():
          "--out", "predict_win_latest.csv"])
     # 4c. 当日のレース行だけ最新モデルの予測に差し替え（過去はそのまま）。
     merge_today(today)
+    # 4d. 当日の最新モデル予測を履歴に保存＝過去日を「その日に当日として使った予測」で固定表示。
+    #     これで当日/前日/前々日の投資・回収がモデル入れ替えでブレなくなる（build_today が読む）。
+    append_history(today)
     # 5-7. ページ生成（HTMLアプリ ＋ 携帯どこでも用PDF ＋ 詳細ビューア）
     run(["build_today.py", "--date", today.isoformat()])
     # PDF/ビューアは非必須（クラウド配信不要）。失敗しても today.html の commit を止めない。
