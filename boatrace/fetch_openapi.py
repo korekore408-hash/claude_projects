@@ -111,6 +111,10 @@ def fetch_programs(date_str=None):
                 "全国勝率": b.get("racer_national_top_1_percent"),
                 "当地勝率": b.get("racer_local_top_1_percent"),
                 "モーター番号": b.get("racer_assigned_motor_number"),
+                # 持ちフライング(F数)/出遅れ(L数): 選手が現在保有する事故点（期内・斡旋停止に直結）。
+                # 今節フライング（この開催内）とは別物。フィールドが無い時は None（表示しない）。
+                "F数": b.get("racer_flying_count"),
+                "L数": b.get("racer_late_count"),
             })
         out.append({
             "race_id": race_id, "code": code, "race_no": race_no,
@@ -124,6 +128,30 @@ def fetch_programs(date_str=None):
 def fetch_start_times(date_str=None):
     """race_id -> "HH:MM"（締切＝発走予定時刻）。失敗時 {}。build_today から import して使う。"""
     return {p["race_id"]: p["hm"] for p in fetch_programs(date_str) if p["hm"]}
+
+
+def fetch_flying(date_str=None):
+    """race_id -> [F数×6]（艇番1..6順・選手の持ちフライング）。当日のみ・失敗/欠損時は空 {}。
+    「持ちフライング」＝選手が現在保有するフライング事故点（期内・次のFで即帰郷/斡旋停止のリスク）。
+    今節フライング（この開催中のF・B-fileの今節成績由来）とは別物。build_today が当日レースに付与。
+    フィードにF数が無い/全艇 None のレースは載せない（＝表示しない・縮退安全）。"""
+    out = {}
+    for p in fetch_programs(date_str):
+        arr = [None] * 6
+        for b in p.get("boats", []):
+            try:
+                i = int(b.get("艇番")) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < 6:
+                f = b.get("F数")
+                try:
+                    arr[i] = int(f) if f is not None else None
+                except (TypeError, ValueError):
+                    arr[i] = None
+        if any(v is not None for v in arr):
+            out[p["race_id"]] = arr
+    return out
 
 
 # ---- クロスチェック（CLI）: OpenAPI 由来 vs B-file 由来の (艇番→登番) 一致確認 ----
