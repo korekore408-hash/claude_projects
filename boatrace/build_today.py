@@ -1390,10 +1390,14 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
 
 
 def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
-                    daily_grant=100_000, base=None, topn=10):
+                    daily_grant=100_000, base=None, topn=10, band=None):
     """毎日10万円チャレンジ（2026-09〜新方式）: 本命確率(最有力艇の1着予想率)と
     本命の堅さ(本線2連複予想率=hon)をミックス評価し、その日の上位 topn レースを厳選、
     毎日10万円を均等配分して投票。
+    band で対象レースの荒れ度帯を絞れる（第2弾用）:
+      None …全レースからミックス指標上位（従来＝①。実質 鉄板寄り）
+      "std"…ノーマル(標準)帯のみ（0.45≤hon<0.65）から上位＝第2弾。
+    帯の境界は JS honAna/q2conf と同一（hon_canon＝q2conf 写像値）。
     ★ルール（2026-09-01〜／穴帯版・鉄板版の旧方式は廃止）:
       - 毎日 daily_grant(¥100,000) 支給・毎日フラット（繰越なし）。
       - ミックス指標 = √(本命確率 × 本命の堅さ)。当日の全レースをこの指標で降順に並べ、
@@ -1449,6 +1453,8 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
 
     def pick_top(day_races, need_settled):
         picks = mix_picks(day_races)
+        if band == "std":                               # 第2弾＝ノーマル(標準)帯のみ（p[5]=hon）
+            picks = [p for p in picks if 0.45 <= p[5] < 0.65]
         if need_settled:
             picks = [p for p in picks if p[8]]          # 精算済み（1着確定）のみ
         picks.sort(key=lambda p: p[7], reverse=True)    # ミックス指標で降順
@@ -1534,10 +1540,11 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
     if base and base in by_date:
         bp = pick_top(by_date[base], False)
         if bp:
-            pending = {"d": base, "n": len(bp), "budget": round(grant)}
+            pending = {"d": base, "n": len(bp), "budget": round(grant),
+                       "ids": [p[0] for p in bp]}   # 当日投票予定の race_id（一覧のマーク用）
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
-            "peak": round(peak), "mon": cur_mon, "topn": topn,
+            "peak": round(peak), "mon": cur_mon, "topn": topn, "band": band,
             "staked": round(sum(r["stake"] for r in rows)),
             "ret": round(sum(r["ret"] for r in rows)),
             "rows": rows, "pending": pending,
@@ -1671,7 +1678,18 @@ def main():
         }
 
     kres = load_kresult(keep)
-    flying = load_flying(keep)                        # race_id→[フライング艇番]（表示用）
+    flying = load_flying(keep)                        # race_id→[フライング艇番]（当節のこのレースでF＝返還理由）
+    # 当日の「持ちフライング」（F数）: 非公式OpenAPI programs から race_id→[F×6]（艇番順）。
+    # 選手が現在保有する事故点（期内・次のFで即帰郷/斡旋停止のリスク）＝今節フライングとは別物。
+    # 当日のみ（フィードは当日配信）。取得不可でもサイトは止めない（fh 無し＝バッジ非表示）。
+    fh_map = {}
+    try:
+        import fetch_openapi
+        fh_map = fetch_openapi.fetch_flying(base.replace("-", ""))
+        if fh_map:
+            print(f"  持ちフライング(F数): OpenAPIから {len(fh_map)}レース")
+    except Exception as e:
+        print(f"  持ちフライング取得スキップ: {e}")
     # 過去日の展示（当日ライブ表示と同じ betScore 再ランクに使う）。before(展示ST込み)優先・
     # K-file展示タイムで補完。当日(base)は朝ビルド時点で展示が無いのでクライアントがライブ付与。
     tenji_k = load_tenji_k(keep)
@@ -1734,6 +1752,8 @@ def main():
                     "no": rc["no"], "mz": rc["mz"],
                     "ab": ab,
                     "ex": ex_obj,                    # 過去日の展示 {time:[6],st:[6]}（無ければnull）
+                    # 選手の持ちフライング [F×6]（艇番順・当日のみ）。今節フライング(sk)とは別。
+                    "fh": (fh_map.get(rid) if rc["d"] == base else None),
                     "fs": rc["fs"], "cm": cm, "km": km, "cause": cause,
                     "po": list(po) if po else None,
                     "f": flying.get(rid) or None,    # フライング艇番リスト（無ければnull）
@@ -1840,8 +1860,14 @@ def main():
     # 毎日10万円を均等配分。穴帯版は廃止。全履歴からステートレスに毎回再計算（永続化不要）。
     game = game_ledger_mix(rel, pred, model_map, hon_canon, payout_all,
                            "2026-09-01", 100_000, base, 10)
-    print(f"  毎日10万円チャレンジ（ミックス上位10）: 累計損益 {'+' if game['pl']>=0 else ''}¥{game['pl']:,} "
+    print(f"  毎日10万円チャレンジ①（ミックス上位10）: 累計損益 {'+' if game['pl']>=0 else ''}¥{game['pl']:,} "
           f"（精算 {game['days']}日・払戻¥{game['ret']:,}/賭¥{game['staked']:,}）")
+    # 第2弾＝ノーマル(標準)帯（0.45≤hon<0.65）のミックス上位10レースに毎日10万円。①より
+    # 配当妙味のある中位レースで勝負。同じくステートレス再計算・毎月リセット。
+    game2 = game_ledger_mix(rel, pred, model_map, hon_canon, payout_all,
+                            "2026-09-01", 100_000, base, 10, band="std")
+    print(f"  毎日10万円チャレンジ②（ノーマル標準・上位10）: 累計損益 {'+' if game2['pl']>=0 else ''}¥{game2['pl']:,} "
+          f"（精算 {game2['days']}日・払戻¥{game2['ret']:,}/賭¥{game2['staked']:,}）")
     # 直近30日の日別回収率（券種別：2連単／3連単／穴目）。折れ線グラフ用。
     daily_rec = daily_recovery(rel, pred, model_map, api_map, hon_canon,
                                payout_all, base, 30)
@@ -1855,7 +1881,7 @@ def main():
     payload = {"labels": labels, "base": base, "races": out,
                "vstats_api": vstats_api, "recent_api": recent_api,
                "regime_api": regime_api, "combo_api": combo_api,
-               "rsp": rsp, "game": game,
+               "rsp": rsp, "game": game, "game2": game2,
                "daily_rec": daily_rec, "cal": cal,
                "vt": vt_base}
     html = HTML.replace("__DATA__", json.dumps(payload, ensure_ascii=False,
@@ -2114,6 +2140,9 @@ HTML = r"""<!DOCTYPE html>
   .lvl.rdmid{background:#2a2f3a;color:#9aa3b2}
   .lvl.rdlo{background:#26262a;color:#7e8796}
   .fmark{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;background:#4a1420;color:#ff8a9c;border:1px solid #7a2436;letter-spacing:.3px}
+  .fmark.fhold{background:#3a2a12;color:#e0b45c;border-color:#6b4f1a}
+  .chal{font-size:11px;font-weight:800;border-radius:8px;padding:2px 6px;display:inline-block;margin-left:4px;background:#3a2f12;color:#ffd66b;border:1px solid #6b5417;letter-spacing:.2px}
+  .chal.c2{background:#12233a;color:#7fb2ff;border-color:#274b73}
   .prize{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
     background:#3a2a4a;color:#d6a8ff;margin-left:4px}
   .chance{font-size:11px;font-weight:800;border-radius:8px;padding:2px 8px;display:inline-block;
@@ -2677,11 +2706,15 @@ function fBadge(r){
   return '<span class="fmark" title="フライング（返還）：'+r.f.join('・')+'号艇">F'+r.f.join('・')+'</span>';
 }
 // 今節成績(r.sk[w]=この開催のこれまでの着順文字列)からフライング回数を数える。
-// F持ち＝この開催でフライング済み＝残りは2本目を避けて慎重スタート（F待ち）の傾向。
+// 今節F＝この開催でフライング済み＝残りは2本目を避けて慎重スタート（F待ち）の傾向。
 function setsuFN(sq){return sq?(String(sq).match(/[FＦ]/g)||[]).length:0;}
-// 選手の今節フライング バッジ（1着確率の各艇に表示）。無ければ空文字。
+// 選手の今節フライング バッジ（この開催内・1着確率の各艇に表示）。無ければ空文字。
 function setsuFBadge(r,w){const n=r&&r.sk?setsuFN(r.sk[w]):0;
-  return n?'<span class="fmark" title="今節フライング'+n+'回＝この開催でフライング（F持ち・スタート慎重の傾向）">F'+(n>1?n:'')+'</span>':'';}
+  return n?'<span class="fmark" title="今節フライング'+n+'回＝この開催（節）でフライング済み＝進入・スタートが慎重になりやすい傾向">今節F'+(n>1?n:'')+'</span>':'';}
+// 選手の持ちフライング バッジ（r.fh[w]=期内に保有するフライング事故点・当日OpenAPI由来）。
+// 今節F（この開催内）とは別物：持ちFは期をまたいで残り、次のFで即帰郷/斡旋停止のリスク。無ければ空文字。
+function heldFBadge(r,w){const n=r&&r.fh?r.fh[w]:null;
+  return (n&&n>0)?'<span class="fmark fhold" title="持ちフライング'+n+'回＝この選手が現在保有するフライング（期内・次のFで即帰郷/斡旋停止のリスク。今節のFとは別）">持ちF'+n+'</span>':'';}
 // 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
 // （betScore＝展示反映後・確率連動点数・各¥2,000配分・穴帯3連単は見送り）。
 // 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
@@ -2781,6 +2814,7 @@ function realList(rs){
       const R=resLines(r);resHtml=R.html;const shobu=r.ev!=null&&r.ev>=1.5;
       const lvlTag=ha.lvlcls!=='std'?'<span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>':'';  // 鉄板/波乱含みは残す・標準は出さない
       h+='<span class="rrt">'+lvlTag
+        +chalMarks(r)
         +fBadge(r)
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
         +(R.hit?'<span class="ok">的中</span>':'<span class="ng">不的中</span>')+'</span>';
@@ -2788,6 +2822,7 @@ function realList(rs){
       const shobu=r.ev!=null&&r.ev>=1.5;
       const to=tetsuOdds(r);   // 鉄板×実オッズ<2.0＝見送り推奨（オッズ未取得は非表示）
       h+='<span class="rrt"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
+        +chalMarks(r)
         +(i===tgt?'<span class="soon">まもなく</span>':'')
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
         +(to&&to.skip?'<span class="skipb">&#9888;見送り</span>':'')
@@ -2834,6 +2869,7 @@ function listView(){
     const shobu = r.ev!=null && r.ev>=1.5;  // EV≥1.5で点灯（荒れ度の帯は問わず・オッズ取得後）
     const to = done?null:tetsuOdds(r);      // 鉄板×実オッズ<2.0＝見送り推奨（締切前のみ）
     h+='<span class="ha2"><span class="lvl '+ha.lvlcls+'">'+ha.lvl+'</span>'
+        +chalMarks(r)
         +(shobu?'<span class="prize">&#127919;勝負</span>':'')
         +(to&&to.skip?'<span class="skipb">&#9888;見送り</span>':'')
         +(chance?'<span class="chance">&#10024;チャンス</span>':'')
@@ -2870,7 +2906,7 @@ function detailView(r){
     +'</div></div>';
   // ===== セクションを個別に組み立て、当日/前日/前々日で同一の順序に統一 =====
   // #1 レース場・R・時間
-  h+='<div class="dh">'+r.v+' '+r.no+'R'+(r.tm?' <span class="dhtm">'+r.tm+' 締切</span>':'')+'</div>';
+  h+='<div class="dh">'+r.v+' '+r.no+'R'+(r.tm?' <span class="dhtm">'+r.tm+' 締切</span>':'')+chalMarks(r)+'</div>';
   // #2 配当一覧（結果確定レースのみ／未確定は非表示）
   h+=payTable(r);
   // #3 1着確率（AI予想・学習モデル）
@@ -2882,6 +2918,7 @@ function detailView(r){
      +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
         +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
      +setsuFBadge(r,w)
+     +heldFBadge(r,w)
      +(r.sth&&r.sth[w]!=null?(r.sth[w]<=-0.015?'<span class="sthb go" title="過去約1年の平均STがこのコース標準より'+(Math.abs(r.sth[w])*100).toFixed(1)+'/100秒速い＝スタート行く型（傾向。前後半相関0.74で安定・1走の予言力は弱い参考）">⚡先手</span>':(r.sth[w]>=0.020?'<span class="sthb slow" title="過去約1年の平均STがこのコース標準より'+(r.sth[w]*100).toFixed(1)+'/100秒遅い＝出遅れ気味（傾向・参考）">△出遅れ</span>':'')):'')
      +kimBadge(r.km&&r.km[w],w+1)
      +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
@@ -3204,29 +3241,49 @@ function gameDays(G,ana){
   return '<details class="gdwrap"><summary>日々の実績（'+G.rows.length+'日）を見る</summary>'
     +h+'</div></details>';
 }
-// 毎日10万円チャレンジ（鉄板）パネル（場別成績の先頭に表示）。
-function gameView(){
-  const G=D.game; if(!G||G.grant==null)return '';
+// 毎日10万円チャレンジ パネル（場別成績の先頭に表示）。cfg で第1弾/第2弾を切替。
+//   cfg.emoji  … 見出しの絵文字マーク（💰① / 💰②）
+//   cfg.name   … パネル名
+//   cfg.pick   … 選定方法の短い説明（見出し括弧内・運用中行）
+//   cfg.selTxt … legend の「どのレースを選ぶか」の一文
+function gameView(G,cfg){
+  if(!G||G.grant==null)return '';
+  cfg=cfg||{};
+  const tn=G.topn||10;
+  const emoji=cfg.emoji||'💰', name=cfg.name||'毎日10万円チャレンジ';
+  const pick=cfg.pick||('本命確率×堅さ 上位'+tn+'R');
+  const selTxt=cfg.selTxt||('当日の<b>全レース</b>を<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに');
   const yen=v=>'¥'+Math.round(v).toLocaleString('en-US');
   const pl=G.pl, up=pl>=0, col=up?'#43c59e':'#e06b6b', grantTot=G.grant*G.days;
   const ml=G.mon?(+G.mon.slice(5,7))+'月':'';
   let h='<div style="margin-top:8px;border:1px solid #2a3550;border-radius:12px;padding:14px;background:linear-gradient(180deg,#141c2e,#0f1522)">';
-  const tn=G.topn||10;
-  h+='<div style="font-size:16px;font-weight:700;color:#ffd66b">💰 毎日10万円チャレンジ <span style="font-size:12px;color:#8b96a8;font-weight:500">（'+ml+'・本命確率×堅さ 上位'+tn+'R・毎日10万円支給・毎月リセット）</span></div>';
+  h+='<div style="font-size:16px;font-weight:700;color:#ffd66b">'+emoji+' '+name+' <span style="font-size:12px;color:#8b96a8;font-weight:500">（'+ml+'・'+pick+'・毎日10万円支給・毎月リセット）</span></div>';
   h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:8px 0 2px">'
     +'<span style="font-size:30px;font-weight:800;color:'+col+'">'+(up?'+':'')+yen(pl)+'</span>'
     +'<span style="font-size:13px;font-weight:700;color:#8b96a8">'+ml+'の損益</span></div>';
   h+='<div style="font-size:11px;color:#8b96a8">精算 '+G.days+'日 ／ 支給総額 '+yen(grantTot)+' ／ 賭け金 '+yen(G.staked)+' ／ 払戻 '+yen(G.ret)+' ／ 最高到達 '+(G.peak>=0?'+':'')+yen(G.peak)+'</div>';
   if(G.pending&&G.pending.n)
-    h+='<div style="font-size:12px;color:#7fb2ff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：ミックス指標 上位'+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円・各≈1万円）で投票予定（結果は翌朝反映）</div>';
+    h+='<div style="font-size:12px;color:#7fb2ff;margin-top:6px">▶ 本日 '+G.pending.d.slice(5)+' 運用中：'+pick+'（一覧で '+emoji+' マーク）の '+G.pending.n+'レースに予算 '+yen(G.pending.budget)+'（毎日10万円・各≈1万円）で投票予定（結果は翌朝反映）</div>';
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,false);
   else h+='<div class="meta">まだ精算済みの日がありません（新方式は<b>9月から開始</b>。初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、当日の全レースを<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに10万円を均等配分（各≈1万円）。各レースの買い目は<b>2連複 上位3点（的中率重視・2026-09-13〜。旧「3連単のみ」は廃止）</b>＝レース予算を全額2連複に確率比例配分。'
+  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、'+selTxt+'10万円を均等配分（各≈1万円）。各レースの買い目は<b>2連複 上位3点（的中率重視・2026-09-13〜。旧「3連単のみ」は廃止）</b>＝レース予算を全額2連複に確率比例配分。'
     +'<b>毎日フラットに10万円</b>で勝負（繰越なし）。実際の配当で精算し、フライングは返還。'
     +'各日の行を<b>タップするとその日に何を買ったか（組番・金額）と結果</b>が開きます。✓＝的中。※控除率25％の壁があり増え続ける保証はありません＝AIの実力を可視化する実験です。</div>';
   h+='</div>';
   return h;
+}
+// 当日の投票予定レース（pending.ids）に付ける💰チャレンジマーク。当日以外は出さない
+// （＝「予定」の可視化・過去日は各パネルの日別明細で確認）。①＝全帯ミックス上位・②＝ノーマル帯上位。
+function chalMarks(r){
+  if(!r||selDate!==D.base)return '';
+  let s='';
+  const g1=D.game&&D.game.pending, g2=D.game2&&D.game2.pending;
+  if(g1&&g1.ids&&g1.ids.indexOf(r.id)>=0)
+    s+='<span class="chal c1" title="10万円チャレンジ①（本命確率×堅さ 上位'+((D.game.topn)||10)+'R）が本日この予算で投票予定">💰①</span>';
+  if(g2&&g2.ids&&g2.ids.indexOf(r.id)>=0)
+    s+='<span class="chal c2" title="10万円チャレンジ②（ノーマル/標準 上位'+((D.game2.topn)||10)+'R）が本日この予算で投票予定">💰②</span>';
+  return s;
 }
 // 直近30日の日別回収率 折れ線（2連単／3連単／穴目 の3系統）。
 function recoveryChart(days,series){
@@ -3308,7 +3365,12 @@ function statsView(){
   const RC=D.recent_api;
   const RG=D.regime_api;
   let h=nav();
-  h+=gameView();
+  h+=gameView(D.game,{emoji:'💰①',name:'毎日10万円チャレンジ①',
+    pick:'本命確率×堅さ 上位'+((D.game&&D.game.topn)||10)+'R',
+    selTxt:'当日の<b>全レース</b>を<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+((D.game&&D.game.topn)||10)+'レース</b>だけに'});
+  h+=gameView(D.game2,{emoji:'💰②',name:'毎日10万円チャレンジ② ノーマル',
+    pick:'ノーマル(標準)帯から 上位'+((D.game2&&D.game2.topn)||10)+'R',
+    selTxt:'当日の<b>ノーマル（標準）帯のレース（本線2連複予想率 45〜65％）</b>だけに絞り、その中の<b>本命確率×堅さ</b>のミックス指標＝√(本命確率×堅さ) <b>上位'+((D.game2&&D.game2.topn)||10)+'レース</b>に'});
   h+=recentRecoveryView();
   h+='<div class="meta" style="margin-top:6px">'
     +'<b style="color:#7fb2ff">AI予想（学習モデル）</b>の成績。'
