@@ -1126,7 +1126,10 @@ def cause_comment(pm, fin, kr):
 
 
 def recent_stats(out, payout, pmkey="b", hon_map=None):
-    """前日・前々日（結果のある日）の場別 2連複/3連単 的中率・回収率。
+    """【非使用・2026-09-21廃止】前日・前々日の場別 2連複/3連単 的中率・回収率。
+    ※ 素モデルの確率上位k点(常時購入)で集計しており、各レース詳細・上部サマリーの実際の買い目
+    （展示反映後 betScore＋標準目のみ fukuStd・見送りあり）とズレるため、JS の venueRecent() に置換。
+    参考用に残置（呼び出しなし）。
     pmkey で順位付けスコアの系統を切替（"b"=従来モデル / "ab"=API予想）。
     ★買い目はサイト本体（買い目UI／上部サマリー daySummary）と同一ポリシーで集計＝「実際に買った場合」:
       - 荒れ度・点数はレース共通＝本線2連複予想率(q2conf 写像 hon_map)で固定。
@@ -1851,7 +1854,9 @@ def main():
     # 学習モデル（主系統）の全履歴から場別成績・荒れ度別・直近を算出。
     # 順位付け＝学習モデル(model_map/"b")、荒れ度・点数の基準＝API本命確率(hon_canon)で共通。
     vstats_api = venue_stats(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
-    recent_api = recent_stats(out, payout, "b", hon_canon)
+    # 前日・前々日の場別「実践的中／回収率」は JS(venueRecent) がクライアント側で、各レース詳細・
+    # 上部サマリーと同一の買い目(betScore＋標準目のみ fukuStd・見送り除外・F返還)で集計する。
+    # 旧 recent_stats(素モデルの確率上位k点・常時購入)は実際の買い目とズレるため payload から除外。
     regime_api = regime_result(rel, pred, model_map, hist, payout_all, args.stats_from, hon_canon)
     combo_api = combo_class_result(rel, pred, model_map, payout_all, args.stats_from, hon_canon)
 
@@ -1879,7 +1884,7 @@ def main():
     vt_base = venue_tenji_baseline()
     print(f"  会場展示ベースライン: {len(vt_base)}場（展示タイムの会場補正z用）")
     payload = {"labels": labels, "base": base, "races": out,
-               "vstats_api": vstats_api, "recent_api": recent_api,
+               "vstats_api": vstats_api,
                "regime_api": regime_api, "combo_api": combo_api,
                "rsp": rsp, "game": game, "game2": game2,
                "daily_rec": daily_rec, "cal": cal,
@@ -3359,10 +3364,52 @@ function recentRecoveryView(){
     +'※日別・単日・区分別は<b>高配当1本で大きく振れます</b>（特に3連単）。控除率約25％の壁で長期回収率は100％未満が基本です。</div>';
   return h;
 }
+// 場別「実践的中／回収率」（前日・前々日）＝サイト本体の買い目(各レース詳細/上部サマリー daySummary)と
+// 完全に同一ロジックで場別集計する。betScore(展示反映後)で並べ、2連複＝標準目のみ fukuStd
+// （想定オッズ3.5〜5.5倍のペア・該当なしは見送り＝集計から除外）／3連単＝unifiedBuy.tri（決まり手ベース）。
+// 各券種¥2,000を meriW×allocYen で配分し、非完走(F等)を含む点は実質投資から除外(返還)。
+// 回収率＝Σ(配当×賭け金/100)÷Σ実質投資。R数＝実際に買った(見送り以外の)レース数。
+// ★以前は Python(recent_stats)が素モデルの確率上位k点(常に購入)で集計しており、各レースで表示・購入する
+//   実際の買い目（標準目のみ・見送りあり・展示反映後）とズレていた。本関数でクライアント側集計に統一。
+function venueRecent(){
+  const ag={}; let dmin=null,dmax=null,nf=0;
+  D.races.forEach(r=>{
+    if(r.d>=D.base||!hasResult(r))return;              // 前日・前々日（結果あり）のみ
+    const s=betScore(r), ord=finishOrder(r), hon=q2conf(r);
+    const fly=flySet(r);
+    const actEx=ord.slice(0,2), actTri=ord.slice(0,3);
+    const UB=unifiedBuy(s,r.kd,hon);
+    const a=ag[r.c]||(ag[r.c]={v:r.v,n2:0,h2:0,inv2:0,ret2:0,n3:0,h3:0,inv3:0,ret3:0});
+    if(dmin===null||r.d<dmin)dmin=r.d; if(dmax===null||r.d>dmax)dmax=r.d;
+    if(Object.keys(fly).length)nf++;
+    // 2連複（標準目のみ＝サイト本体 fukuStd。空＝見送り→集計から除外）
+    if(UB.fuku.length){
+      a.n2++; const yen=allocYen(meriW(UB.fuku.map(c=>c[1]),hon),2000); let hit=false;
+      UB.fuku.forEach((c,i)=>{const kept=!c[0].some(w=>fly[w]); if(kept)a.inv2+=yen[i];
+        if(actEx.length>=2&&eqPair(c[0],actEx)){a.ret2+=(r.po&&r.po[2]!=null)?Math.round(r.po[2]*yen[i]/100):0;hit=true;}});
+      if(hit)a.h2++;
+    }
+    // 3連単（unifiedBuy.tri＝サイト本体の決まり手ベース買い目。空＝見送り除外）
+    if(UB.tri.length){
+      a.n3++; const yen=allocYen(meriW(UB.tri.map(c=>c[1]),hon),2000); let hit=false;
+      UB.tri.forEach((c,i)=>{const kept=!c[0].some(w=>fly[w]); if(kept)a.inv3+=yen[i];
+        if(actTri.length>=3&&eqArr(c[0],actTri)){a.ret3+=r.po?Math.round(r.po[1]*yen[i]/100):0;hit=true;}});
+      if(hit)a.h3++;
+    }
+  });
+  const pct=(x,y)=>y?Math.round(x/y*100):0;
+  const stat=a=>[a.v,a.n2,pct(a.h2,a.n2),pct(a.ret2,a.inv2),pct(a.h3,a.n3),pct(a.ret3,a.inv3)];
+  const rows=Object.values(ag).map(stat).sort((x,y)=>y[3]-x[3]);   // 2連複回収率の降順
+  const T=Object.values(ag).reduce((t,a)=>{['n2','h2','inv2','ret2','n3','h3','inv3','ret3']
+    .forEach(k=>t[k]+=a[k]);return t;},{v:'全場',n2:0,h2:0,inv2:0,ret2:0,n3:0,h3:0,inv3:0,ret3:0});
+  return {from:dmin,to:dmax,rows:rows,all:stat(T),nf:nf};
+}
 function statsView(){
   // 場別成績は Python 側で全期間（2026年〜）集計済み（学習モデル＝主系統で順位付け）。
   const V=D.vstats_api;
-  const RC=D.recent_api;
+  // 前日・前々日の場別表は、実際の買い目(betScore＋標準目のみ)でクライアント側集計＝各レース詳細/
+  // 上部サマリーと一致（旧 D.recent_api＝素モデルtopk はズレるため廃止）。
+  const RC=venueRecent();
   const RG=D.regime_api;
   let h=nav();
   h+=gameView(D.game,{emoji:'💰①',name:'毎日10万円チャレンジ①',
@@ -3405,9 +3452,9 @@ function statsView(){
       +'<td class="num g2">'+a[2]+'%</td><td class="num g2">'+a[3]+'%</td>'
       +'<td class="num g3">'+a[4]+'%</td><td class="num g3">'+a[5]+'%</td></tr>';
     h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">前日・前々日の的中率・回収率（'+RC.from.slice(5)+'〜'+RC.to.slice(5)+'）</div>';
-    h+='<div class="meta">実践的中＝サイトの買い目を実際に買った場合の的中率（2連複≤3/3連単≤8点）。'
-      +'<b>買い目・金額はサイト本体と同一</b>＝各券種¥2,000を全帯爆発重視で配分（薄い高配当目に振り切り・EVフラット）・3連単は全帯で購入（波乱も買う）・ノーマルレースは穴型を除外・フライングは返還。'
-      +'回収率＝Σ(配当×賭け金/100)÷Σ賭け金。100%超で利益。並び替えは回収率基準。</div>';
+    h+='<div class="meta">実践的中＝<b>各レース詳細・上部サマリーと同一の買い目</b>を実際に買った場合の的中率。'
+      +'買い目＝<b>展示反映後(betScore)</b>で、<b>2連複＝標準目のみ</b>（想定オッズ3.5〜5.5倍のペア・<b>該当なしは見送り</b>）／<b>3連単＝決まり手ベースの買い目</b>。各券種¥2,000を爆発重視で配分・フライングは返還。'
+      +'<b>R数＝実際に買った（見送り以外の）レース数</b>。回収率＝Σ(配当×賭け金/100)÷Σ実質投資。100%超で利益。並び替えは回収率基準。</div>';
     h+=sortbar('r',rsort);
     const rrows=rsort.c?sortRows(RC.rows,rsort.c==='e'?3:5,rsort.d):RC.rows;
     h+='<div class="swrap"><table class="st"><thead><tr>'
