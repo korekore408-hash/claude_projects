@@ -2694,11 +2694,12 @@ function resLines(r){
   const pay=r.po?r.po[1]:null;const pay2=(r.po&&r.po.length>2)?r.po[2]:null;   // po[1]=3連単/po[2]=2連複配当
   let h='<div class="resline"><span class="rll">2連複</span>';
   ex.forEach((w,i)=>{h+=(i?'<span class="arr">=</span>':'')+chip(w,'mc');});
-  if(exHit)h+='<span class="ok" style="font-size:11px">的中</span>';
+  // 的中の横に、当たった買い目が本命/標準/穴どの区分だったか（想定オッズ＝1÷予想確率で分類・成績タブと同基準）。
+  if(exHit)h+='<span class="ok" style="font-size:11px">的中</span>'+buyBandTag(pfProb(s,ex[0],ex[1]),true);
   h+='<span class="yen'+(exHit?' hit':'')+'">'+(pay2!=null?'¥'+pay2.toLocaleString():'配当 –')+'</span></div>';
   h+='<div class="resline"><span class="rll">3連単</span>';
   tri.forEach((w,i)=>{h+=(i?'<span class="arr">&rarr;</span>':'')+chip(w,'mc');});
-  if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>';
+  if(triHit)h+='<span class="ok" style="font-size:11px">的中</span>'+buyBandTag(plProbOf(s,tri),false);
   h+='<span class="yen'+(triHit?' hit':'')+'">'+(pay!=null?'¥'+pay.toLocaleString():'配当 –')+'</span></div>';
   return {html:h,exHit:exHit,triHit:triHit,hit:exHit||triHit};
 }
