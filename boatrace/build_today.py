@@ -1393,7 +1393,7 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
 
 
 def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
-                    daily_grant=100_000, base=None, topn=10, band=None):
+                    daily_grant=100_000, base=None, topn=10, band=None, bet="fuku"):
     """毎日10万円チャレンジ（2026-09〜新方式）: 本命確率(最有力艇の1着予想率)と
     本命の堅さ(本線2連複予想率=hon)をミックス評価し、その日の上位 topn レースを厳選、
     毎日10万円を均等配分して投票。
@@ -1401,6 +1401,9 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
       None …全レースからミックス指標上位（従来＝①。実質 鉄板寄り）
       "std"…ノーマル(標準)帯のみ（0.45≤hon<0.65）から上位＝第2弾。
     帯の境界は JS honAna/q2conf と同一（hon_canon＝q2conf 写像値）。
+    bet で券種を切替:
+      "fuku"…2連複 上位3点（既定＝①）。
+      "tri" …3連単 上位数点（確率連動 k_tri＝3〜8点。第2弾＝ユーザー要望で3連単運用）。
     ★ルール（2026-09-01〜／穴帯版・鉄板版の旧方式は廃止）:
       - 毎日 daily_grant(¥100,000) 支給・毎日フラット（繰越なし）。
       - ミックス指標 = √(本命確率 × 本命の堅さ)。当日の全レースをこの指標で降順に並べ、
@@ -1482,23 +1485,41 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
             po = payout.get(rid, (0, 0, 0))
             r_stake = r_ret = 0.0
             hit = False
-            e2, e3 = [], []   # 2026-09-13: 3連単を廃止し2連複 上位3点へ（的中率重視）。e3は常に空。
-            # 2連複 上位3点（PL確率上位3ペア）＝レース予算を全額投下。検証（各日上位10R）で
-            # 的中率79%・回収84%＝3連単のみ（的中41%/回収80%）より「ほぼ毎日当たる」体験。
-            buy2 = _pf_topk(sv, 3)
-            b2 = round(per / 100) * 100
-            act2 = frozenset(order[:2]) if len(order) >= 2 else None
-            if buy2 and b2 >= len(buy2) * 100 and act2 is not None:
-                yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon), budget=b2)
-                for c, y in zip(buy2, yen2):
-                    refunded = any(w in fly for w in c)
-                    ch = (frozenset(c) == act2) and not refunded
-                    if not refunded:
-                        r_stake += y
-                    if ch:
-                        r_ret += round((po[2] if len(po) > 2 else 0) * y / 100)
-                        hit = True
-                    e2.append(["".join(str(w) for w in sorted(c)), int(y), 1 if ch else 0])
+            e2, e3 = [], []   # ①=2連複(e2) / ②=3連単(e3)。bet で切替（未使用側は空）。
+            b_race = round(per / 100) * 100                 # レース予算（¥100単位）
+            if bet == "tri":
+                # 3連単 上位数点（PL確率上位・確率連動 k_tri＝3〜8点）＝レース予算を全額投下・確率比例配分。
+                # 実配当(po[1]=3連単)で精算。当たれば高配当だが的中率は2連複より低い（ユーザー要望の②運用）。
+                buy3 = _pl_topk(sv, 3, k_tri(hon))
+                act3 = tuple(order[:3]) if len(order) >= 3 else None
+                if buy3 and b_race >= len(buy3) * 100 and act3 is not None:
+                    yen3 = _alloc_yen(_meri_w([_pl_prob(sv, list(c)) for c in buy3], hon),
+                                      budget=b_race)
+                    for c, y in zip(buy3, yen3):
+                        refunded = any(w in fly for w in c)
+                        ch = (tuple(c) == act3) and not refunded
+                        if not refunded:
+                            r_stake += y
+                        if ch:
+                            r_ret += round((po[1] if len(po) > 1 else 0) * y / 100)
+                            hit = True
+                        e3.append(["".join(str(w) for w in c), int(y), 1 if ch else 0])
+            else:
+                # 2連複 上位3点（PL確率上位3ペア）＝レース予算を全額投下。検証（各日上位10R）で
+                # 的中率79%・回収84%＝3連単のみ（的中41%/回収80%）より「ほぼ毎日当たる」体験。
+                buy2 = _pf_topk(sv, 3)
+                act2 = frozenset(order[:2]) if len(order) >= 2 else None
+                if buy2 and b_race >= len(buy2) * 100 and act2 is not None:
+                    yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon), budget=b_race)
+                    for c, y in zip(buy2, yen2):
+                        refunded = any(w in fly for w in c)
+                        ch = (frozenset(c) == act2) and not refunded
+                        if not refunded:
+                            r_stake += y
+                        if ch:
+                            r_ret += round((po[2] if len(po) > 2 else 0) * y / 100)
+                            hit = True
+                        e2.append(["".join(str(w) for w in sorted(c)), int(y), 1 if ch else 0])
             if not e2 and not e3:
                 continue
             staked += r_stake
@@ -1547,7 +1568,7 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
                        "ids": [p[0] for p in bp]}   # 当日投票予定の race_id（一覧のマーク用）
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
-            "peak": round(peak), "mon": cur_mon, "topn": topn, "band": band,
+            "peak": round(peak), "mon": cur_mon, "topn": topn, "band": band, "bet": bet,
             "staked": round(sum(r["stake"] for r in rows)),
             "ret": round(sum(r["ret"] for r in rows)),
             "rows": rows, "pending": pending,
@@ -1868,10 +1889,10 @@ def main():
     print(f"  毎日10万円チャレンジ①（ミックス上位10）: 累計損益 {'+' if game['pl']>=0 else ''}¥{game['pl']:,} "
           f"（精算 {game['days']}日・払戻¥{game['ret']:,}/賭¥{game['staked']:,}）")
     # 第2弾＝ノーマル(標準)帯（0.45≤hon<0.65）のミックス上位10レースに毎日10万円。①より
-    # 配当妙味のある中位レースで勝負。同じくステートレス再計算・毎月リセット。
+    # 配当妙味のある中位レースで勝負。券種は3連単（ユーザー要望）。ステートレス再計算・毎月リセット。
     game2 = game_ledger_mix(rel, pred, model_map, hon_canon, payout_all,
-                            "2026-09-01", 100_000, base, 10, band="std")
-    print(f"  毎日10万円チャレンジ②（ノーマル標準・上位10）: 累計損益 {'+' if game2['pl']>=0 else ''}¥{game2['pl']:,} "
+                            "2026-09-01", 100_000, base, 10, band="std", bet="tri")
+    print(f"  毎日10万円チャレンジ②（ノーマル標準・3連単・上位10）: 累計損益 {'+' if game2['pl']>=0 else ''}¥{game2['pl']:,} "
           f"（精算 {game2['days']}日・払戻¥{game2['ret']:,}/賭¥{game2['staked']:,}）")
     # 直近30日の日別回収率（券種別：2連単／3連単／穴目）。折れ線グラフ用。
     daily_rec = daily_recovery(rel, pred, model_map, api_map, hon_canon,
@@ -3259,6 +3280,7 @@ function gameView(G,cfg){
   const emoji=cfg.emoji||'💰', name=cfg.name||'毎日10万円チャレンジ';
   const pick=cfg.pick||('本命確率×堅さ 上位'+tn+'R');
   const selTxt=cfg.selTxt||('当日の<b>全レース</b>を<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+tn+'レース</b>だけに');
+  const buyTxt=cfg.buyTxt||'各レースの買い目は<b>2連複 上位3点（的中率重視・2026-09-13〜）</b>＝レース予算を全額2連複に確率比例配分。';
   const yen=v=>'¥'+Math.round(v).toLocaleString('en-US');
   const pl=G.pl, up=pl>=0, col=up?'#43c59e':'#e06b6b', grantTot=G.grant*G.days;
   const ml=G.mon?(+G.mon.slice(5,7))+'月':'';
@@ -3273,7 +3295,7 @@ function gameView(G,cfg){
   h+=gameChart(G);
   if(G.rows.length)h+=gameDays(G,false);
   else h+='<div class="meta">まだ精算済みの日がありません（新方式は<b>9月から開始</b>。初日の結果は翌朝に反映されます）。</div>';
-  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、'+selTxt+'10万円を均等配分（各≈1万円）。各レースの買い目は<b>2連複 上位3点（的中率重視・2026-09-13〜。旧「3連単のみ」は廃止）</b>＝レース予算を全額2連複に確率比例配分。'
+  h+='<div class="legend"><b>新ルール（9月〜）</b>：<b>毎日10万円</b>を支給し、'+selTxt+'10万円を均等配分（各≈1万円）。'+buyTxt
     +'<b>毎日フラットに10万円</b>で勝負（繰越なし）。実際の配当で精算し、フライングは返還。'
     +'各日の行を<b>タップするとその日に何を買ったか（組番・金額）と結果</b>が開きます。✓＝的中。※控除率25％の壁があり増え続ける保証はありません＝AIの実力を可視化する実験です。</div>';
   h+='</div>';
@@ -3288,7 +3310,7 @@ function chalMarks(r){
   if(g1&&g1.ids&&g1.ids.indexOf(r.id)>=0)
     s+='<span class="chal c1" title="10万円チャレンジ①（本命確率×堅さ 上位'+((D.game.topn)||10)+'R）が本日この予算で投票予定">💰①</span>';
   if(g2&&g2.ids&&g2.ids.indexOf(r.id)>=0)
-    s+='<span class="chal c2" title="10万円チャレンジ②（ノーマル/標準 上位'+((D.game2.topn)||10)+'R）が本日この予算で投票予定">💰②</span>';
+    s+='<span class="chal c2" title="10万円チャレンジ②（ノーマル/標準 上位'+((D.game2.topn)||10)+'R・3連単）が本日この予算で投票予定">💰②</span>';
   return s;
 }
 // 直近30日の日別回収率 折れ線（2連単／3連単／穴目 の3系統）。
@@ -3416,9 +3438,10 @@ function statsView(){
   h+=gameView(D.game,{emoji:'💰①',name:'毎日10万円チャレンジ①',
     pick:'本命確率×堅さ 上位'+((D.game&&D.game.topn)||10)+'R',
     selTxt:'当日の<b>全レース</b>を<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+((D.game&&D.game.topn)||10)+'レース</b>だけに'});
-  h+=gameView(D.game2,{emoji:'💰②',name:'毎日10万円チャレンジ② ノーマル',
-    pick:'ノーマル(標準)帯から 上位'+((D.game2&&D.game2.topn)||10)+'R',
-    selTxt:'当日の<b>ノーマル（標準）帯のレース（本線2連複予想率 45〜65％）</b>だけに絞り、その中の<b>本命確率×堅さ</b>のミックス指標＝√(本命確率×堅さ) <b>上位'+((D.game2&&D.game2.topn)||10)+'レース</b>に'});
+  h+=gameView(D.game2,{emoji:'💰②',name:'毎日10万円チャレンジ② ノーマル（3連単）',
+    pick:'ノーマル(標準)帯から 上位'+((D.game2&&D.game2.topn)||10)+'R・3連単',
+    selTxt:'当日の<b>ノーマル（標準）帯のレース（本線2連複予想率 45〜65％）</b>だけに絞り、その中の<b>本命確率×堅さ</b>のミックス指標＝√(本命確率×堅さ) <b>上位'+((D.game2&&D.game2.topn)||10)+'レース</b>に',
+    buyTxt:'各レースの買い目は<b>3連単 上位数点（確率連動 3〜8点）</b>＝レース予算を全額3連単に確率比例配分（①の2連複より的中率は下がるが当たれば高配当）。'});
   h+=recentRecoveryView();
   h+='<div class="meta" style="margin-top:6px">'
     +'<b style="color:#7fb2ff">AI予想（学習モデル）</b>の成績。'
