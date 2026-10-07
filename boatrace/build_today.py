@@ -1393,7 +1393,8 @@ def daily_recovery(rel, pred, model_map, api_map, hon_canon, payout, base, ndays
 
 
 def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
-                    daily_grant=100_000, base=None, topn=10, band=None, bet="fuku"):
+                    daily_grant=100_000, base=None, topn=10, band=None, bet="fuku",
+                    npt=3):
     """毎日10万円チャレンジ（2026-09〜新方式）: 本命確率(最有力艇の1着予想率)と
     本命の堅さ(本線2連複予想率=hon)をミックス評価し、その日の上位 topn レースを厳選、
     毎日10万円を均等配分して投票。
@@ -1402,8 +1403,9 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
       "std"…ノーマル(標準)帯のみ（0.45≤hon<0.65）から上位＝第2弾。
     帯の境界は JS honAna/q2conf と同一（hon_canon＝q2conf 写像値）。
     bet で券種を切替:
-      "fuku"…2連複 上位3点（既定＝①）。
+      "fuku"…2連複 上位 npt 点（既定 npt=3。①はユーザー要望で npt=1＝1点勝負）。
       "tri" …3連単 上位数点（確率連動 k_tri＝3〜8点。第2弾＝ユーザー要望で3連単運用）。
+    npt …bet="fuku" のときの2連複の買い点数（1=本命ペア1点に全額）。
     ★ルール（2026-09-01〜／穴帯版・鉄板版の旧方式は廃止）:
       - 毎日 daily_grant(¥100,000) 支給・毎日フラット（繰越なし）。
       - ミックス指標 = √(本命確率 × 本命の堅さ)。当日の全レースをこの指標で降順に並べ、
@@ -1505,9 +1507,9 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
                             hit = True
                         e3.append(["".join(str(w) for w in c), int(y), 1 if ch else 0])
             else:
-                # 2連複 上位3点（PL確率上位3ペア）＝レース予算を全額投下。検証（各日上位10R）で
-                # 的中率79%・回収84%＝3連単のみ（的中41%/回収80%）より「ほぼ毎日当たる」体験。
-                buy2 = _pf_topk(sv, 3)
+                # 2連複 上位 npt 点（PL確率上位ペア）＝レース予算を全額投下・確率比例配分。
+                # npt=1 は本命ペア1点に全額（①＝ユーザー要望の1点勝負）。npt=3 は上位3点。
+                buy2 = _pf_topk(sv, npt)
                 act2 = frozenset(order[:2]) if len(order) >= 2 else None
                 if buy2 and b_race >= len(buy2) * 100 and act2 is not None:
                     yen2 = _alloc_yen(_meri_w([_pf_prob(sv, c) for c in buy2], hon), budget=b_race)
@@ -1568,7 +1570,8 @@ def game_ledger_mix(rel, pred, model_map, hon_canon, payout, start_date,
                        "ids": [p[0] for p in bp]}   # 当日投票予定の race_id（一覧のマーク用）
 
     return {"grant": daily_grant, "days": len(rows), "pl": round(cum),
-            "peak": round(peak), "mon": cur_mon, "topn": topn, "band": band, "bet": bet,
+            "peak": round(peak), "mon": cur_mon, "topn": topn, "band": band,
+            "bet": bet, "npt": npt,
             "staked": round(sum(r["stake"] for r in rows)),
             "ret": round(sum(r["ret"] for r in rows)),
             "rows": rows, "pending": pending,
@@ -1885,8 +1888,8 @@ def main():
     # 毎日10万円チャレンジ（2026-09〜新方式）: 本命確率×本命の堅さのミックス上位10レースに
     # 毎日10万円を均等配分。穴帯版は廃止。全履歴からステートレスに毎回再計算（永続化不要）。
     game = game_ledger_mix(rel, pred, model_map, hon_canon, payout_all,
-                           "2026-09-01", 100_000, base, 10)
-    print(f"  毎日10万円チャレンジ①（ミックス上位10）: 累計損益 {'+' if game['pl']>=0 else ''}¥{game['pl']:,} "
+                           "2026-09-01", 100_000, base, 10, npt=1)   # ①=2連複1点勝負（ユーザー要望）
+    print(f"  毎日10万円チャレンジ①（ミックス上位10・2連複1点）: 累計損益 {'+' if game['pl']>=0 else ''}¥{game['pl']:,} "
           f"（精算 {game['days']}日・払戻¥{game['ret']:,}/賭¥{game['staked']:,}）")
     # 第2弾＝ノーマル(標準)帯（0.45≤hon<0.65）のミックス上位10レースに毎日10万円。①より
     # 配当妙味のある中位レースで勝負。券種は3連単（ユーザー要望）。ステートレス再計算・毎月リセット。
@@ -3435,9 +3438,10 @@ function statsView(){
   const RC=venueRecent();
   const RG=D.regime_api;
   let h=nav();
-  h+=gameView(D.game,{emoji:'💰①',name:'毎日10万円チャレンジ①',
-    pick:'本命確率×堅さ 上位'+((D.game&&D.game.topn)||10)+'R',
-    selTxt:'当日の<b>全レース</b>を<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+((D.game&&D.game.topn)||10)+'レース</b>だけに'});
+  h+=gameView(D.game,{emoji:'💰①',name:'毎日10万円チャレンジ①（2連複1点）',
+    pick:'本命確率×堅さ 上位'+((D.game&&D.game.topn)||10)+'R・2連複1点',
+    selTxt:'当日の<b>全レース</b>を<b>本命確率（最有力艇の1着予想率）×本命の堅さ（本線2連複予想率）</b>のミックス指標＝√(本命確率×堅さ)で並べ、<b>上位'+((D.game&&D.game.topn)||10)+'レース</b>だけに',
+    buyTxt:'各レースの買い目は<b>2連複 1点（最有力ペアに全額）</b>＝レース予算（各≈1万円）を本命2連複1点に集中（旧・上位3点から1点勝負へ変更）。'});
   h+=gameView(D.game2,{emoji:'💰②',name:'毎日10万円チャレンジ② ノーマル（3連単）',
     pick:'ノーマル(標準)帯から 上位'+((D.game2&&D.game2.topn)||10)+'R・3連単',
     selTxt:'当日の<b>ノーマル（標準）帯のレース（本線2連複予想率 45〜65％）</b>だけに絞り、その中の<b>本命確率×堅さ</b>のミックス指標＝√(本命確率×堅さ) <b>上位'+((D.game2&&D.game2.topn)||10)+'レース</b>に',
