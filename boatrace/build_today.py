@@ -3430,12 +3430,64 @@ function venueRecent(){
     .forEach(k=>t[k]+=a[k]);return t;},{v:'全場',n2:0,h2:0,inv2:0,ret2:0,n3:0,h3:0,inv3:0,ret3:0});
   return {from:dmin,to:dmax,rows:rows,all:stat(T),nf:nf};
 }
+// 前日・前々日の「配当分布」ヒストグラム用データ。横軸=配当帯/縦軸=レース数、
+// うち実際の買い目（betScore＋unifiedBuy＝サイト本体と同一）で的中したレースを色分け。
+// 2連複(po[2])・3連単(po[1])それぞれ。見送りレースも配当分布には含む（色付きは的中分のみ）。
+function payoutHist(){
+  const EX=[500,1000,2000,3000,5000,10000], TRI=[1000,3000,5000,10000,20000,50000];
+  const binOf=(v,e)=>{for(let i=0;i<e.length;i++)if(v<e[i])return i;return e.length;};
+  const mk=k=>Array.from({length:k+1},()=>({tot:0,hit:0}));
+  const ex=mk(EX.length), tri=mk(TRI.length);
+  let dmin=null,dmax=null,n=0;
+  D.races.forEach(r=>{
+    if(r.d>=D.base||!hasResult(r)||!r.po)return;                 // 前日・前々日（結果あり）のみ
+    if(dmin===null||r.d<dmin)dmin=r.d; if(dmax===null||r.d>dmax)dmax=r.d; n++;
+    const s=betScore(r), ord=finishOrder(r), hon=q2conf(r), UB=unifiedBuy(s,r.kd,hon);
+    const actEx=ord.slice(0,2), actTri=ord.slice(0,3);
+    const pay2=(r.po.length>2)?r.po[2]:null, pay3=r.po[1];
+    if(pay2!=null&&pay2>0){const b=ex[binOf(pay2,EX)]; b.tot++;
+      if(UB.fuku.length&&actEx.length>=2&&UB.fuku.some(c=>eqPair(c[0],actEx)))b.hit++;}
+    if(pay3!=null&&pay3>0){const b=tri[binOf(pay3,TRI)]; b.tot++;
+      if(UB.tri.length&&actTri.length>=3&&UB.tri.some(c=>eqArr(c[0],actTri)))b.hit++;}
+  });
+  return {from:dmin,to:dmax,n:n,ex:ex,tri:tri,
+    exLab:['〜5百','〜1千','〜2千','〜3千','〜5千','〜1万','1万〜'],
+    triLab:['〜1千','〜3千','〜5千','〜1万','〜2万','〜5万','5万〜']};
+}
+// 積み上げヒストグラム1本（グレー＝全レース数／hitCol＝うち的中数）。縦棒・配当帯ごと。
+function histBars(bins,labs,hitCol){
+  const W=340,padL=24,padR=8,padT=14,padB=30,H=padT+140+padB;
+  const mx=Math.max(...bins.map(b=>b.tot),1);
+  const step=mx>200?50:mx>100?40:mx>50?20:mx>20?10:mx>10?5:2;
+  const M=Math.ceil(mx/step)*step||step, plotW=W-padL-padR, plotH=H-padT-padB;
+  const n=bins.length, gap=plotW/n, y=v=>padT+plotH-(v/M)*plotH;
+  let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:360px">';
+  for(let t=0;t<=M+0.01;t+=M/4){
+    g+='<line x1="'+padL+'" y1="'+y(t)+'" x2="'+(W-padR)+'" y2="'+y(t)+'" stroke="#222a33"/>';
+    g+='<text x="'+(padL-3)+'" y="'+(y(t)+3)+'" fill="#7e8796" font-size="8.5" text-anchor="end">'+Math.round(t)+'</text>';
+  }
+  const bw=Math.min(gap*0.66,34);
+  bins.forEach((b,i)=>{
+    const cx=padL+gap*i+gap/2, x=cx-bw/2;
+    if(b.tot>0){
+      g+='<rect x="'+x+'" y="'+y(b.tot)+'" width="'+bw+'" height="'+Math.max((b.tot/M)*plotH,1)+'" rx="2" fill="#39414d"/>';
+      if(b.hit>0){const hh=Math.max((b.hit/M)*plotH,1);
+        g+='<rect x="'+x+'" y="'+y(b.hit)+'" width="'+bw+'" height="'+hh+'" rx="2" fill="'+hitCol+'"/>';
+        if(hh>=11)g+='<text x="'+cx+'" y="'+(y(b.hit/2)+3)+'" fill="#0c1320" font-size="8.5" text-anchor="middle" font-weight="700">'+b.hit+'</text>';}
+      g+='<text x="'+cx+'" y="'+(y(b.tot)-3)+'" fill="#e6e6e6" font-size="9" text-anchor="middle" font-weight="700">'+b.tot+'</text>';
+    }
+    g+='<text x="'+cx+'" y="'+(H-padB+13)+'" fill="#cdd6e2" font-size="8" text-anchor="middle">'+labs[i]+'</text>';
+  });
+  g+='</svg>';
+  return g;
+}
 function statsView(){
   // 場別成績は Python 側で全期間（2026年〜）集計済み（学習モデル＝主系統で順位付け）。
   const V=D.vstats_api;
   // 前日・前々日の場別表は、実際の買い目(betScore＋標準目のみ)でクライアント側集計＝各レース詳細/
   // 上部サマリーと一致（旧 D.recent_api＝素モデルtopk はズレるため廃止）。
   const RC=venueRecent();
+  const PH=payoutHist();
   const RG=D.regime_api;
   let h=nav();
   h+=gameView(D.game,{emoji:'💰①',name:'毎日10万円チャレンジ①（2連複1点）',
@@ -3497,6 +3549,23 @@ function statsView(){
       +'※ 直近2日のみ＝サンプル小。回収率は高配当1本で大きく振れる（特に3連単）。'
       +'確率帯別バックテスト(2026全体)ではどの帯も回収率100%未満（控除率約25%の壁）＝確率だけで機械的に買うと負ける。'
       +'各レース詳細の「買えてた場合の妙味」で、実配当が必要オッズを超えたか（＝買えてたら+EVか）を確認できる。</div>';
+  }
+  // 配当分布ヒストグラム（前日・前々日）：横軸=配当帯/縦軸=レース数、うち的中を色分け。
+  if(PH&&PH.n){
+    h+='<div class="sec" style="margin-top:22px;color:#cdd6e2;font-size:14px">配当分布と的中（前日・前々日'+(PH.from?' '+PH.from.slice(5)+'〜'+PH.to.slice(5):'')+'）</div>';
+    h+='<div class="meta">横軸＝実際の配当（円・100円賭け時の払戻）の帯、縦軸＝レース数。'
+      +'<b style="color:#8a94a3">グレー＝その配当帯の全レース</b>、'
+      +'<b style="color:#43c59e">緑（2連複）</b>／<b style="color:#e0a93b">橙（3連単）</b>'
+      +'＝うち<b>実際の買い目（展示反映後・サイト本体と同一）で的中した</b>レース数。'
+      +'高配当（右）ほど的中が減る＝荒れたレースは当てにくい、が一目で分かる。</div>';
+    h+='<div style="text-align:center"><div style="font-size:13px;color:#43c59e;margin:8px 0 2px;font-weight:600">2連複</div>'
+      +histBars(PH.ex,PH.exLab,'#43c59e')+'</div>';
+    h+='<div style="text-align:center"><div style="font-size:13px;color:#e0a93b;margin:12px 0 2px;font-weight:600">3連単</div>'
+      +histBars(PH.tri,PH.triLab,'#e0a93b')+'</div>';
+    h+='<div class="legend">バー上の数字＝全レース数、色付き帯の中の数字＝そのうち的中数。'
+      +'配当帯は左ほど堅い（低配当）・右ほど荒れ（高配当）。色付きが左に寄る＝堅いレース中心に的中、という読み方。'
+      +'※ 見送り（標準目なし等で買わなかった）レースも配当分布には含む（色付きは実際に買って当たった分のみ）。'
+      +'※ 直近2日のみ＝サンプル小のため日により大きく振れる。</div>';
   }
   // 鉄板・ノーマル・波乱 と予想した場合の 的中率／回収率（系統は上のトグルに連動）
   if(RG&&RG.length&&RG.some(r=>r.n)){
