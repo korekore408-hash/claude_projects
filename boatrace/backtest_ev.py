@@ -1,235 +1,203 @@
 # -*- coding: utf-8 -*-
 """
-EV バックテスト (Phase4)
-========================
-モデル確率 × 実オッズ = EV。EV >= 閾値 の買い目だけ 100円 均等買いした場合の
-回収率・的中率・点数を、実オッズ取得済みの期間について検証する。
++EV バックテスト：オッズが分かる前提で「model_prob × odds > 閾値」の組だけ買う戦略が
+回収率100%を超えられるかを検証する。
 
-買い目候補 = ライブUI(today.html)と同じ「2連単 上位5 / 3連単 上位10」。
-realized payout = その買い目が的中したとき odds×100円 (締切オッズで賭けて締切オッズで決済)。
-EV>=0.0 の行は「フィルタ無し=フラット買い」のベースライン (回収78-83%帯の再現)。
+突合する3点（すべて race_id キー）:
+  1. モデル予想   predict_win_history.csv … 各レース・各枠の1着予想率 p_win（朝＝先読みなし）
+  2. 確定オッズ   data/odds/odds_*.csv     … 3連単120点・2連単30点（boatrace-odds.yml が毎日記録）
+  3. 実結果       data/k*.csv              … 着順（的中判定）
 
-入力:
-  predict_win_oos.csv … race_id, 枠, 登番, p_win, strength, finish_rank (honest OOS)
-  data/odds/odds_YYYYMMDD.csv … race_id, bet_type(2t/3t), combo, odds, fetched_at
+組合せ確率はサイト本体と同じ Plackett-Luce（plProbOf 相当）で p_win から合成。
+買い目の払戻は確定オッズ基準（的中なら odds×100 円、1点100円賭け）。
 
 使い方:
-  py -3.13 backtest_ev.py                      # 取得済みオッズ全期間
-  py -3.13 backtest_ev.py --dates 20260604-20260617
-  py -3.13 backtest_ev.py --csv bets.csv       # 採用ベットを明細出力
+  python backtest_ev.py                 # 全期間
+  python backtest_ev.py --from 2026-10-01
+  python backtest_ev.py --thresholds 1.0 1.1 1.2 1.5 2.0
+
+※ オッズのログが貯まる前（モデル履歴と日付が重ならない間）は「突合0件」と表示される。
+  boatrace-odds.yml が毎日前日分を記録するので、数週間後に重なり次第この検証が回る。
 """
-import argparse
+import os
 import csv
 import glob
-import os
-from collections import defaultdict
+import argparse
+import itertools
+import collections
 
-from predict_combos import plackett_luce_top
+HERE = os.path.dirname(os.path.abspath(__file__))
+PWH = os.path.join(HERE, "predict_win_history.csv")
+DATA = os.path.join(HERE, "data")
+ODDS_DIR = os.path.join(DATA, "odds")
 
-PRED = "predict_win_oos.csv"
-ODDS_DIR = "data/odds"
-THRESHOLDS = [0.0, 1.0, 1.1, 1.2, 1.3]
-TOP_2T = 5
-TOP_3T = 10
-STAKE = 100
+# 競艇場 名称→コード（K-fileは場名、race_id/予想CSVはコード）。標準・不変。
+VENUE = {"桐生": 1, "戸田": 2, "江戸川": 3, "平和島": 4, "多摩川": 5, "浜名湖": 6,
+         "蒲郡": 7, "常滑": 8, "津": 9, "三国": 10, "びわこ": 11, "住之江": 12,
+         "尼崎": 13, "鳴門": 14, "丸亀": 15, "児島": 16, "宮島": 17, "徳山": 18,
+         "下関": 19, "若松": 20, "芦屋": 21, "福岡": 22, "唐津": 23, "大村": 24}
 
 
-def load_predictions(path):
-    """race_id -> {'strength':[s1..s6 by 枠], 'order':[枠 of 1着,2着,3着]}"""
-    boats = defaultdict(dict)        # rid -> {枠: strength}
-    ranks = defaultdict(dict)        # rid -> {finish_rank: 枠}
-    with open(path, encoding="cp932") as f:
+def plprob(ps, combo):
+    """Plackett-Luce：p_win列(ps[0..5]) から順序組 combo(1-based) の確率。site plProbOf と同一。"""
+    p = 1.0
+    rem = sum(ps)
+    for w in combo:
+        if rem <= 0:
+            return 0.0
+        p *= ps[w - 1] / rem
+        rem -= ps[w - 1]
+    return p
+
+
+def load_model():
+    """race_id -> [p_win×6]（枠1..6順）。"""
+    pw = collections.defaultdict(lambda: [0.0] * 6)
+    if not os.path.exists(PWH):
+        return pw
+    with open(PWH, encoding="cp932") as f:
         r = csv.reader(f)
-        next(r)
+        next(r, None)
         for row in r:
-            rid, waku, _tou, _p, strength, fin = row[:6]
             try:
-                waku = int(waku)
-                s = float(strength)
-            except ValueError:
-                continue
-            boats[rid][waku] = s
-            try:
-                ranks[rid][int(fin)] = waku
-            except ValueError:
-                pass  # F/失格/欠場 などは非数値
-    races = {}
-    for rid, bs in boats.items():
-        if len(bs) < 6:
-            continue  # 6艇そろわないレースは除外(strength 配列が作れない)
-        strengths = [bs[w] for w in range(1, 7)]
-        rk = ranks[rid]
-        order = [rk.get(1), rk.get(2), rk.get(3)]
-        races[rid] = {"strength": strengths, "order": order}
-    return races
+                pw[row[0]][int(row[1]) - 1] = float(row[2])
+            except (ValueError, IndexError):
+                pass
+    return pw
 
 
-def load_odds(dates_filter):
-    """(race_id, bet_type, combo) -> odds"""
-    odds = {}
-    files = sorted(glob.glob(os.path.join(ODDS_DIR, "odds_*.csv")))
-    used = []
-    for fp in files:
-        hd = os.path.basename(fp)[5:13]   # odds_YYYYMMDD.csv
-        if dates_filter and hd not in dates_filter:
-            continue
-        used.append(hd)
-        with open(fp, encoding="utf-8") as f:
-            r = csv.DictReader(f)
+def load_odds(date_from=None):
+    """race_id -> {'3t': {(a,b,c): odds}, '2t': {(a,b): odds}}。"""
+    odds = collections.defaultdict(lambda: {"3t": {}, "2t": {}})
+    for of in glob.glob(os.path.join(ODDS_DIR, "odds_*.csv")):
+        with open(of, encoding="utf-8") as f:
+            r = csv.reader(f)
+            next(r, None)
             for row in r:
-                try:
-                    o = float(row["odds"])
-                except (ValueError, KeyError):
+                if len(row) < 4:
                     continue
-                odds[(row["race_id"], row["bet_type"], row["combo"])] = o
-    return odds, used
+                rid, bt, combo, od = row[0], row[1], row[2], row[3]
+                if date_from and _rid_date(rid) < date_from:
+                    continue
+                try:
+                    od = float(od)
+                except ValueError:
+                    continue
+                if od <= 0 or bt not in ("3t", "2t"):
+                    continue
+                odds[rid][bt][tuple(int(x) for x in combo.split("-"))] = od
+    return odds
 
 
-def candidates(strengths):
-    """(bet_type, combo_str, p) のリスト = top5 2連単 + top10 3連単"""
-    out = []
-    for combo, p in plackett_luce_top(strengths, 2, TOP_2T):
-        out.append(("2t", "-".join(map(str, combo)), p))
-    for combo, p in plackett_luce_top(strengths, 3, TOP_3T):
-        out.append(("3t", "-".join(map(str, combo)), p))
-    return out
+def load_results(date_from=None):
+    """race_id -> 着順[上位3枠]。K-fileは cp932・場名表記。"""
+    res = {}
+    for kf in glob.glob(os.path.join(DATA, "k*.csv")):
+        with open(kf, encoding="cp932") as f:
+            r = csv.reader(f)
+            next(r, None)
+            rows = list(r)
+        byrace = collections.defaultdict(list)
+        for row in rows:
+            if len(row) >= 28:
+                byrace[(row[0], row[1], row[2])].append(row)
+        for (ven, date, rno), rws in byrace.items():
+            code = VENUE.get(ven)
+            if code is None:
+                continue
+            y, m, d = date.split("/")
+            rid = f"{code:02d}{y}{int(m):02d}{int(d):02d}{int(rno):02d}"
+            if date_from and f"{y}-{int(m):02d}-{int(d):02d}" < date_from:
+                continue
+            order = []
+            for row in rws:
+                try:
+                    order.append((int(row[3]), int(row[4])))
+                except ValueError:
+                    pass
+            order.sort()
+            if len(order) >= 3:
+                res[rid] = [lane for _, lane in order][:3]
+    return res
 
 
-def actual_combo(order, bet_type):
-    if bet_type == "2t":
-        a, b = order[0], order[1]
-        if a and b:
-            return f"{a}-{b}"
-    else:
-        a, b, c = order
-        if a and b and c:
-            return f"{a}-{b}-{c}"
-    return None
+def _rid_date(rid):
+    """race_id(VVYYYYMMDDRR) -> 'YYYY-MM-DD'。"""
+    return f"{rid[2:6]}-{rid[6:8]}-{rid[8:10]}"
 
 
-def run_backtest(pred_path=PRED, dates_filter=None, detail=False):
-    """集計を実行し (meta, stats, detail_rows) を返す。オッズ無しは None。
-    stats[threshold][key] (key=2t/3t/all) = {bets,staked,returned,hits,races,roi,hit_rate}。
-    すべて素のint/float/strで JSON 化・HTML 埋め込み可。"""
-    races = load_predictions(pred_path)
-    odds, used_dates = load_odds(dates_filter)
-    if not odds:
-        return None
+def run(bt, joined, pw, odds, results, thresholds):
+    label = "3連単" if bt == "3t" else "2連単"
+    ntop = 3 if bt == "3t" else 2
 
-    acc = {t: {"2t": _blank(), "3t": _blank()} for t in THRESHOLDS}
-    detail_rows = []
-    rids_with_odds = sorted({k[0] for k in odds})
-    evaluated = 0
-    for rid in rids_with_odds:
-        race = races.get(rid)
-        if not race:
+    # 参照：全組フラット買いの回収率（=1-控除率。オッズ健全性チェック）
+    s = r = n = 0
+    for rid in joined:
+        od = odds[rid][bt]
+        if not od:
             continue
-        evaluated += 1
-        for bet_type, combo, p in candidates(race["strength"]):
-            o = odds.get((rid, bet_type, combo))
-            if o is None:
-                continue  # そのオッズが未取得 (発売前/欠番) → 賭けられない
-            ev = p * o
-            won = (combo == actual_combo(race["order"], bet_type))
-            for t in THRESHOLDS:
-                if ev >= t:
-                    st = acc[t][bet_type]
-                    st["staked"] += STAKE
-                    st["bets"] += 1
-                    st["races"].add(rid)
-                    if won:
-                        st["returned"] += o * STAKE
-                        st["hits"] += 1
-            if detail and ev >= 1.0:
-                detail_rows.append({
-                    "race_id": rid, "bet_type": bet_type, "combo": combo,
-                    "p": f"{p:.4f}", "odds": f"{o:.1f}", "ev": f"{ev:.3f}",
-                    "won": int(won), "payout": f"{o*STAKE:.0f}" if won else "0",
-                })
-
-    stats = {}
-    for t in THRESHOLDS:
-        comb = _blank()
-        row = {}
-        for bt in ("2t", "3t"):
-            st = acc[t][bt]
-            row[bt] = _finalize(st)
-            for k in ("bets", "staked", "returned", "hits"):
-                comb[k] += st[k]
-            comb["races"] |= st["races"]
-        row["all"] = _finalize(comb)
-        stats[t] = row
-
-    meta = {
-        "date_min": min(used_dates) if used_dates else "-",
-        "date_max": max(used_dates) if used_dates else "-",
-        "n_days": len(used_dates),
-        "n_races_odds": len(rids_with_odds),
-        "n_evaluated": evaluated,
-        "top_2t": TOP_2T, "top_3t": TOP_3T, "stake": STAKE,
-        "thresholds": THRESHOLDS,
-    }
-    return meta, stats, detail_rows
-
-
-def _blank():
-    return {"staked": 0, "returned": 0.0, "bets": 0, "hits": 0, "races": set()}
-
-
-def _finalize(st):
-    roi = (st["returned"] / st["staked"] * 100) if st["staked"] else 0.0
-    hr = (st["hits"] / st["bets"] * 100) if st["bets"] else 0.0
-    return {"bets": st["bets"], "staked": st["staked"],
-            "returned": round(st["returned"], 1), "hits": st["hits"],
-            "races": len(st["races"]), "roi": round(roi, 1), "hit_rate": round(hr, 1)}
+        act = tuple(results[rid][:ntop])
+        for c, o in od.items():
+            s += 100
+            if c == act:
+                r += o * 100
+                n += 1
+    if s == 0:
+        print(f"\n== {label} ==  対象なし")
+        return
+    print(f"\n== {label} ==  全組買い基準: 回収率 {r / s * 100:.1f}%  (的中率 {n / (s / 100) * 100:.2f}%)")
+    print(" 閾値T    買い点数    対象R    的中率    実現回収率   平均購入オッズ")
+    for T in thresholds:
+        stake = ret = hits = nbet = 0
+        sumod = 0.0
+        betraces = set()
+        for rid in joined:
+            od = odds[rid][bt]
+            if not od:
+                continue
+            ps = pw[rid]
+            act = tuple(results[rid][:ntop])
+            for c, o in od.items():
+                if plprob(ps, c) * o >= T:
+                    nbet += 1
+                    stake += 100
+                    sumod += o
+                    betraces.add(rid)
+                    if c == act:
+                        ret += o * 100
+                        hits += 1
+        if nbet == 0:
+            print(f" {T:5.2f}         0        –         –           –          –")
+            continue
+        print(f" {T:5.2f}   {nbet:9,}  {len(betraces):6,}   {hits / nbet * 100:6.2f}%   "
+              f"{ret / stake * 100:8.1f}%   {sumod / nbet:8.1f}")
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--pred", default=PRED)
-    ap.add_argument("--dates", default="", help="例 20260604-20260617 / 20260617")
-    ap.add_argument("--csv", default="", help="採用ベット明細の出力先")
+    ap = argparse.ArgumentParser(description="+EVフィルタ（model_prob×odds）バックテスト")
+    ap.add_argument("--from", dest="date_from", default=None, help="開始日 YYYY-MM-DD（含む）")
+    ap.add_argument("--thresholds", nargs="*", type=float,
+                    default=[0.0001, 0.8, 1.0, 1.1, 1.2, 1.5, 2.0, 3.0],
+                    help="model_prob×odds の閾値（1.0=理論損益分岐・+EV）")
     args = ap.parse_args()
 
-    dates_filter = None
-    if args.dates:
-        if "-" in args.dates:
-            a, b = args.dates.split("-")
-            dates_filter = {str(d) for d in range(int(a), int(b) + 1)}
-        else:
-            dates_filter = {args.dates}
+    pw = load_model()
+    odds = load_odds(args.date_from)
+    results = load_results(args.date_from)
+    joined = [rid for rid in odds if rid in pw and rid in results and sum(pw[rid]) > 0]
 
-    result = run_backtest(args.pred, dates_filter, detail=bool(args.csv))
-    if result is None:
-        print("オッズが見つかりません。fetch_odds.py で取得してください。")
+    print(f"モデル予想 {len(pw):,}R / オッズ {len(odds):,}R / 結果 {len(results):,}R")
+    print(f"突合（3点そろい）: {len(joined):,}R" + (f"  （{args.date_from}以降）" if args.date_from else ""))
+    if not joined:
+        print("\n突合0件：オッズのログがモデル予想履歴と重なるのを待ってください。")
+        print("（boatrace-odds.yml が毎日前日分を data/odds/ に記録します）")
         return
-    meta, stats, detail_rows = result
 
-    # ---- レポート ----
-    print(f"\n=== EV バックテスト ===")
-    print(f"期間: {meta['date_min']}〜{meta['date_max']}  ({meta['n_days']}日)")
-    print(f"オッズ取得レース: {meta['n_races_odds']}  /  うち予測あり評価: {meta['n_evaluated']}")
-    print(f"買い目候補: 2連単 上位{TOP_2T} + 3連単 上位{TOP_3T}  / 1点 {STAKE}円")
-    print(f"※ EV>=0.0 はフィルタ無し(フラット買い)のベースライン\n")
+    run("3t", joined, pw, odds, results, args.thresholds)
+    run("2t", joined, pw, odds, results, args.thresholds)
 
-    def line(label, st):
-        print(f"  {label:5} 点数{st['bets']:6d}  対象{st['races']:5d}R  "
-              f"的中{st['hits']:5d}({st['hit_rate']:5.1f}%)  "
-              f"投資{st['staked']:9,d}  払戻{st['returned']:11,.0f}  回収率 {st['roi']:6.1f}%")
-
-    for t in THRESHOLDS:
-        tag = "フラット" if t == 0.0 else f"EV>={t:.1f}"
-        print(f"[{tag}]")
-        line("2連単", stats[t]["2t"])
-        line("3連単", stats[t]["3t"])
-        line("合計", stats[t]["all"])
-        print()
-
-    if args.csv and detail_rows:
-        with open(args.csv, "w", encoding="utf-8-sig", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(detail_rows[0].keys()))
-            w.writeheader(); w.writerows(detail_rows)
-        print(f"採用ベット明細(EV>=1.0) {len(detail_rows)}件 → {args.csv}")
+    print("\n注意：これは確定オッズ（＝払戻の基準）での試算。実戦では締切前に賭けるためオッズが動き、")
+    print("自分の投票がオッズを押し下げる（特に人気薄）。T=1.0が理論損益分岐＝それ未満は買わない前提。")
 
 
 if __name__ == "__main__":
