@@ -1,0 +1,83 @@
+name: boatrace-odds
+
+# 毎日1回：前日の「確定オッズ」（3連単120点＋2連単30点・全場全レース）を取得して
+# data/odds/odds_YYYYMMDD.csv に保存・commit する。
+#
+# 目的：モデル予想（predict_win_history.csv・朝に確定）× オッズ × 実結果（K-file）を
+# 同じ race_id で突合できるようにし、「model_prob × odds > 1 の組だけ買う(+EV)」戦略が
+# 回収率100%を超えられるかを後日バックテスト（backtest_ev.py）で検証するためのログ。
+#
+# なぜ「前日」か：
+#   - 前日なら全レース終了済み＝確定オッズ（＝払戻の基準）が全場そろう。
+#   - 当日朝は後半レースが未発売でオッズが歯抜けになる。
+#   - 前日の予想は前日朝に predict_win_history.csv へ記録済み（先読みなし）。
+#   ＝ model(前日朝) × odds(前日確定) × result(前日) が揃い、+EV検証に過不足ない。
+#
+# 予想パイプライン（boatrace-daily）とは独立。today.html の朝の生成を遅らせない。
+on:
+  schedule:
+    - cron: '34 1 * * *'    # 01:34 UTC = 翌10:34 JST（前日は確定済み・朝のdailyも一巡後）
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '取得対象日 YYYY-MM-DD（空＝前日）。過去日の追加取得に使用。'
+        required: false
+        default: ''
+
+concurrency:
+  group: boatrace-odds
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  odds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: compute target day (JST)
+        id: day
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            D1="${{ github.event.inputs.date }}"
+          else
+            D1="$(date -d 'yesterday' +%Y-%m-%d)"
+          fi
+          echo "iso=$D1" >> "$GITHUB_OUTPUT"
+          echo "ymd=$(date -d "$D1" +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: install deps
+        run: pip install requests
+
+      - name: fetch previous-day final odds
+        working-directory: boatrace
+        run: |
+          f="data/odds/odds_${{ steps.day.outputs.ymd }}.csv"
+          if [ -f "$f" ]; then
+            echo "already logged: $f（スキップ）"; exit 0
+          fi
+          python fetch_odds.py --date "${{ steps.day.outputs.iso }}"
+
+      - name: commit & push odds log
+        run: |
+          git config user.name  "boatrace-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add boatrace/data/odds
+          if git diff --cached --quiet; then
+            echo "no changes"; exit 0
+          fi
+          git commit -m "chore(boatrace): odds log ${{ steps.day.outputs.iso }}"
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash origin master && git push origin master && exit 0
+            echo "push race, retry $i"; sleep 5
+          done
+          echo "push failed after retries"; exit 1
