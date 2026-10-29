@@ -3046,7 +3046,8 @@ function detailView(r){
     const _bf=UB.fuku.map(c=>c[0].join('-')).join(',');
     const _b3=UB.tri.map(c=>c[0].join('-')).join(',');
     const _ba='';
-    h+='<div style="margin:10px 0 2px"><a href="odds.html?id='+r.id+'&v='+encodeURIComponent(r.v)+'&no='+r.no+(r.tm?'&tm='+encodeURIComponent(r.tm):'')+(_bf?'&bf='+_bf:'')+(_b3?'&b3='+_b3:'')+(_ba?'&ba='+_ba:'')+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #2a3852;border-radius:8px;background:#141a26;color:#8fa8d0;font-size:13px;font-weight:600;text-decoration:none">&#128202; オッズ一覧<span style="font-size:11px;color:#7e8796;font-weight:400">（別ページ・全買い目の実オッズ）</span></a></div>';
+    const _p=sb.map(x=>(+x).toFixed(4)).join(',');   // 展示反映後の6枠予想確率→odds.htmlで予想率/EV算出
+    h+='<div style="margin:10px 0 2px"><a href="odds.html?id='+r.id+'&v='+encodeURIComponent(r.v)+'&no='+r.no+(r.tm?'&tm='+encodeURIComponent(r.tm):'')+(_bf?'&bf='+_bf:'')+(_b3?'&b3='+_b3:'')+(_ba?'&ba='+_ba:'')+'&p='+_p+'" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid #2a3852;border-radius:8px;background:#141a26;color:#8fa8d0;font-size:13px;font-weight:600;text-decoration:none">&#128202; オッズ一覧<span style="font-size:11px;color:#7e8796;font-weight:400">（別ページ・全買い目の実オッズ）</span></a></div>';
   }
   // #13 節間成績（公式番組表「今節成績」）
   if(r.sk&&r.sk.some(x=>x)){
