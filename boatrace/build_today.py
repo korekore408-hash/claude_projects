@@ -1794,6 +1794,10 @@ def main():
                             rc["feat"][w].get("recent"),
                             rc["feat"][w].get("st_rank")]
                            for w in range(1, 7)],
+                    # 枠ごと モーター2連率(番組表・%)。モーター評価バッジ(motorEval)用。
+                    # ※3連率は公式番組表に無い／展示タイムはr.ex(発走直前ライブ)で加味。
+                    "mt": [rc["feat"][w].get("motor_rate")
+                           for w in range(1, 7)],
                     # 対抗1艇の『捲り屋』タグ用: 枠ごと まくり率（該当なしは null）
                     "mk": [mk_map.get(rc["feat"][w].get("reg"))
                            for w in range(1, 7)],
@@ -2011,7 +2015,9 @@ HTML = r"""<!DOCTYPE html>
   .ok{color:#43c59e;font-weight:700}.ng{color:#e06b6b}
   .chev{color:#5b6472;font-size:16px}
   .back{display:inline-flex;align-items:center;gap:4px;font-size:14px;color:#6ea8fe;background:transparent;border:none;cursor:pointer;padding:8px 0}
-  .dnav{position:sticky;top:0;z-index:30;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#0f1115;padding:4px 0 6px;margin-bottom:2px;border-bottom:1px solid #1c2029}
+  /* 固定ヘッダ：ナビ＋レース場＋1着確率をまとめてスクロール追従。中身(.dnav)は静的に。 */
+  .shead{position:sticky;top:0;z-index:30;background:#0f1115;padding:2px 0 6px;margin-bottom:4px;border-bottom:1px solid #263141;box-shadow:0 6px 10px -6px rgba(0,0,0,.6)}
+  .dnav{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#0f1115;padding:2px 0 4px}
   .dnav-r{display:flex;gap:6px;flex:none}
   .pnav{font-size:13px;color:#cdd6e2;background:#1a1f28;border:1px solid #2a2f3a;border-radius:8px;padding:6px 11px;cursor:pointer;white-space:nowrap}
   .pnav:not(:disabled):active{background:#232935}
@@ -2036,6 +2042,11 @@ HTML = r"""<!DOCTYPE html>
   .rk{display:inline-block;padding:0 5px;border-radius:4px;background:#2a3140;color:#aeb8c6;font-size:11px;font-weight:700;line-height:17px}
   .airk{display:inline-block;min-width:17px;height:17px;line-height:17px;text-align:center;border-radius:4px;font-size:11px;font-weight:800;padding:0 2px}
   .aiS{background:#e0b000;color:#1a1a1a}.aiA{background:#e2552e;color:#fff}.aiB{background:#2f6fe0;color:#fff}
+  /* モーター評価バッジ（1〜6, 6最高）。⚙＋数字＋小ドットゲージ。 */
+  .motb{display:inline-flex;align-items:center;gap:2px;font-size:11px;font-weight:800;line-height:17px;
+        padding:0 5px;border-radius:4px;border:1px solid;background:#141a26;white-space:nowrap;vertical-align:middle}
+  .motb .motg{font-size:10px;font-weight:400;opacity:.9}
+  .motb .motd{font-size:7px;letter-spacing:-0.5px;opacity:.85;margin-left:1px}
   .aiC{background:#3f4756;color:#dfe6ef}.aiD{background:#222934;color:#8a93a2}
   .barw{flex:1;height:15px;background:#1b212b;border-radius:4px;overflow:hidden}
   .bar{height:100%;border-radius:4px}
@@ -2745,6 +2756,37 @@ function setsuFBadge(r,w){const n=r&&r.sk?setsuFN(r.sk[w]):0;
 // 今節F（この開催内）とは別物：持ちFは期をまたいで残り、次のFで即帰郷/斡旋停止のリスク。無ければ空文字。
 function heldFBadge(r,w){const n=r&&r.fh?r.fh[w]:null;
   return (n&&n>0)?'<span class="fmark fhold" title="持ちフライング'+n+'回＝この選手が現在保有するフライング（期内・次のFで即帰郷/斡旋停止のリスク。今節のFとは別）">持ちF'+n+'</span>':'';}
+// モーター評価（1〜6, 6が最高）。番組表のモーター2連率を主軸に、展示タイムがあれば日次の機力として加味。
+// バンドは全国分布（番組表N=2775: 中央値33%・10-90%ile=22〜43%）に基づく6段階。
+// ※モーター3連率は公式番組表に無いため不使用。展示タイムは発走直前(r.ex)が来たら±1で補正。
+function motorEval(r,w){
+  const mt=(r&&r.mt)?r.mt[w]:null;
+  if(mt==null||!(mt>0))return null;                      // 2連率不明＝評価なし
+  let sc = mt>=41?6 : mt>=37?5 : mt>=34?4 : mt>=30?3 : mt>=25?2 : 1;
+  let note='';
+  if(r.ex&&r.ex.time){                                   // 展示タイム（ライブ）を加味
+    const ts=r.ex.time, valid=ts.filter(x=>x!=null&&x>0), cur=ts[w];
+    if(cur!=null&&cur>0&&valid.length>=4){
+      const mean=valid.reduce((a,b)=>a+b,0)/valid.length;
+      const sd=Math.sqrt(valid.reduce((a,b)=>a+(b-mean)*(b-mean),0)/valid.length)||0.001;
+      const z=(cur-mean)/sd;                             // 負＝レース内で速い
+      if(z<=-0.8){sc=Math.min(6,sc+1);note='・展示速';}
+      else if(z>=0.8){sc=Math.max(1,sc-1);note='・展示遅';}
+    }
+  }
+  return {score:sc, mt:mt, note:note};
+}
+// モーター評価バッジ（1着確率の各艇に表示）。6=最高を強い緑、低いほど地味。
+function motorBadge(r,w){
+  const me=motorEval(r,w); if(!me)return '';
+  const C={6:'#2fd79b',5:'#43c59e',4:'#5b9bd5',3:'#8a94a6',2:'#7e8796',1:'#9a6b6b'};
+  const c=C[me.score];
+  const dots='●'.repeat(me.score)+'○'.repeat(6-me.score);
+  return '<span class="motb" style="color:'+c+';border-color:'+c+'44" title="モーター評価 '+me.score+'/6（6が最高）'
+    +'｜モーター2連率 '+me.mt.toFixed(0)+'%'+me.note
+    +' ｜ 番組表の2連率を主軸に、展示タイムがあれば加味（±1）。3連率は公式番組表に無いため不使用。">'
+    +'<span class="motg">⚙</span>'+me.score+'<span class="motd">'+dots+'</span></span>';
+}
 // 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
 // （betScore＝展示反映後・確率連動点数・各¥2,000配分・穴帯3連単は見送り）。
 // 返還: 非完走艇を含む買い目はその賭け金を投資から除外（損失にしない）。
@@ -2928,31 +2970,35 @@ function detailView(r){
   const payEx=(r.po&&r.po.length>2)?r.po[2]:null, payTri=r.po?r.po[1]:null;   // 実配当（2連複/3連単・100円あたり）。的中行に配当・回収率を表示。
   let hm=0;for(let w=1;w<6;w++)if(s[w]>s[hm])hm=w;
   const _nR=dayRaces().length;   // 前/次レース＝同じ日付内をインデックス移動（締切順）
-  let h='<div class="dnav">'
+  // ===== セクションを個別に組み立て、当日/前日/前々日で同一の順序に統一 =====
+  // 固定ヘッダ：ナビ＋レース場＋1着確率をまとめてスクロール追従(sticky)させる。
+  let h='<div class="shead">';
+  h+='<div class="dnav">'
     +'<button class="back">&lsaquo; 一覧へ戻る</button>'
     +'<div class="dnav-r">'
     +'<button class="pnav prev"'+(sel<=0?' disabled':'')+'>&lsaquo; 前のレース</button>'
     +'<button class="pnav next"'+(sel>=_nR-1?' disabled':'')+'>次のレース &rsaquo;</button>'
     +'</div></div>';
-  // ===== セクションを個別に組み立て、当日/前日/前々日で同一の順序に統一 =====
   // #1 レース場・R・時間
   h+='<div class="dh">'+r.v+' '+r.no+'R'+(r.tm?' <span class="dhtm">'+r.tm+' 締切</span>':'')+chalMarks(r)+'</div>';
-  // #2 配当一覧（結果確定レースのみ／未確定は非表示）
-  h+=payTable(r);
-  // #3 1着確率（AI予想・学習モデル）
-  h+='<div class="sec">1着確率（AI予想・学習モデル）</div>';
+  // #3 1着確率（AI予想・学習モデル）※固定ヘッダ内
+  h+='<div class="sec" style="margin-top:6px">1着確率（AI予想・学習モデル）</div>';
   r.b.forEach((b,w)=>{const a=LC[w+1];const fin=b[2];const pm=ps[w];
     const isF=r.f&&r.f.indexOf(w+1)>=0;   // この艇はフライング（返還）
     h+='<div class="boat">'+(done?'<span class="fin">'+(fin===1?'<b>1着</b>':(fin?fin+'着':(isF?'<b style="color:#ff8a9c">F</b>':'<span style="color:#6b7280">－</span>')))+'</span>':'')
      +chip(w+1)+'<span class="bn">'+b[0]+'</span>'
      +(r.rk&&r.rk[w]?'<span class="rk" title="公式級別">'+(r.rk[w][0]||'–')+'</span>'
         +(r.rk[w][1]?'<span class="airk ai'+r.rk[w][1]+'" title="AI 3着以内ランク（この枠で3着以内に来る可能性：枠別3連対率×級別×直近）">'+r.rk[w][1]+'</span>':''):'')
+     +motorBadge(r,w)
      +setsuFBadge(r,w)
      +heldFBadge(r,w)
      +(r.sth&&r.sth[w]!=null?(r.sth[w]<=-0.015?'<span class="sthb go" title="過去約1年の平均STがこのコース標準より'+(Math.abs(r.sth[w])*100).toFixed(1)+'/100秒速い＝スタート行く型（傾向。前後半相関0.74で安定・1走の予言力は弱い参考）">⚡先手</span>':(r.sth[w]>=0.020?'<span class="sthb slow" title="過去約1年の平均STがこのコース標準より'+(r.sth[w]*100).toFixed(1)+'/100秒遅い＝出遅れ気味（傾向・参考）">△出遅れ</span>':'')):'')
      +kimBadge(r.km&&r.km[w],w+1)
      +'<div class="barw"><div class="bar" style="width:'+Math.max(pm/mx*100,2)+'%;background:'+a[0]+'"></div></div>'
      +'<span class="bp">'+(pm/10).toFixed(1)+'%</span></div>';});
+  h+='</div>';   // /.shead（固定ヘッダここまで）
+  // #2 配当一覧（結果確定レースのみ／未確定は非表示）※固定ヘッダ直下へ移動
+  h+=payTable(r);
   // #4 勝ち方の予想（決まり手の内訳）
   h+=winMethodBlock(r);
   // #5 予想コメント
@@ -3075,6 +3121,11 @@ function detailView(r){
     +'<span class="airk aiS">S</span><span class="airk aiA">A</span><span class="airk aiB">B</span>'
     +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
     +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
+  misc+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">'
+    +'<span class="motb" style="color:#43c59e;border-color:#43c59e44"><span class="motg">⚙</span>5</span> モーター評価（1〜6・6が最高）'
+    +'＝番組表の<b>モーター2連率</b>を主軸に、<b>展示タイム</b>があれば日次の機力として加味（±1）した総合評価。'
+    +'バンドは全国分布基準（2連率 41%↑=6／37↑=5／34↑=4／30↑=3／25↑=2／未満=1）。'
+    +'<br>※モーター3連率は公式番組表に印字が無いため不使用。展示タイムは発走直前に取得でき次第バッジへ反映。</div>';
   if(r.wx&&!r.ex){
     const tk=r.wx[0], wd=r.wx[1], wv=r.wx[2];
     if(tk||wd!=null||wv!=null){
