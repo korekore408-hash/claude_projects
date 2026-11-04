@@ -2757,12 +2757,14 @@ function setsuFBadge(r,w){const n=r&&r.sk?setsuFN(r.sk[w]):0;
 function heldFBadge(r,w){const n=r&&r.fh?r.fh[w]:null;
   return (n&&n>0)?'<span class="fmark fhold" title="持ちフライング'+n+'回＝この選手が現在保有するフライング（期内・次のFで即帰郷/斡旋停止のリスク。今節のFとは別）">持ちF'+n+'</span>':'';}
 // モーター評価（1〜6, 6が最高）。番組表のモーター2連率を主軸に、展示タイムがあれば日次の機力として加味。
-// バンドは全国分布（番組表N=2775: 中央値33%・10-90%ile=22〜43%）に基づく6段階。
-// ※モーター3連率は公式番組表に無いため不使用。展示タイムは発走直前(r.ex)が来たら±1で補正。
+// バンドは全国分布の比率（B-file実測 N≈32万）で区切る＝6は上位約5%＝本当に成績優秀な機だけ。
+//   しきい値(2連率%)＝〜23:1(下位15%) / 〜30:2 / 〜35:3 / 〜40:4 / 〜48:5 / 48〜:6(上位5%)
+//   実測検証: 評価6の艇は2連対38.6%・3連対54.7%（全体より明確に上・2連率は弱シグナルなので差は緩やか）。
+// ※モーター3連率は公式番組表に無いため不使用（取得元は公式サイトの出走表ページ）。展示は発走直前(r.ex)が来たら±1補正。
 function motorEval(r,w){
   const mt=(r&&r.mt)?r.mt[w]:null;
   if(mt==null||!(mt>0))return null;                      // 2連率不明＝評価なし
-  let sc = mt>=41?6 : mt>=37?5 : mt>=34?4 : mt>=30?3 : mt>=25?2 : 1;
+  let sc = mt>=48?6 : mt>=40?5 : mt>=35?4 : mt>=30?3 : mt>=23?2 : 1;
   let note='';
   if(r.ex&&r.ex.time){                                   // 展示タイム（ライブ）を加味
     const ts=r.ex.time, valid=ts.filter(x=>x!=null&&x>0), cur=ts[w];
@@ -2784,7 +2786,7 @@ function motorBadge(r,w){
   const dots='●'.repeat(me.score)+'○'.repeat(6-me.score);
   return '<span class="motb" style="color:'+c+';border-color:'+c+'44" title="モーター評価 '+me.score+'/6（6が最高）'
     +'｜モーター2連率 '+me.mt.toFixed(0)+'%'+me.note
-    +' ｜ 番組表の2連率を主軸に、展示タイムがあれば加味（±1）。3連率は公式番組表に無いため不使用。">'
+    +' ｜ 全国分布の比率で6段階（6=上位約5%＝本当に優秀な機）。2連率を主軸に展示タイムがあれば±1補正。3連率は公式番組表に無いため不使用。">'
     +'<span class="motg">⚙</span>'+me.score+'<span class="motd">'+dots+'</span></span>';
 }
 // 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
@@ -3122,10 +3124,11 @@ function detailView(r){
     +'<span class="airk aiC">C</span><span class="airk aiD">D</span> '
     +'AI 3着以内ランク＝この枠で3着以内に来る可能性（枠別3連対率×級別×直近フォーム）の5段階評価</div>';
   misc+='<div style="font-size:11px;color:#7e8796;margin:2px 0 8px">'
-    +'<span class="motb" style="color:#43c59e;border-color:#43c59e44"><span class="motg">⚙</span>5</span> モーター評価（1〜6・6が最高）'
+    +'<span class="motb" style="color:#2fd79b;border-color:#2fd79b44"><span class="motg">⚙</span>6</span> モーター評価（1〜6・6が最高）'
     +'＝番組表の<b>モーター2連率</b>を主軸に、<b>展示タイム</b>があれば日次の機力として加味（±1）した総合評価。'
-    +'バンドは全国分布基準（2連率 41%↑=6／37↑=5／34↑=4／30↑=3／25↑=2／未満=1）。'
-    +'<br>※モーター3連率は公式番組表に印字が無いため不使用。展示タイムは発走直前に取得でき次第バッジへ反映。</div>';
+    +'バンドは<b>全国分布の比率</b>で区切り、<b>6＝上位約5%＝本当に成績優秀な機</b>（2連率 48%↑=6／40↑=5／35↑=4／30↑=3／23↑=2／未満=1）。'
+    +'実測では評価6の艇は2連対38.6%・3連対54.7%と最上位（モーター2連率は弱シグナルのため差は緩やか）。'
+    +'<br>※モーター3連率は公式番組表に印字が無いため不使用（取得元は公式サイトの出走表ページ）。展示タイムは発走直前に取得でき次第バッジへ反映。</div>';
   if(r.wx&&!r.ex){
     const tk=r.wx[0], wd=r.wx[1], wv=r.wx[2];
     if(tk||wd!=null||wv!=null){
