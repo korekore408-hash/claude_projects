@@ -2046,7 +2046,6 @@ HTML = r"""<!DOCTYPE html>
   .motb{display:inline-flex;align-items:center;gap:2px;font-size:11px;font-weight:800;line-height:17px;
         padding:0 5px;border-radius:4px;border:1px solid;background:#141a26;white-space:nowrap;vertical-align:middle}
   .motb .motg{font-size:10px;font-weight:400;opacity:.9}
-  .motb .motd{font-size:7px;letter-spacing:-0.5px;opacity:.85;margin-left:1px}
   .aiC{background:#3f4756;color:#dfe6ef}.aiD{background:#222934;color:#8a93a2}
   .barw{flex:1;height:15px;background:#1b212b;border-radius:4px;overflow:hidden}
   .bar{height:100%;border-radius:4px}
@@ -2783,11 +2782,10 @@ function motorBadge(r,w){
   const me=motorEval(r,w); if(!me)return '';
   const C={6:'#2fd79b',5:'#43c59e',4:'#5b9bd5',3:'#8a94a6',2:'#7e8796',1:'#9a6b6b'};
   const c=C[me.score];
-  const dots='●'.repeat(me.score)+'○'.repeat(6-me.score);
   return '<span class="motb" style="color:'+c+';border-color:'+c+'44" title="モーター評価 '+me.score+'/6（6が最高）'
     +'｜モーター2連率 '+me.mt.toFixed(0)+'%'+me.note
     +' ｜ 全国分布の比率で6段階（6=上位約5%＝本当に優秀な機）。2連率を主軸に展示タイムがあれば±1補正。3連率は公式番組表に無いため不使用。">'
-    +'<span class="motg">⚙</span>'+me.score+'<span class="motd">'+dots+'</span></span>';
+    +'<span class="motg">⚙</span>'+me.score+'</span>';
 }
 // 1日分の集計（的中率/投資/回収/回収率/F返還レース数）。買い目＝サイト本体と同一
 // （betScore＝展示反映後・確率連動点数・各¥2,000配分・穴帯3連単は見送り）。
