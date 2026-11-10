@@ -17,6 +17,10 @@ name: boatrace-odds
 on:
   schedule:
     - cron: '34 1 * * *'    # 01:34 UTC = 翌10:34 JST（前日は確定済み・朝のdailyも一巡後）
+    # 同日リトライ：GitHubのcronがドロップしても前日分オッズを取り逃さないための保険。
+    # 前日の確定オッズは一日中不変＝いつ取ってもよく、既に取得済みなら即スキップ（冪等）。
+    - cron: '22 5 * * *'    # 05:22 UTC = 14:22 JST（朝の取得が飛んだ場合の当日リトライ①）
+    - cron: '22 9 * * *'    # 09:22 UTC = 18:22 JST（当日リトライ②）
   workflow_dispatch:
     inputs:
       date:
