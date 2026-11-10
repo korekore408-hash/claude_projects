@@ -38,7 +38,7 @@ import re
 import requests
 
 ODDS_DIR = os.path.join("data", "odds")
-WAIT_SECONDS = 0.8            # 1リクエストごとの待ち（サーバー配慮）
+WAIT_SECONDS = 0.4            # 1リクエストごとの待ち（約2.5req/sでサーバー配慮しつつCI時間内に完走）
 HEADERS = {"User-Agent": "Mozilla/5.0 (boatrace-study-script)"}
 
 URL_3T = "https://www.boatrace.jp/owpc/pc/race/odds3t?rno={r}&jcd={jcd}&hd={hd}"
@@ -90,7 +90,7 @@ def fetch_trifecta(jcd: int, rno: int, hd: str):
     """3連単オッズ {(1,2,3): odds, ...}（最大120点）。取得不可なら空dict。"""
     url = URL_3T.format(r=rno, jcd=f"{jcd:02d}", hd=hd)
     try:
-        res = requests.get(url, headers=HEADERS, timeout=30)
+        res = requests.get(url, headers=HEADERS, timeout=12)
     except requests.RequestException:
         return {}
     if res.status_code != 200:
@@ -109,7 +109,7 @@ def fetch_exacta(jcd: int, rno: int, hd: str):
     """2連単オッズ {(1,2): odds, ...}（最大30点）。2tfページ先頭30セルのみ。"""
     url = URL_2T.format(r=rno, jcd=f"{jcd:02d}", hd=hd)
     try:
-        res = requests.get(url, headers=HEADERS, timeout=30)
+        res = requests.get(url, headers=HEADERS, timeout=12)
     except requests.RequestException:
         return {}
     if res.status_code != 200:

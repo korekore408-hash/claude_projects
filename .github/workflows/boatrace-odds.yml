@@ -34,7 +34,8 @@ permissions:
 jobs:
   odds:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75     # 全場×全R×2券種の取得は30分を超えることがあり、旧設定だと毎回
+                            # タイムアウト→キャンセル→未コミットでオッズが蓄積されなかった。完走余裕を確保。
     env:
       TZ: Asia/Tokyo
     steps:
