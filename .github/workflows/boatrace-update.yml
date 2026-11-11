@@ -1,28 +1,47 @@
 name: boatrace-update
 
-# 当日の展示・結果・鉄板EVを「窓取得」で自動収集し、today.html が読む update.json を更新する。
+# 当日の展示・結果・鉄板EVを「窓取得」で自動収集し、today.html が読む update.json(KV) を更新する。
 # 予想は朝の daily で確定済み・ここでは触らない（結果/的中/配当が時間とともに反映される）。
 #
-# ★高頻度化（速度A・KV配信）の設計:
-#   - 30分ごと（10:00〜21:30 JST）に `--window` で「発走7分前〜の展示／発走10分後〜の結果」だけを取得。
-#     取得済み・窓外・中止場はスキップ＝1回あたり数レースのみ＝軽量。
-#   - update.json は Cloudflare KV へ即時 PUT（ci_update.py / push_kv）。today.html は /api/update(KV) を
-#     最優先で読むので、git commit せず＝Cloudflare ビルド枠を一切消費せずに即時反映できる。
-#   - 「取得済み」キャッシュ data/before/before_YYYYMMDD.json は git commit せず actions/cache で持ち回す。
+# ★なぜ「全日ループ」方式か（16時で更新が止まる問題の恒久対策）:
+#   旧設計は `*/30 1-12`（10:00〜21:30 JST を30分毎）だったが、GitHub の schedule は
+#   高頻度 cron ほど強く間引かれ、実測では 1日1〜2回（しかも 15:44〜16:56 JST 帯に集中）しか
+#   発火していなかった。その「1回」が16時前までの展示を取り込んだ後は二度と走らず、
+#   夕方以降（ナイター等）のレースが永久に更新されない＝「16時で止まる」の原因だった。
+#   対策: 1回の発火で終わらず、起動したジョブが「発走帯(09:40〜21:40 JST)の間 25分おきに
+#   窓取得を繰り返す」ロングラン・ループにする。発火が1日数回でも、各発火が最大5.8時間
+#   走り続け、concurrency(直列)の pending 引き継ぎで途切れずにその日を覆う。
+#   ※本リポジトリは public＝Actions 実行時間は無料・無制限なので長時間ジョブが可能。
 #
-# ★自己安全（Secret 未設定でも壊れない）:
-#   - KV 用 Secret（CF_ACCOUNT_ID / CF_KV_NAMESPACE_ID / CF_API_TOKEN）が未設定なら push_kv は no-op。
-#   - その場合 schedule は commit しない＝高頻度でもビルド枠を溶かさない（更新は KV 設定後に有効化）。
-#   - 手動「更新」ボタン（workflow_dispatch）だけは KV 失敗時に commit フォールバックして従来どおり動く。
+# ★起動トリガ（どれか1つでも発火すれば当日を覆える冗長構成）:
+#   - workflow_run(boatrace-daily 完了): 朝 daily は毎朝確実に走る＝最も信頼できる朝の種火。
+#   - schedule 複数本: 日中〜夜に分散配置。多くは間引かれるが帯ごとに1本でも発火すれば十分。
+#   - workflow_dispatch(手動「更新」ボタン): こちらは即時1回だけ取得（ループしない）。
+#
+# ★KV 即時配信（ビルド枠を消費しない）:
+#   ci_update.py が update.json を Cloudflare KV へ PUT。today.html は /api/update(KV) を
+#   最優先で読むので git commit 不要＝25分毎でも Cloudflare ビルド枠を一切消費しない。
+#   KV 用 Secret(CF_ACCOUNT_ID/CF_KV_NAMESPACE_ID/CF_API_TOKEN) 未設定なら push は no-op。
+#   手動ボタン時のみ KV 失敗で commit フォールバック（従来どおり）。
 #
 # GitHub cron は UTC（00:00 UTC = 09:00 JST）。
 on:
   schedule:
-    - cron: '*/30 1-12 * * *'   # 01:00〜12:30 UTC = 10:00〜21:30 JST を 30分ごと（race帯のみ）
+    - cron: '17 0 * * *'    # 00:17 UTC = 09:17 JST（発走前の種火①）
+    - cron: '17 2 * * *'    # 02:17 UTC = 11:17 JST（日中の種火②）
+    - cron: '17 4 * * *'    # 04:17 UTC = 13:17 JST（日中の種火③）
+    - cron: '47 6 * * *'    # 06:47 UTC = 15:47 JST（夕方の種火④・実測で最も確実に発火する帯）
+    - cron: '17 9 * * *'    # 09:17 UTC = 18:17 JST（夜/ナイターの種火⑤）
+  workflow_run:
+    workflows: ["boatrace-daily"]
+    types: [completed]       # 朝 daily 完了ごとに起動＝朝の確実な種火
   workflow_dispatch:
 
+# 自動起動(schedule/workflow_run)は同一グループで直列化し、ロングランの合間を
+# pending 引き継ぎで途切れなく覆う。手動ボタン(workflow_dispatch)は run_id 固有グループで
+# 即時・並行に1回だけ走らせる（ループ中でも待たされない）。
 concurrency:
-  group: boatrace-update     # 更新ジョブ同士の多重実行は直列化
+  group: ${{ github.event_name == 'workflow_dispatch' && github.run_id || 'boatrace-update-loop' }}
   cancel-in-progress: false
 
 permissions:
@@ -31,7 +50,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 350     # GitHub ホストの上限6時間未満。1発火でこの時間ループし続ける。
     env:
       TZ: Asia/Tokyo
     steps:
@@ -78,8 +97,7 @@ jobs:
           fi
 
       # 「取得済み」キャッシュ（data/before/before_YYYYMMDD.json）を当日内で持ち回す。
-      # これにより窓取得は「前回以降に窓入りした数レース」だけを取得＝軽量・低分課金。
-      # mutable: key は run ごとに一意・restore は当日プレフィックスで直近を取り出す。
+      # これにより窓取得は「前回以降に窓入りした数レース」だけを取得＝軽量・低負荷。
       - name: restore before-cache (intraday)
         if: steps.guard.outputs.ok == '1'
         uses: actions/cache/restore@v4
@@ -89,25 +107,46 @@ jobs:
           restore-keys: |
             boatrace-before-${{ steps.day.outputs.d }}-
 
-      - name: collect exhibition / results / EV (window)
-        id: collect
-        if: steps.guard.outputs.ok == '1'
+      # ── 手動「更新」ボタン: 即時1回だけ取得（ループしない。従来どおりの挙動） ──
+      - name: one-shot update (manual button)
+        id: oneshot
+        if: steps.guard.outputs.ok == '1' && github.event_name == 'workflow_dispatch'
         working-directory: boatrace
         env:
-          # 速度A: 3つ揃えば ci_update.py が update.json を KV へ即時書き込み（リビルド不要）。
-          # 未設定なら push_kv は no-op（kv_ok=0）＝従来 commit にフォールバックする（縮退安全）。
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: python ci_update.py --window --retries 2
+
+      # ── 自動起動: 発走帯(09:40〜21:40 JST)の間、25分おきに窓取得を繰り返す ──
+      # KV へ即時配信。窓外/取得済み/中止場はスキップ＝1回あたり数レースのみ＝軽量。
+      # ci_update が失敗しても break せず次の周回で自己回復（25分間隔が過剰アクセスを防ぐ）。
+      # timeout(350分)で切れても、concurrency の pending(別の種火)が引き継いで続きを覆う。
+      - name: intraday loop (automated seeds)
+        if: steps.guard.outputs.ok == '1' && github.event_name != 'workflow_dispatch'
+        working-directory: boatrace
+        env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
-          # schedule(30分毎)=窓取得・再取得なし（次の30分で拾う）。dispatch(更新ボタン)=窓取得＋2分後再取得。
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python ci_update.py --window --retries 2
-          else
-            python ci_update.py --window
-          fi
+          echo "loop start $(date '+%F %T %Z')  (event=${{ github.event_name }})"
+          while :; do
+            now=$((10#$(date +%H%M)))      # 10#= 先頭0を10進として解釈（0940→940）
+            if [ "$now" -ge 940 ] && [ "$now" -le 2140 ]; then
+              python ci_update.py --window || echo "ci_update failed — continue next cycle"
+            else
+              echo "$(date +%H:%M) 発走帯外 — idle"
+            fi
+            now=$((10#$(date +%H%M)))
+            if [ "$now" -ge 2140 ]; then
+              echo "race day end ($(date +%H:%M)) — loop exit"
+              break
+            fi
+            sleep 1500                      # 25分
+          done
 
-      # 「取得済み」キャッシュを保存（次の30分 run が流用）。
+      # 「取得済み」キャッシュを保存（同じ当日プレフィックスで次の種火/周回が流用）。
       - name: save before-cache (intraday)
         if: steps.guard.outputs.ok == '1' && always()
         uses: actions/cache/save@v4
@@ -115,12 +154,10 @@ jobs:
           path: boatrace/data/before
           key: boatrace-before-${{ steps.day.outputs.d }}-${{ github.run_id }}
 
-      # commit（=Cloudflareリビルド・ビルド枠消費）の要否:
-      #  ・KV 書込み成功時は commit しない＝リビルド0・即時（KV が live ソース）。
-      #  ・schedule で KV 未設定/失敗時は commit しない＝高頻度でもビルド枠を溶かさない（更新は KV 設定後に有効化）。
-      #  ・手動「更新」ボタン(workflow_dispatch)で KV 未設定/失敗時のみ commit フォールバック（従来どおり動く）。
-      - name: commit & push update.json (fallback only)
-        if: steps.collect.outputs.kv_ok != '1' && github.event_name == 'workflow_dispatch'
+      # commit フォールバック（手動ボタンで KV 未設定/失敗時のみ・従来どおり動く）。
+      # 自動ループは KV 配信のみ＝25分毎に commit せず Cloudflare リビルドを起こさない。
+      - name: commit & push update.json (manual fallback only)
+        if: steps.oneshot.outputs.kv_ok != '1' && github.event_name == 'workflow_dispatch'
         run: |
           git config user.name  "boatrace-bot"
           git config user.email "actions@users.noreply.github.com"
