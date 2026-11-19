@@ -38,23 +38,12 @@ permissions:
 jobs:
   odds:
     runs-on: ubuntu-latest
-    timeout-minutes: 75     # 全場×全R×2券種の取得は30分を超えることがあり、旧設定だと毎回
-                            # タイムアウト→キャンセル→未コミットでオッズが蓄積されなかった。完走余裕を確保。
+    timeout-minutes: 170    # 全場×全R×2券種の取得は約47分。欠落日のバックフィル(最大3日)を
+                            # 1回で取り直せるよう余裕を確保（3日×約47分＜170分、上限6時間未満）。
     env:
       TZ: Asia/Tokyo
     steps:
       - uses: actions/checkout@v4
-
-      - name: compute target day (JST)
-        id: day
-        run: |
-          if [ -n "${{ github.event.inputs.date }}" ]; then
-            D1="${{ github.event.inputs.date }}"
-          else
-            D1="$(date -d 'yesterday' +%Y-%m-%d)"
-          fi
-          echo "iso=$D1" >> "$GITHUB_OUTPUT"
-          echo "ymd=$(date -d "$D1" +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         with:
@@ -63,14 +52,44 @@ jobs:
       - name: install deps
         run: pip install requests
 
-      - name: fetch previous-day final odds
+      # 前日分を取得。加えて直近3日の「未取得/空」の日も取り直す＝欠落の自己修復。
+      # ★なぜ空ファイルを残さないか（11-18/11-19 欠落の原因対策）:
+      #   GitHub の cron ドリフトで収集が 03時台 JST（公式サイトの夜間メンテ帯）に発火すると
+      #   全場が空レスポンス＝0件を数十秒で返す。旧実装はこの0件(ヘッダのみ)CSVを commit し、
+      #   次段の skip 判定 `[ -f "$f" ]` がそれを「取得済み」とみなして以降の再取得を全て
+      #   スキップ→その日が永久欠落していた。対策は2点:
+      #     (1) 0件なら空ファイルを残さない（commit させない）。
+      #     (2) skip 判定を「ファイル存在」→「データ行が1行以上」に変更（空は取り直す）。
+      #   これで good-hour の後続 run / 翌日のバックフィルが自動で埋め直す（確定オッズは不変）。
+      - name: fetch odds (+backfill recent empty/missing days)
         working-directory: boatrace
         run: |
-          f="data/odds/odds_${{ steps.day.outputs.ymd }}.csv"
-          if [ -f "$f" ]; then
-            echo "already logged: $f（スキップ）"; exit 0
+          nonempty() { [ -f "$1" ] && [ "$(wc -l < "$1")" -gt 1 ]; }
+          fetch_day() {
+            local D="$1" ymd f
+            ymd="$(date -d "$D" +%Y%m%d)"
+            f="data/odds/odds_${ymd}.csv"
+            if nonempty "$f"; then
+              echo "already logged: $f ($(($(wc -l < "$f")-1)) rows) — skip"; return 0
+            fi
+            echo "== fetching odds for $D =="
+            python fetch_odds.py --date "$D" || echo "fetch_odds error for $D (continue)"
+            if nonempty "$f"; then
+              echo "  -> $(($(wc -l < "$f")-1)) rows saved"
+            else
+              echo "  -> 0 rows (公式サイト夜間メンテ/未掲載の可能性) — 空ファイルは残さず削除"
+              rm -f "$f"
+            fi
+          }
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            # 手動指定: その日だけ強制取得（既存が空でも実データでも取り直す）
+            D="${{ github.event.inputs.date }}"
+            rm -f "data/odds/odds_$(date -d "$D" +%Y%m%d).csv"
+            fetch_day "$D"
+          else
+            # 自動: 前日・前々日・3日前を点検し、未取得/空の日だけ取得
+            for n in 1 2 3; do fetch_day "$(date -d "$n days ago" +%Y-%m-%d)"; done
           fi
-          python fetch_odds.py --date "${{ steps.day.outputs.iso }}"
 
       - name: commit & push odds log
         run: |
@@ -80,7 +99,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "no changes"; exit 0
           fi
-          git commit -m "chore(boatrace): odds log ${{ steps.day.outputs.iso }}"
+          git commit -m "chore(boatrace): odds log $(date +%Y-%m-%d)"
           for i in 1 2 3 4 5; do
             git pull --rebase --autostash origin master && git push origin master && exit 0
             echo "push race, retry $i"; sleep 5
