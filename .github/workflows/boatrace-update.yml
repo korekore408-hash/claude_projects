@@ -9,14 +9,16 @@ name: boatrace-update
 #   発火していなかった。その「1回」が16時前までの展示を取り込んだ後は二度と走らず、
 #   夕方以降（ナイター等）のレースが永久に更新されない＝「16時で止まる」の原因だった。
 #   対策: 1回の発火で終わらず、起動したジョブが「発走帯(09:40〜21:40 JST)の間 25分おきに
-#   窓取得を繰り返す」ロングラン・ループにする。発火が1日数回でも、各発火が最大5.8時間
-#   走り続け、concurrency(直列)の pending 引き継ぎで途切れずにその日を覆う。
-#   ※本リポジトリは public＝Actions 実行時間は無料・無制限なので長時間ジョブが可能。
+#   窓取得を繰り返す」ループにする（1発火=最大約2.6時間）。cron を約2時間おきに並べ、
+#   concurrency(直列)の pending 引き継ぎで途切れずその日を覆う。
+#   ※本リポジトリは public＝Actions 実行時間は無料・無制限なので長めのジョブが可能。
 #
 # ★起動トリガ（どれか1つでも発火すれば当日を覆える冗長構成）:
-#   - workflow_run(boatrace-daily 完了): 朝 daily は毎朝確実に走る＝最も信頼できる朝の種火。
-#   - schedule 複数本: 日中〜夜に分散配置。多くは間引かれるが帯ごとに1本でも発火すれば十分。
-#   - workflow_dispatch(手動「更新」ボタン): こちらは即時1回だけ取得（ループしない）。
+#   - schedule 複数本: 発走帯に約2時間おきに配置。多くは間引かれるが帯ごとに1本でも発火すれば十分。
+#   - workflow_dispatch(手動「更新」ボタン): 即時1回だけ取得（ループしない）。
+#   ※旧版は workflow_run(daily 完了ごと) も種火にしていたが、daily は朝に4〜8回 commit するため
+#     起動が多重化し、350分ループ×cancel-in-progress:false で大量 cancelled を招いた（累計871実行）。
+#     そのため workflow_run を外し、ループ時間も短縮した。
 #
 # ★KV 即時配信（ビルド枠を消費しない）:
 #   ci_update.py が update.json を Cloudflare KV へ PUT。today.html は /api/update(KV) を
@@ -32,14 +34,12 @@ on:
     - cron: '17 4 * * *'    # 04:17 UTC = 13:17 JST（日中の種火③）
     - cron: '47 6 * * *'    # 06:47 UTC = 15:47 JST（夕方の種火④・実測で最も確実に発火する帯）
     - cron: '17 9 * * *'    # 09:17 UTC = 18:17 JST（夜/ナイターの種火⑤）
-  workflow_run:
-    workflows: ["boatrace-daily"]
-    types: [completed]       # 朝 daily 完了ごとに起動＝朝の確実な種火
+    - cron: '2 11 * * *'    # 11:02 UTC = 20:02 JST（夜/ナイター終盤の種火⑥）
   workflow_dispatch:
 
-# 自動起動(schedule/workflow_run)は同一グループで直列化し、ロングランの合間を
-# pending 引き継ぎで途切れなく覆う。手動ボタン(workflow_dispatch)は run_id 固有グループで
-# 即時・並行に1回だけ走らせる（ループ中でも待たされない）。
+# 自動起動(schedule)は同一グループで直列化し、ループの合間を pending 引き継ぎで
+# 途切れなく覆う。手動ボタン(workflow_dispatch)は run_id 固有グループで即時・並行に
+# 1回だけ走らせる（ループ中でも待たされない）。
 concurrency:
   group: ${{ github.event_name == 'workflow_dispatch' && github.run_id || 'boatrace-update-loop' }}
   cancel-in-progress: false
@@ -50,7 +50,9 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 350     # GitHub ホストの上限6時間未満。1発火でこの時間ループし続ける。
+    timeout-minutes: 160     # 1発火で最大約2.6時間ループ。cronを2時間おきに並べ、concurrencyの
+                             # pending引き継ぎで日中を覆う。旧350分＋workflow_run毎回起動は多重起動の
+                             # 暴走(大量cancelled)を招いたため短縮＋トリガ削減した。
     env:
       TZ: Asia/Tokyo
     steps:
@@ -121,7 +123,8 @@ jobs:
       # ── 自動起動: 発走帯(09:40〜21:40 JST)の間、25分おきに窓取得を繰り返す ──
       # KV へ即時配信。窓外/取得済み/中止場はスキップ＝1回あたり数レースのみ＝軽量。
       # ci_update が失敗しても break せず次の周回で自己回復（25分間隔が過剰アクセスを防ぐ）。
-      # timeout(350分)で切れても、concurrency の pending(別の種火)が引き継いで続きを覆う。
+      # 経過150分(timeout 160分の手前)で自主終了＝killされず綺麗に完了。その後は
+      # concurrency の pending(次の cron 種火)が引き継いで続きを覆う。
       - name: intraday loop (automated seeds)
         if: steps.guard.outputs.ok == '1' && github.event_name != 'workflow_dispatch'
         working-directory: boatrace
@@ -131,6 +134,7 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
           echo "loop start $(date '+%F %T %Z')  (event=${{ github.event_name }})"
+          START=$(date +%s)
           while :; do
             now=$((10#$(date +%H%M)))      # 10#= 先頭0を10進として解釈（0940→940）
             if [ "$now" -ge 940 ] && [ "$now" -le 2140 ]; then
@@ -140,8 +144,10 @@ jobs:
             fi
             now=$((10#$(date +%H%M)))
             if [ "$now" -ge 2140 ]; then
-              echo "race day end ($(date +%H:%M)) — loop exit"
-              break
+              echo "race day end ($(date +%H:%M)) — loop exit"; break
+            fi
+            if [ $(( $(date +%s) - START )) -ge 9000 ]; then   # 150分
+              echo "150min elapsed — graceful exit (次の cron 種火が引き継ぐ)"; break
             fi
             sleep 1500                      # 25分
           done
