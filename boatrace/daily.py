@@ -129,6 +129,14 @@ def main():
          "--end", today.isoformat(), "--which", "both"])
     # 2. 変換（未変換のみ）
     run(["convert_all.py"])
+    # 2a. B-fileフォールバック: 公式B-file(出走表LZH)が取れず data/b{当日}.csv が未生成の日、
+    #     非公式OpenAPIから同形式CSVを生成して欠落を埋める（本物が有れば温存＝冪等）。
+    #     これが無いと、公式B-file欠落日は当日ラインナップが作れず today.html の基準日が
+    #     「最後にB-fileが取れた日」で凍結する（＝日付がずれる不具合の恒久対策）。
+    #     OpenAPI today.json は「当日」専用なので、対象日がシステム日付と一致する時だけ実行。
+    if today == datetime.date.today():
+        run_optional(["fetch_openapi.py", "--bfile-fallback",
+                      "--date", today.strftime("%Y%m%d")])
     # 2b. 非公式OpenAPIと公式B-fileの (艇番→登番) クロスチェックを毎日ログ化
     #     （data/openapi_crosscheck_log.csv に追記）。フォールバック本組込の前提条件＝
     #     n_diff=0 が数日続くのを自動で蓄積するための観測。OpenAPI today.json は「当日」専用

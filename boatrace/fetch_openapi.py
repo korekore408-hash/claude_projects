@@ -154,6 +154,107 @@ def fetch_flying(date_str=None):
     return out
 
 
+# ============================================================
+# B-file フォールバック: 公式 B-file(出走表) が取得できない日、OpenAPI フィードから
+# fetch_range.py が保存するのと同形式の「番組表CSV行」を生成する。
+#   クロスチェック(data/openapi_crosscheck_log.csv)で (艇番→登番) が B-file と n_diff=0
+#   で一致し続けているため、B-file 欠落時の代替入力として妥当。OpenAPI は「当日」専用
+#   フィードなので、対象日が当日のときのみ有効（過去日は空）。
+#   欠損フィールドは "" にする（下流の to_float は "" を None 扱いで縮退安全）。
+# ============================================================
+
+# 場コード(int) → 会場名。features_* は 会場名→コード で突合するため名称で出力する。
+_CODE_TO_VENUE = {
+    1: "桐生", 2: "戸田", 3: "江戸川", 4: "平和島", 5: "多摩川", 6: "浜名湖",
+    7: "蒲郡", 8: "常滑", 9: "津", 10: "三国", 11: "びわこ", 12: "住之江",
+    13: "尼崎", 14: "鳴門", 15: "丸亀", 16: "児島", 17: "宮島", 18: "徳山",
+    19: "下関", 20: "若松", 21: "芦屋", 22: "福岡", 23: "唐津", 24: "大村",
+}
+# OpenAPI racer_class_number(1..4) → 公式級別ラベル（B-file 級別 と同形式）。
+_CLASS_NUM_TO_LABEL = {1: "A1", 2: "A2", 3: "B1", 4: "B2"}
+
+
+# data/b{yymmdd}.csv の正式な列（to_csv.convert_program 出力・cp932・18列）。
+# ★日付列は無い（features_player_history はファイル名YYMMDDから日付を導く）。
+BFILE_COLUMNS = [
+    "会場", "レース", "艇番", "登番", "選手名", "年齢", "支部", "体重", "級別",
+    "全国勝率", "全国2率", "当地勝率", "当地2率", "モーター番号", "モーター2率",
+    "ボート番号", "ボート2率", "今節成績ほか",
+]
+
+
+def program_rows_for_bfile(date_str):
+    """OpenAPI フィードから B-file 番組表CSV(data/b*.csv)と同じ列の行リストを返す
+    （失敗/非当日は []）。列は BFILE_COLUMNS（18列・日付列なし）。
+    下流が使う列を優先し、未提供列は ""（to_float は "" を None 扱いで縮退安全）。"""
+    def g(d, *keys):
+        """最初に見つかった非None値を返す（フィールド名ゆらぎ対策）。無ければ ""。"""
+        for k in keys:
+            v = d.get(k)
+            if v is not None:
+                return v
+        return ""
+
+    rows = []
+    for p in _raw(date_str):
+        try:
+            code = int(p["race_stadium_number"])
+            race_no = int(p["race_number"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        venue = _CODE_TO_VENUE.get(code, "")
+        for b in p.get("boats", []):
+            cls = _CLASS_NUM_TO_LABEL.get(b.get("racer_class_number"), "")
+            reg = b.get("racer_number")
+            rows.append({
+                "会場": venue, "レース": race_no,
+                "艇番": g(b, "racer_boat_number"),
+                "登番": (str(reg) if reg is not None else ""),
+                "選手名": g(b, "racer_name"),
+                "年齢": g(b, "racer_age"),
+                "支部": "",
+                "体重": g(b, "racer_weight"),
+                "級別": cls,
+                "全国勝率": g(b, "racer_national_top_1_percent"),
+                "全国2率": g(b, "racer_national_top_2_percent"),
+                "当地勝率": g(b, "racer_local_top_1_percent"),
+                "当地2率": g(b, "racer_local_top_2_percent"),
+                "モーター番号": g(b, "racer_assigned_motor_number"),
+                "モーター2率": g(b, "racer_assigned_motor_top_2_percent",
+                                 "racer_motor_top_2_percent"),
+                "ボート番号": g(b, "racer_assigned_boat_number", "racer_boat_number_assigned"),
+                "ボート2率": g(b, "racer_assigned_boat_top_2_percent",
+                               "racer_boat_top_2_percent"),
+                "今節成績ほか": "",
+            })
+    return rows
+
+
+def write_bfile_fallback(date_str, force=False):
+    """公式B-fileが無い日、OpenAPIから data/b{yymmdd}.csv を生成する（cp932・18列）。
+    既に非空の data/b{yymmdd}.csv があれば生成しない（本物のB-fileを優先）＝冪等。
+    戻り値: 書き出した行数（スキップ/失敗時 0）。daily.py から当日分だけ呼ぶ想定。"""
+    import csv
+    import os
+    yymmdd = date_str[2:4] + date_str[4:6] + date_str[6:8]
+    path = f"data/b{yymmdd}.csv"
+    if not force and os.path.exists(path) and os.path.getsize(path) > 0:
+        print(f"  [bfile-fallback] {path} 既存（本物B-file優先）— スキップ")
+        return 0
+    rows = program_rows_for_bfile(date_str)
+    if not rows:
+        print(f"  [bfile-fallback] OpenAPI 0件（当日データ無し/通信失敗）— 生成せず")
+        return 0
+    os.makedirs("data", exist_ok=True)
+    # cp932 に無い文字（稀な人名漢字等）は "?" に置換して落とさない（errors="replace"）。
+    with open(path, "w", encoding="cp932", newline="", errors="replace") as f:
+        w = csv.DictWriter(f, fieldnames=BFILE_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"  [bfile-fallback] {path} を OpenAPI から生成: {len(rows)}行")
+    return len(rows)
+
+
 # ---- クロスチェック（CLI）: OpenAPI 由来 vs B-file 由来の (艇番→登番) 一致確認 ----
 def _bfile_entry(date_str):
     """data/b{yymmdd}.txt（fetch_range が保存）を parse して {race_id: {艇番: 登番}}。"""
@@ -261,6 +362,10 @@ if __name__ == "__main__":
     ap.add_argument("--times", action="store_true", help="race_id と発走時刻を一覧表示")
     ap.add_argument("--log", action="store_true",
                     help="crosscheck 結果を data/openapi_crosscheck_log.csv に追記")
+    ap.add_argument("--bfile-fallback", action="store_true",
+                    help="公式B-fileが無い日、OpenAPIから data/b{yymmdd}.csv を生成（既存は温存）")
+    ap.add_argument("--force", action="store_true",
+                    help="--bfile-fallback 時、既存CSVがあっても上書きする")
     args = ap.parse_args()
     d = args.date.replace("-", "")
 
@@ -269,6 +374,8 @@ if __name__ == "__main__":
         print(f"date={d}  発走時刻 {len(ts)}レース")
         for rid in sorted(ts):
             print(f"  {rid}: {ts[rid]}")
+    elif getattr(args, "bfile_fallback", False):
+        write_bfile_fallback(d, force=args.force)
     elif args.log:
         log_crosscheck(d)
     else:
