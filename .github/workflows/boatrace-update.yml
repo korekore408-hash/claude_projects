@@ -70,15 +70,18 @@ jobs:
         continue-on-error: true
         run: |
           ymd=$(date +%Y%m%d); ym=$(date +%Y%m); d6=$(date +%y%m%d)
+          # $2=ダンプするバイト数（既定180）。OpenAPIは先頭レースの完全スキーマを見たいので大きめ。
           probe(){ echo "--- $1"; curl -sS -m 20 -A 'Mozilla/5.0' -o /tmp/p.out \
             -w 'http=%{http_code} size=%{size_download}\n' "$1" || echo "curl-failed"; \
-            head -c 180 /tmp/p.out | tr '\n\r\t' '   '; echo; }
+            head -c "${2:-180}" /tmp/p.out | tr '\n\r\t' '   '; echo; }
           echo "== source health probe $(date '+%F %T %Z') =="
           probe "https://www.boatrace.jp/owpc/pc/race/raceresult?rno=1&jcd=01&hd=${ymd}"
           probe "http://www1.mbrace.or.jp/od2/K/${ym}/k${d6}.lzh"
-          probe "https://boatraceopenapi.github.io/results/v2/today.json"
-          probe "https://boatraceopenapi.github.io/previews/v2/today.json"
-          probe "https://boatraceopenapi.github.io/programs/v2/today.json"
+          # od2は当日Kが未発行のため過去日(前日)でも確認＝アーカイブ自体の生死判定
+          probe "http://www1.mbrace.or.jp/od2/K/${ym}/k$(date -d yesterday +%y%m%d 2>/dev/null || date +%y%m%d).lzh"
+          probe "https://boatraceopenapi.github.io/results/v2/today.json" 4000
+          probe "https://boatraceopenapi.github.io/previews/v2/today.json" 4000
+          probe "https://boatraceopenapi.github.io/programs/v2/today.json" 1200
 
       - uses: actions/setup-python@v5
         with:
