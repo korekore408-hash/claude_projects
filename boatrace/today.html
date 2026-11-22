@@ -1989,6 +1989,55 @@ function refreshPreviews(){
   return fetchPreviews().then(pj=>{const n=applyPreviews(pj); if(n)render(); return n;}).catch(()=>0);
 }
 
+// ── 結果(着順・配当・決まり手)を results フィードからクライアント直読み ──
+// 公式(boatrace.jp/od2)が仕様変更で結果を返さなくなっても、当日の着順・配当を復活させる
+// 恒久フォールバック。previews(展示)と同じ流儀でクライアント直読み＝CI/KV/公式に非依存。
+// update.json(公式/KV)で既に結果があるレースには触れない＝本物優先。CORS 許可済み。
+const RESULTS_URL='https://boatraceopenapi.github.io/results/v2/today.json';
+const KIMARITE=[null,'逃げ','差し','まくり','まくり差し','抜き','恵まれ'];   // race_technique_number 1..6
+function fetchResults(){
+  return fetch(RESULTS_URL,{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();});
+}
+// results の1レース → {fin:[枠1..6の着],order,km,po2,po3,po2f,fly}（applyUpd と同じ形）。1着未確定なら null。
+function rsToResult(rs){
+  const bo=Array.isArray(rs.boats)?rs.boats:(rs.boats?Object.values(rs.boats):[]);
+  const fin=[null,null,null,null,null,null]; const fly=[]; let has1=false;
+  bo.forEach(b=>{ if(!b)return;
+    const w=+(b.racer_boat_number); if(!(w>=1&&w<=6))return;
+    const pl=b.racer_place_number;
+    if(pl!=null&&pl>=1&&pl<=6){ fin[w-1]=pl; if(pl===1)has1=true; }    // 7以上(失格/欠場)は非完走=null
+    if(b.racer_start_timing!=null&&b.racer_start_timing<0)fly.push(w);  // ST負値=フライング(表示用)
+  });
+  if(!has1)return null;                                               // 1着が無い=未確定/中止
+  const order=[]; for(let w=1;w<=6;w++)if(fin[w-1])order.push(w);
+  order.sort((a,b)=>fin[a-1]-fin[b-1]);
+  const pay=rs.payouts||{};
+  const first=a=>(Array.isArray(a)&&a.length&&a[0]&&a[0].payout!=null)?a[0].payout:null;
+  return {fin:fin,order:order,km:KIMARITE[rs.race_technique_number]||'',
+          po2:first(pay.exacta),po3:first(pay.trifecta),po2f:first(pay.quinella),
+          fly:fly.length?fly:null};
+}
+// results を当日(base)レースへ反映。既に結果のあるレース(公式/update.json)は触れない＝本物優先。
+// 戻り値＝新たに結果が入ったレース数。
+function applyResults(rj){
+  const arr=(rj&&rj.results)||[]; if(!arr.length)return 0;
+  const byId={};
+  arr.forEach(rs=>{byId[pad2(rs.race_stadium_number)+String(rs.race_date).replace(/-/g,'')+pad2(rs.race_number)]=rs;});
+  let n=0;
+  D.races.forEach(r=>{
+    if(r.d!==D.base)return;                                           // 反映は当日のみ
+    if(hasResult(r))return;                                           // 既に結果あり＝本物優先
+    const rs=byId[r.id]; if(!rs)return;
+    const R=rsToResult(rs); if(!R)return;                             // 未確定/中止は触れない
+    for(let w=1;w<=6;w++)r.b[w-1][2]=R.fin[w-1];
+    if(R.fly)r.f=R.fly;
+    if(R.km)r.km=R.km;
+    if(R.po2!=null||R.po3!=null||R.po2f!=null)r.po=[R.po2,R.po3,R.po2f];
+    n++;
+  });
+  return n;
+}
+
 // ── 締切時刻(発走予定)を programs フィードからクライアント直読み ──
 // 公式LZHに時刻が無く、ビルド時のフィードは早朝〜午前まだ当日分を配信しないことがある
 // （その日は today.html の tm が空→リアルタブ/発走時刻表示が丸ごと消える）。そこで
@@ -2156,13 +2205,14 @@ function rerenderKeepScroll(){
 function autoRefresh(){
   if(upBusy)return;                       // 手動更新中は触らない
   const before=exSig(), beforeO=oddsSig();
-  Promise.allSettled([upJSON(),fetchPreviews(),fetchPrograms()]).then(res=>{
-    const u=res[0], p=res[1], pr=res[2]; let changed=false;
+  Promise.allSettled([upJSON(),fetchPreviews(),fetchPrograms(),fetchResults()]).then(res=>{
+    const u=res[0], p=res[1], pr=res[2], rr=res[3]; let changed=false;
     if(u.status==='fulfilled'&&u.value&&u.value.fetched_at&&u.value.fetched_at!==upFetched){
       applyUpd(u.value); upFetched=u.value.fetched_at; changed=true;   // 結果/EVが更新された
     }
     if(p.status==='fulfilled'&&p.value){ applyPreviews(p.value); }     // 展示は previews で上書き
     if(pr.status==='fulfilled'&&pr.value){ if(applyPrograms(pr.value))changed=true; }   // 締切時刻が埋まった＝リアル復活
+    if(rr.status==='fulfilled'&&rr.value){ if(applyResults(rr.value))changed=true; }    // 公式が空でも OpenAPI 結果で着順・配当を補完
     return Promise.all([tenjiSweep(),resultSweep(),oddsSweep()]).then(sw=>{  // 締切前=展示・オッズ／締切後=結果を公式直取り
       if(exSig()!==before)changed=true;                                // 展示が変わった
       if(sw[1])changed=true;                                           // 結果が確定した
@@ -2275,14 +2325,16 @@ if(location.protocol==='file:'){
   //  ・update.json(/api/update) ＝ 結果・EV・展示（自前30分バッチ）
   //  ・previews フィード（案A） ＝ 展示のみだが鮮度が高い。展示は previews を優先して上書き。
   // どちらも無ければ静かに無視（従来どおり手動更新で取得）。
-  Promise.allSettled([upJSON(),fetchPreviews(),fetchPrograms()]).then(res=>{
-    const u=res[0], p=res[1], pr=res[2]; let n={nres:0,nex:0,nev:0}, npv=0, fa='';
+  Promise.allSettled([upJSON(),fetchPreviews(),fetchPrograms(),fetchResults()]).then(res=>{
+    const u=res[0], p=res[1], pr=res[2], rr=res[3]; let n={nres:0,nex:0,nev:0}, npv=0, nrs=0, fa='';
     if(u.status==='fulfilled'&&u.value){ n=applyUpd(u.value); fa=u.value.fetched_at||''; upFetched=fa; }
     if(p.status==='fulfilled'&&p.value){ npv=applyPreviews(p.value); }   // 展示は previews で上書き（新鮮）
     if(pr.status==='fulfilled'&&pr.value){ applyPrograms(pr.value); }    // 締切時刻が空なら programs で補完（リアル復活）
+    if(rr.status==='fulfilled'&&rr.value){ nrs=applyResults(rr.value); } // 公式が空でも OpenAPI 結果で着順・配当を補完
     const nexFinal=D.races.filter(r=>r.d===D.base&&r.ex).length;
-    upMsg='自動更新 '+(fa||'')+' ／ 結果 '+n.nres+'・展示 '+nexFinal+(n.nev?'・EV '+n.nev:'')+' レース反映'
-      +(npv?' ・展示は最新フィード('+npv+'R)':'');
+    const nresFinal=n.nres+nrs;
+    upMsg='自動更新 '+(fa||'')+' ／ 結果 '+nresFinal+'・展示 '+nexFinal+(n.nev?'・EV '+n.nev:'')+' レース反映'
+      +(npv?' ・展示は最新フィード('+npv+'R)':'')+(nrs?' ・結果はOpenAPI('+nrs+'R)':'');
     render();
     Promise.all([tenjiSweep(),resultSweep(),oddsSweep()]).then(sw=>{ if(sw[0]||sw[1]||sw[2])rerenderKeepScroll(); });   // 締切前=展示・オッズ／締切後=結果を公式直取りで即最新化
   }).catch(()=>{});
