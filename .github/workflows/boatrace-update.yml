@@ -8,7 +8,7 @@ name: boatrace-update
 #   高頻度 cron ほど強く間引かれ、実測では 1日1〜2回（しかも 15:44〜16:56 JST 帯に集中）しか
 #   発火していなかった。その「1回」が16時前までの展示を取り込んだ後は二度と走らず、
 #   夕方以降（ナイター等）のレースが永久に更新されない＝「16時で止まる」の原因だった。
-#   対策: 1回の発火で終わらず、起動したジョブが「発走帯(09:40〜21:40 JST)の間 25分おきに
+#   対策: 1回の発火で終わらず、起動したジョブが「発走帯(09:40〜21:40 JST)の間 5分おきに
 #   窓取得を繰り返す」ループにする（1発火=最大約2.6時間）。cron を約2時間おきに並べ、
 #   concurrency(直列)の pending 引き継ぎで途切れずその日を覆う。
 #   ※本リポジトリは public＝Actions 実行時間は無料・無制限なので長めのジョブが可能。
@@ -22,7 +22,7 @@ name: boatrace-update
 #
 # ★KV 即時配信（ビルド枠を消費しない）:
 #   ci_update.py が update.json を Cloudflare KV へ PUT。today.html は /api/update(KV) を
-#   最優先で読むので git commit 不要＝25分毎でも Cloudflare ビルド枠を一切消費しない。
+#   最優先で読むので git commit 不要＝5分毎でも Cloudflare ビルド枠を一切消費しない。
 #   KV 用 Secret(CF_ACCOUNT_ID/CF_KV_NAMESPACE_ID/CF_API_TOKEN) 未設定なら push は no-op。
 #   手動ボタン時のみ KV 失敗で commit フォールバック（従来どおり）。
 #
@@ -61,6 +61,24 @@ jobs:
       - name: compute JST day
         id: day
         run: echo "d=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      # データソース到達性の診断（ジョブ開始時に1回）。公式(boatrace.jp/od2)と OpenAPI の
+      # HTTP ステータス＋先頭バイトを記録＝「結果が入らない」原因が接続遮断/403 か、200だが
+      # 構造変化でパース空かを切り分ける。非致命（|| true）で本処理は止めない。
+      - name: probe data sources (診断)
+        if: always()
+        continue-on-error: true
+        run: |
+          ymd=$(date +%Y%m%d); ym=$(date +%Y%m); d6=$(date +%y%m%d)
+          probe(){ echo "--- $1"; curl -sS -m 20 -A 'Mozilla/5.0' -o /tmp/p.out \
+            -w 'http=%{http_code} size=%{size_download}\n' "$1" || echo "curl-failed"; \
+            head -c 180 /tmp/p.out | tr '\n\r\t' '   '; echo; }
+          echo "== source health probe $(date '+%F %T %Z') =="
+          probe "https://www.boatrace.jp/owpc/pc/race/raceresult?rno=1&jcd=01&hd=${ymd}"
+          probe "http://www1.mbrace.or.jp/od2/K/${ym}/k${d6}.lzh"
+          probe "https://boatraceopenapi.github.io/results/v2/today.json"
+          probe "https://boatraceopenapi.github.io/previews/v2/today.json"
+          probe "https://boatraceopenapi.github.io/programs/v2/today.json"
 
       - uses: actions/setup-python@v5
         with:
@@ -120,9 +138,9 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: python ci_update.py --window --retries 2
 
-      # ── 自動起動: 発走帯(09:40〜21:40 JST)の間、25分おきに窓取得を繰り返す ──
+      # ── 自動起動: 発走帯(09:40〜21:40 JST)の間、5分おきに窓取得を繰り返す ──
       # KV へ即時配信。窓外/取得済み/中止場はスキップ＝1回あたり数レースのみ＝軽量。
-      # ci_update が失敗しても break せず次の周回で自己回復（25分間隔が過剰アクセスを防ぐ）。
+      # ci_update が失敗しても break せず次の周回で自己回復（窓取得は取得済みskipで過剰アクセスを防ぐ）。
       # 経過150分(timeout 160分の手前)で自主終了＝killされず綺麗に完了。その後は
       # concurrency の pending(次の cron 種火)が引き継いで続きを覆う。
       - name: intraday loop (automated seeds)
@@ -149,7 +167,7 @@ jobs:
             if [ $(( $(date +%s) - START )) -ge 9000 ]; then   # 150分
               echo "150min elapsed — graceful exit (次の cron 種火が引き継ぐ)"; break
             fi
-            sleep 1500                      # 25分
+            sleep 300                       # 5分（結果反映の遅延を短縮。窓取得は取得済みをskipする軽量処理）
           done
 
       # 「取得済み」キャッシュを保存（同じ当日プレフィックスで次の種火/周回が流用）。
@@ -161,7 +179,7 @@ jobs:
           key: boatrace-before-${{ steps.day.outputs.d }}-${{ github.run_id }}
 
       # commit フォールバック（手動ボタンで KV 未設定/失敗時のみ・従来どおり動く）。
-      # 自動ループは KV 配信のみ＝25分毎に commit せず Cloudflare リビルドを起こさない。
+      # 自動ループは KV 配信のみ＝5分毎に commit せず Cloudflare リビルドを起こさない。
       - name: commit & push update.json (manual fallback only)
         if: steps.oneshot.outputs.kv_ok != '1' && github.event_name == 'workflow_dispatch'
         run: |
