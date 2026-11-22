@@ -62,26 +62,23 @@ jobs:
         id: day
         run: echo "d=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
-      # データソース到達性の診断（ジョブ開始時に1回）。公式(boatrace.jp/od2)と OpenAPI の
-      # HTTP ステータス＋先頭バイトを記録＝「結果が入らない」原因が接続遮断/403 か、200だが
-      # 構造変化でパース空かを切り分ける。非致命（|| true）で本処理は止めない。
-      - name: probe data sources (診断)
+      # データソース健全性チェック（ジョブ開始時に1回・軽量）。公式(boatrace.jp/od2)の HTTP
+      # ステータスを記録＝公式が復旧したら 200/LZH に戻るので検知できる（復旧時はアプリが本物優先に
+      # 自動で戻る）。OpenAPI 側は結果/展示フォールバックの供給元なので到達性だけ確認。非致命。
+      - name: probe data sources (健全性)
         if: always()
         continue-on-error: true
         run: |
-          ymd=$(date +%Y%m%d); ym=$(date +%Y%m); d6=$(date +%y%m%d)
-          # $2=ダンプするバイト数（既定180）。OpenAPIは先頭レースの完全スキーマを見たいので大きめ。
+          ymd=$(date +%Y%m%d); ym=$(date +%Y%m)
           probe(){ echo "--- $1"; curl -sS -m 20 -A 'Mozilla/5.0' -o /tmp/p.out \
             -w 'http=%{http_code} size=%{size_download}\n' "$1" || echo "curl-failed"; \
-            head -c "${2:-180}" /tmp/p.out | tr '\n\r\t' '   '; echo; }
+            head -c 120 /tmp/p.out | tr '\n\r\t' '   '; echo; }
           echo "== source health probe $(date '+%F %T %Z') =="
           probe "https://www.boatrace.jp/owpc/pc/race/raceresult?rno=1&jcd=01&hd=${ymd}"
-          probe "http://www1.mbrace.or.jp/od2/K/${ym}/k${d6}.lzh"
-          # od2は当日Kが未発行のため過去日(前日)でも確認＝アーカイブ自体の生死判定
+          # od2は当日Kが未発行のため前日Kでアーカイブ自体の生死を判定（リダイレクトも追う）
           probe "http://www1.mbrace.or.jp/od2/K/${ym}/k$(date -d yesterday +%y%m%d 2>/dev/null || date +%y%m%d).lzh"
-          probe "https://boatraceopenapi.github.io/results/v2/today.json" 4000
-          probe "https://boatraceopenapi.github.io/previews/v2/today.json" 4000
-          probe "https://boatraceopenapi.github.io/programs/v2/today.json" 1200
+          probe "https://boatraceopenapi.github.io/results/v2/today.json"
+          probe "https://boatraceopenapi.github.io/previews/v2/today.json"
 
       - uses: actions/setup-python@v5
         with:
