@@ -896,7 +896,7 @@ function daySummary(date){
 // 最上部サマリー: 当日/前日/前々日 の 的中率・投資・回収・回収率 を横並び（当日は最新反映）。
 function summaryBar(){
   const cols=D.labels.map(l=>({lab:l[0],d:l[1],s:daySummary(l[1])}));
-  if(!cols.some(c=>c.s.nDone))return '';     // まだ結果が1つも無ければ出さない
+  // パネルは常時表示（朝など結果0の時間帯でも消さない）。結果が無い列は各セルが '–' を出す。
   const pct=(a,b)=>b?Math.round(a/b*100):0;
   const yen=v=>'¥'+Math.round(v).toLocaleString();
   const recCls=r=>r>=100?'rok':(r>0?'ramb':'rng');
