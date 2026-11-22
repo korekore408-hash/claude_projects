@@ -2017,15 +2017,15 @@ function rsToResult(rs){
           po2:first(pay.exacta),po3:first(pay.trifecta),po2f:first(pay.quinella),
           fly:fly.length?fly:null};
 }
-// results を当日(base)レースへ反映。既に結果のあるレース(公式/update.json)は触れない＝本物優先。
-// 戻り値＝新たに結果が入ったレース数。
-function applyResults(rj){
+// results フィードを指定日(day)のレースへ反映。既に結果のあるレース(公式/update.json/焼込)は
+// 触れない＝本物優先。戻り値＝新たに結果が入ったレース数。
+function applyResultsFeed(rj, day){
   const arr=(rj&&rj.results)||[]; if(!arr.length)return 0;
   const byId={};
   arr.forEach(rs=>{byId[pad2(rs.race_stadium_number)+String(rs.race_date).replace(/-/g,'')+pad2(rs.race_number)]=rs;});
   let n=0;
   D.races.forEach(r=>{
-    if(r.d!==D.base)return;                                           // 反映は当日のみ
+    if(r.d!==day)return;                                              // 指定日のみ
     if(hasResult(r))return;                                           // 既に結果あり＝本物優先
     const rs=byId[r.id]; if(!rs)return;
     const R=rsToResult(rs); if(!R)return;                             // 未確定/中止は触れない
@@ -2036,6 +2036,19 @@ function applyResults(rj){
     n++;
   });
   return n;
+}
+function applyResults(rj){ return applyResultsFeed(rj, D.base); }   // 当日(base)用（既存呼び出し互換）
+// 日付別 results ファイルの URL（過去日の確定結果。例 .../results/v2/2026/20261121.json）。
+function resultsDatedURL(day){ const y=day.slice(0,4); return 'https://boatraceopenapi.github.io/results/v2/'+y+'/'+day.replace(/-/g,'')+'.json'; }
+// 前日・前々日(base以外のラベル日)の結果を日付別ファイルから補完＝サマリーの前日/前々日列を復活。
+// 公式K-file欠落で焼き込み結果が無い日を OpenAPI で埋める（本物優先・冪等）。非ブロッキング。
+function loadPastResults(){
+  const days=(D.labels||[]).map(l=>l[1]).filter(d=>d&&d!==D.base);
+  if(!days.length)return Promise.resolve(0);
+  return Promise.all(days.map(day=>
+    fetch(resultsDatedURL(day),{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json();})
+      .then(rj=>applyResultsFeed(rj,day)).catch(()=>0)
+  )).then(ns=>ns.reduce((a,b)=>a+b,0));
 }
 
 // ── 締切時刻(発走予定)を programs フィードからクライアント直読み ──
@@ -2338,6 +2351,9 @@ if(location.protocol==='file:'){
     render();
     Promise.all([tenjiSweep(),resultSweep(),oddsSweep()]).then(sw=>{ if(sw[0]||sw[1]||sw[2])rerenderKeepScroll(); });   // 締切前=展示・オッズ／締切後=結果を公式直取りで即最新化
   }).catch(()=>{});
+  // 前日/前々日の結果を日付別 OpenAPI ファイルから後追い補完＝サマリーの前日/前々日列を復活
+  // （公式K-file欠落で焼き込み結果が無い日を埋める）。非ブロッキング＝初期表示は邪魔しない。
+  loadPastResults().then(nb=>{ if(nb)render(); }).catch(()=>{});
   // 開いたまま展示公表を待てるよう、3分ごとに自動再取得（previews＋update.json＋公式直取り）。
   // 変化があった時だけ再描画するので、表示を邪魔しない。タブ非表示中はスキップ。
   setInterval(()=>{ if(!document.hidden)autoRefresh(); }, 180000);
