@@ -356,8 +356,13 @@ def results_rows_for_kfile(date_str, today_ymd=None):
             row["登番"] = (str(reg) if reg is not None else "")
             row["選手名"] = b.get("racer_name", "") or ""
             row["status"] = status
-            if b.get("racer_course_number") is not None:
-                row["進入コース"] = b["racer_course_number"]
+            course = b.get("racer_course_number")
+            if course is not None:
+                row["進入コース"] = course
+            elif finisher:
+                # race_flags は完走行で int(進入コース) を未ガードで行うため、欠損時は
+                # 枠番で埋める（枠なり扱い＝中立）。公式Kでは完走行に進入は常に入る。
+                row["進入コース"] = waku
             if st is not None:
                 row["スタートタイミング"] = st
             if finisher:                            # 決まり手/気象/配当は完走行に（k_to_csv と同様）
