@@ -318,6 +318,26 @@
   .sk46{background:#1c2433;color:#8a93a2}
   .skx{background:#3a1c1c;color:#f09595}
   .sks{font-size:11px;color:#7e8796;white-space:nowrap}
+  /* 節間成績グリッド（展示の直下・日別×進入×ST×着順） */
+  .sgwrap{margin:10px 0 2px}
+  .sghd{color:#8fa8d0;font-size:13px;font-weight:600}
+  .sgsub{font-size:11px;color:#7e8796;font-weight:400;margin-left:6px}
+  .sgscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:6px;border:1px solid #2a3852;border-radius:8px;background:#141a26}
+  table.sg{border-collapse:collapse;width:100%;min-width:max-content}
+  table.sg th,table.sg td{border:0.5px solid #1f2838;text-align:center;padding:3px 6px;font-size:12px}
+  table.sg thead th{background:#172032;color:#9fb3d6;font-weight:600;white-space:nowrap}
+  table.sg th.sgw,table.sg td.sgw{position:sticky;left:0;z-index:1;min-width:30px;background:#141a26}
+  table.sg thead th.sgw{background:#172032;z-index:2}
+  .sgcell{min-width:48px;vertical-align:middle;line-height:1.3}
+  .sgempty{color:#4b5563}
+  .sgrace{display:inline-block;min-width:26px;padding:1px 4px;border-radius:4px;font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;border:0.5px solid rgba(0,0,0,.25)}
+  .sgst{display:block;font-size:11px;color:#9aa3b2;font-variant-numeric:tabular-nums;margin-top:1px}
+  .sgres{display:block;font-size:11px;font-weight:700;margin-top:1px}
+  .sgr1{color:#e0a93b}
+  .sgr2{color:#7fb2ff}
+  .sgr3{color:#c9a0e8}
+  .sgr46{color:#8a93a2}
+  .sgrx{color:#f09595}
 </style></head><body>
 <div id="app"></div>
 <button id="toTop" type="button" title="1番上へ戻る" aria-label="1番上へ戻る">▲<span>TOP</span></button>
@@ -1105,6 +1125,7 @@ function detailView(r){
    }}
   // #9 直前情報（展示）。更新で取得済みのときだけ表示。
   h+=exView(r);
+  h+=setsuGrid(r);        // 節間成績グリッド（展示の直下。展示が無くても表示＝事前の検討材料）
   // #10 直前情報あり本命（展示反映後の本命／展示取得時のみ表示）
   if(exOn){let bi=0;for(let w=1;w<6;w++)if(sb[w]>sb[bi])bi=w;const stot=sb.reduce((a,b)=>a+b,0)||1;
     h+='<div class="sec">直前情報あり本命<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span></div>';
@@ -1804,6 +1825,38 @@ function payTable(r){
   return '<div class="cause" style="border-left-color:#e0a93b"><span class="h" style="color:#e0a93b">配当一覧</span>'
     +'<table style="border-collapse:collapse;font-size:13px;margin-top:4px">'+h+'</table>'
     +'<div style="font-size:11px;color:#7e8796;margin-top:4px">※100円あたりの払戻金（公式確定・K-file）。</div></div>';
+}
+// 節間成績グリッド（展示の直下）。今節の各日ごとに「レースNo(その日の進入=枠色)・ST・着順」を
+// 枠別に横並び表示。データは build 時に K-file から合成（r.skg）。無ければ非表示。
+function setsuGrid(r){
+  const g=r.skg; if(!g||!g.d||!g.d.length)return '';
+  const stf=st=>st==null?'–':((st<0?'F':'')+'.'+Math.abs(Math.round(st*100)).toString().padStart(2,'0'));
+  let h='<div class="sgwrap"><div class="sghd">&#128202; 節間成績'
+    +'<span class="sgsub">今節ここまで（各日：レースNo＝進入枠色／ST／着順・左が初日）</span></div>';
+  h+='<div class="sgscroll"><table class="sg"><thead><tr><th class="sgw">枠</th>';
+  g.d.forEach(d=>{h+='<th>'+d[0]+'</th>';});
+  h+='</tr></thead><tbody>';
+  for(let w=0;w<6;w++){
+    h+='<tr><td class="sgw">'+chip(w+1,'mc')+'</td>';
+    const row=g.r[w]||[];
+    for(let k=0;k<g.d.length;k++){
+      const c=row[k];
+      if(!c){h+='<td class="sgcell sgempty">–</td>';continue;}
+      const race=c[0],lane=c[1],res=c[2],st=c[3];
+      const lc=LC[lane]||['#2a3852','#e6ecf5'];
+      const fin=/^[1-6]$/.test(res);
+      const rcls=res==='1'?'sgr1':res==='2'?'sgr2':res==='3'?'sgr3':fin?'sgr46':'sgrx';
+      h+='<td class="sgcell">'
+        +'<span class="sgrace" style="background:'+lc[0]+';color:'+lc[1]+'">'+race+'R</span>'
+        +'<span class="sgst">'+(res==='F'?'F':stf(st))+'</span>'
+        +'<span class="sgres '+rcls+'">'+(fin?res+'着':res)+'</span>'
+        +'</td>';
+    }
+    h+='</tr>';
+  }
+  h+='</tbody></table></div>';
+  h+='<div class="legend" style="margin:6px 0 2px">※ 今節の各日成績（左＝初日）。レースNoの色＝その日の進入(枠)。中段＝ST（Fはフライング）、下段＝着順。空欄＝欠場/データなし。朝の番組表＋K-fileから生成。</div></div>';
+  return h;
 }
 function exView(r){
   const e=r.ex; if(!e)return '';
