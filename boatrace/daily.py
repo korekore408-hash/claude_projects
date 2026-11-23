@@ -143,6 +143,14 @@ def main():
     #     なので、対象日がシステム日付と一致するときだけ実行。失敗してもパイプラインは止めない。
     if today == datetime.date.today():
         run_optional(["fetch_openapi.py", "--log", "--date", today.strftime("%Y%m%d")])
+    # 2c. K-fileフォールバック: 公式K(結果LZH)が取れない日、OpenAPI results(日付別)から
+    #     data/k{d}.csv を生成して欠落を埋める（本物K優先・冪等・中止/失格はfail-safe）。
+    #     これが無いと公式K欠落日は着順・配当が焼けず、10万円チャレンジ・場別成績・前日/前々日の
+    #     結果表示が止まる（公式サイト仕様変更＝boatrace.jp構造変化/od2リダイレクトの恒久対策）。
+    #     前日(prev)から35日さかのぼり、K-CSVが無い日だけ生成（公式が生きていれば全スキップ）。
+    if today == datetime.date.today():
+        run_optional(["fetch_openapi.py", "--kfile-backfill",
+                      "--end", prev.strftime("%Y%m%d"), "--days", "35"])
     # 3. 特徴量（全期間 as-of 再計算）
     run(["features_player_history.py"])
     # 当日の気象は「後で反映する」方針＝中立化（未反映）。場の荒れ度は構造的なので残す。
