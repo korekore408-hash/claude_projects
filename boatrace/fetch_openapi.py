@@ -255,6 +255,171 @@ def write_bfile_fallback(date_str, force=False):
     return len(rows)
 
 
+# ================================================================
+# K-file（競走成績）フォールバック: 公式K(結果LZH)欠落日を OpenAPI results で補完
+# ================================================================
+# data/k{yymmdd}.csv（k_to_csv.py 出力）と同じ列。1艇1行。完走行は全列、非完走行は着順空+status。
+KFILE_COLUMNS = [
+    "会場", "日付", "レース", "着順", "艇番", "登番", "選手名", "status",
+    "モーター番号", "ボート番号", "展示タイム", "進入コース", "スタートタイミング",
+    "レースタイム", "決まり手", "距離", "天候", "風向", "風速", "波高",
+    "3連単_組合", "3連単_配当", "3連複_組合", "3連複_配当",
+    "2連単_組合", "2連単_配当", "2連複_組合", "2連複_配当",
+]
+# race_technique_number → 決まり手(和名)。公式の決まり手コード。
+_TECH_NUM_TO_KM = {1: "逃げ", 2: "差し", 3: "まくり", 4: "まくり差し", 5: "抜き", 6: "恵まれ"}
+
+_RESULTS_URL_TMPL = "https://boatraceopenapi.github.io/results/v2/{y}/{ymd}.json"
+_RESULTS_TODAY_URL = "https://boatraceopenapi.github.io/results/v2/today.json"
+
+
+def _fetch_results(date_str, today_ymd=None):
+    """results フィードの results リストを返す（失敗は []、未配信日は 404→[]）。
+    date_str==今日 なら today.json（確定前の途中状態）、過去日は日付別ファイル(確定)。"""
+    url = (_RESULTS_TODAY_URL if (today_ymd and date_str == today_ymd)
+           else _RESULTS_URL_TMPL.format(y=date_str[:4], ymd=date_str))
+    last = "?"
+    for i in range(_MAX_TRIES):
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=30)
+        except requests.RequestException as e:
+            last = f"通信失敗 {type(e).__name__}"
+        else:
+            if res.status_code != 200:
+                last = f"HTTP {res.status_code}"      # 未配信日は404
+                if res.status_code == 404:
+                    return []                          # その日は無い＝即終了（リトライ不要）
+            else:
+                try:
+                    return res.json().get("results", [])   # 空でもそのまま（中止日など）
+                except ValueError:
+                    last = "JSON parse 失敗"
+        if i < _MAX_TRIES - 1:
+            time.sleep(_BACKOFF[min(i, len(_BACKOFF) - 1)])
+    print(f"  [kfile-fallback] results 取得できず {date_str}: {last}")
+    return []
+
+
+def results_rows_for_kfile(date_str, today_ymd=None):
+    """OpenAPI results → K-file CSV(data/k*.csv)と同じ列の行リスト（1艇1行）。失敗/空は []。
+    着順=racer_place_number(1..6=着・それ以外は非完走で着順空)。配当は payouts の金額。
+    下流が使う列（着順/艇番/登番/会場/status/配当）を優先。未提供列は ""（to_float/guard で縮退安全）。"""
+    def first(a):
+        return a[0] if isinstance(a, list) and a else None
+
+    def comb_pay(pay, key):
+        e = first((pay or {}).get(key))
+        if not e:
+            return "", ""
+        comb = str(e.get("combination", "")).replace("=", "-")
+        amt = e.get("payout")
+        return comb, (amt if amt is not None else "")
+
+    date_fmt = f"{int(date_str[:4])}/{int(date_str[4:6])}/{int(date_str[6:8])}"
+    rows = []
+    for rs in _fetch_results(date_str, today_ymd):
+        try:
+            code = int(rs["race_stadium_number"])
+            race_no = int(rs["race_number"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        venue = _CODE_TO_VENUE.get(code, "")
+        pay = rs.get("payouts") or {}
+        p3c, p3a = comb_pay(pay, "trifecta")
+        p3fc, p3fa = comb_pay(pay, "trio")
+        p2c, p2a = comb_pay(pay, "exacta")
+        p2fc, p2fa = comb_pay(pay, "quinella")
+        km = _TECH_NUM_TO_KM.get(rs.get("race_technique_number"), "")
+        wind = rs.get("race_wind")
+        wave = rs.get("race_wave")
+        for b in rs.get("boats") or []:
+            try:
+                waku = int(b["racer_boat_number"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            reg = b.get("racer_number")
+            pl = b.get("racer_place_number")
+            st = b.get("racer_start_timing")
+            finisher = isinstance(pl, int) and 1 <= pl <= 6
+            if finisher:
+                status, chaku = "finish", pl
+            elif isinstance(st, (int, float)) and st < 0:
+                status, chaku = "F", ""            # フライング（flying_rate 用）
+            else:
+                status, chaku = "K0", ""           # 欠場/失格など（starts 分母から除外）
+            row = {c: "" for c in KFILE_COLUMNS}
+            row["会場"] = venue
+            row["日付"] = date_fmt
+            row["レース"] = race_no
+            row["着順"] = chaku
+            row["艇番"] = waku
+            row["登番"] = (str(reg) if reg is not None else "")
+            row["選手名"] = b.get("racer_name", "") or ""
+            row["status"] = status
+            if b.get("racer_course_number") is not None:
+                row["進入コース"] = b["racer_course_number"]
+            if st is not None:
+                row["スタートタイミング"] = st
+            if finisher:                            # 決まり手/気象/配当は完走行に（k_to_csv と同様）
+                row["決まり手"] = km
+                if wind is not None:
+                    row["風速"] = wind
+                if wave is not None:
+                    row["波高"] = wave
+                row["3連単_組合"], row["3連単_配当"] = p3c, p3a
+                row["3連複_組合"], row["3連複_配当"] = p3fc, p3fa
+                row["2連単_組合"], row["2連単_配当"] = p2c, p2a
+                row["2連複_組合"], row["2連複_配当"] = p2fc, p2fa
+            rows.append(row)
+    return rows
+
+
+def write_kfile_fallback(date_str, force=False, today_ymd=None):
+    """公式K-fileが無い日、OpenAPI results から data/k{yymmdd}.csv を生成（cp932・k_to_csv同形式）。
+    既に非空の data/k{yymmdd}.csv があれば生成しない（本物のK-fileを優先）＝冪等。
+    1着(確定)が1つも無い日（全レース未確定/中止）は生成しない＝決着前の空ファイルを作らない。
+    戻り値: 書き出した行数（スキップ/失敗時 0）。"""
+    import csv
+    import os
+    yymmdd = date_str[2:4] + date_str[4:6] + date_str[6:8]
+    path = f"data/k{yymmdd}.csv"
+    if not force and os.path.exists(path) and os.path.getsize(path) > 0:
+        print(f"  [kfile-fallback] {path} 既存（本物K-file優先）— スキップ")
+        return 0
+    rows = results_rows_for_kfile(date_str, today_ymd)
+    if not rows:
+        print(f"  [kfile-fallback] results 0件 {date_str}（未配信/中止/通信失敗）— 生成せず")
+        return 0
+    if not any(r["status"] == "finish" and str(r["着順"]) == "1" for r in rows):
+        print(f"  [kfile-fallback] {date_str} 確定(1着)レース無し — 生成せず")
+        return 0
+    os.makedirs("data", exist_ok=True)
+    with open(path, "w", encoding="cp932", newline="", errors="replace") as f:
+        w = csv.DictWriter(f, fieldnames=KFILE_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+    nfin = sum(1 for r in rows if r["status"] == "finish")
+    print(f"  [kfile-fallback] {path} を OpenAPI results から生成: {len(rows)}行(完走{nfin})")
+    return len(rows)
+
+
+def backfill_kfiles(end_ymd, days=35, force=False):
+    """end_ymd(含む・通常=昨日)から days 日さかのぼり、K-CSV が無い日を OpenAPI results で生成。
+    本物K優先・冪等。公式K欠落で止まった 10万円チャレンジ/場別成績/過去日結果の復旧用。
+    戻り値: (生成した日数, 総行数)。"""
+    today_ymd = datetime.date.today().strftime("%Y%m%d")
+    end = datetime.date(int(end_ymd[:4]), int(end_ymd[4:6]), int(end_ymd[6:8]))
+    n_days, n_rows = 0, 0
+    for i in range(days):
+        d = (end - datetime.timedelta(days=i)).strftime("%Y%m%d")
+        r = write_kfile_fallback(d, force=force, today_ymd=today_ymd)
+        if r:
+            n_days += 1
+            n_rows += r
+    print(f"  [kfile-backfill] {end_ymd} から{days}日: {n_days}日 生成 / 計{n_rows}行")
+    return n_days, n_rows
+
+
 # ---- クロスチェック（CLI）: OpenAPI 由来 vs B-file 由来の (艇番→登番) 一致確認 ----
 def _bfile_entry(date_str):
     """data/b{yymmdd}.txt（fetch_range が保存）を parse して {race_id: {艇番: 登番}}。"""
@@ -364,8 +529,16 @@ if __name__ == "__main__":
                     help="crosscheck 結果を data/openapi_crosscheck_log.csv に追記")
     ap.add_argument("--bfile-fallback", action="store_true",
                     help="公式B-fileが無い日、OpenAPIから data/b{yymmdd}.csv を生成（既存は温存）")
+    ap.add_argument("--kfile-fallback", action="store_true",
+                    help="公式K-fileが無い日、OpenAPI results から data/k{yymmdd}.csv を生成（既存は温存）")
+    ap.add_argument("--kfile-backfill", action="store_true",
+                    help="--end から --days 日さかのぼり、K-CSV が無い日を OpenAPI results で補完")
+    ap.add_argument("--end", default=None,
+                    help="--kfile-backfill の終端日 YYYYMMDD（既定=昨日）")
+    ap.add_argument("--days", type=int, default=35,
+                    help="--kfile-backfill でさかのぼる日数（既定35）")
     ap.add_argument("--force", action="store_true",
-                    help="--bfile-fallback 時、既存CSVがあっても上書きする")
+                    help="--bfile-fallback/--kfile-fallback 時、既存CSVがあっても上書きする")
     args = ap.parse_args()
     d = args.date.replace("-", "")
 
@@ -376,6 +549,13 @@ if __name__ == "__main__":
             print(f"  {rid}: {ts[rid]}")
     elif getattr(args, "bfile_fallback", False):
         write_bfile_fallback(d, force=args.force)
+    elif getattr(args, "kfile_backfill", False):
+        end = (args.end.replace("-", "") if args.end
+               else (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y%m%d"))
+        backfill_kfiles(end, days=args.days, force=args.force)
+    elif getattr(args, "kfile_fallback", False):
+        write_kfile_fallback(d, force=args.force,
+                             today_ymd=datetime.date.today().strftime("%Y%m%d"))
     elif args.log:
         log_crosscheck(d)
     else:
