@@ -710,6 +710,94 @@ def bfile_setkan(date_str):
     return out
 
 
+def build_setsu_grids(out, regs_by_rid, base):
+    """各レースに『節間成績グリッド』r["skg"] を付与する。
+    今節(この開催)の各日ごとに、この枠の選手が「何Rを・どの進入(枠)で走り・ST・着順」を
+    K-file から再構成して日別に並べる（展示の直下に表示。boaters 風の節間成績）。
+      skg = {"d": [[日目ラベル, 'YYYYMMDD'], ...（左＝初日）],
+             "r": [[cell or null, ...] × 6枠]}      cell = [レースNo, 進入枠, 着順/状態, ST]
+    『今節成績』列(r.sk)は着順のみでレースNo/ST/進入を持たないため、K-file から合成する。
+    会場コードは race_id の先頭2桁（rid の採番と完全一致＝取りこぼし無し）で突き合わせる。"""
+    if not out:
+        return
+    import datetime as _dt
+    dmin = min(o["d"] for o in out)
+    start = (_dt.date.fromisoformat(dmin) - _dt.timedelta(days=9)).isoformat()
+    # (会場コード, 'YYYYMMDD', 登番) -> [レースNo, 進入枠(艇番), 着順/状態, ST]
+    idx = {}
+    for kp in glob.glob("data/k*.csv"):
+        m = re.search(r"k(\d{6})", kp)
+        if not m:
+            continue
+        yymmdd = m.group(1)
+        d_iso = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+        if d_iso < start or d_iso > base:
+            continue
+        ymd = d_iso.replace("-", "")
+        for r in load(kp):
+            reg = (r.get("登番") or "").strip()
+            if not reg:
+                continue
+            code = VENUE_CODE.get(r.get("会場"), "00")
+            try:
+                lane = int(r["艇番"])
+                race_no = int(r["レース"])
+            except (ValueError, KeyError):
+                continue
+            fin = (r.get("着順") or "").strip()
+            status = (r.get("status") or "").strip()
+            if fin.isdigit():
+                res = fin
+            elif status.startswith("F"):
+                res = "F"
+            elif status.startswith("L"):
+                res = "L"
+            elif status.startswith("K"):
+                res = "欠"
+            elif status.startswith("S"):
+                res = "失"
+            else:
+                res = status[:1] if status else "・"
+            st_v = to_float(r.get("スタートタイミング"))
+            idx[(code, ymd, reg)] = [race_no, lane, res,
+                                     (round(st_v, 2) if st_v is not None else None)]
+    n = 0
+    for o in out:
+        regs = regs_by_rid.get(o["id"])
+        if not regs:
+            continue
+        rd = _dt.date.fromisoformat(o["d"])
+        day = o.get("day")
+        if day and day >= 2:
+            npast = day - 1
+        else:                                       # 日目不明時は『今節成績』の最長走数で代替
+            sk = o.get("sk") or []
+            npast = max((len(s or "") for s in sk), default=0)
+        if npast <= 0:                              # 初日1走目＝過去走なし
+            continue
+        npast = min(npast, 8)                       # 保険（週をまたぐ長期開催でも列を抑制）
+        code = o["id"][:2]
+        cols = []
+        for k in range(npast, 0, -1):               # 古い順（初日→直近）
+            d = rd - _dt.timedelta(days=k)
+            dn = (day - k) if day else (npast - k + 1)
+            cols.append(["初日" if dn == 1 else f"{dn}日目", d.strftime("%Y%m%d")])
+        rows, any_cell = [], False
+        for w in range(6):
+            reg = regs[w]
+            cells = []
+            for _lab, ymd in cols:
+                c = idx.get((code, ymd, reg)) if reg else None
+                if c:
+                    any_cell = True
+                cells.append(c)
+            rows.append(cells)
+        if any_cell:
+            o["skg"] = {"d": cols, "r": rows}
+            n += 1
+    print(f"  節間成績グリッド: {n}レースに付与（K-fileから日別×進入×ST×着順を合成）")
+
+
 def load_bfile_meta(keep, venues_by_date):
     """各日の B-file(出走表 txt, UTF-8) の場ヘッダ行から (グレード, 日目) を抽出。
     返り値 {(date, 会場): (grade, day)}。日目=『第 N 日』(確実)。
@@ -1759,9 +1847,11 @@ def main():
         return P or None
 
     out = []
+    regs_by_rid = {}        # race_id -> [登番×6]（節間成績グリッドの選手突き合わせ用）
     for rid, rc in races.items():
         if len(rc["b"]) != 6 or any(rc["b"][w][1] is None for w in range(1, 7)):
             continue
+        regs_by_rid[rid] = [(rc["feat"][w].get("reg") or "").strip() for w in range(1, 7)]
         cm = make_comment([rc["feat"][w] for w in range(1, 7)], rc["fs"])
         pm = [rc["b"][w][1] for w in range(1, 7)]
         fin = [rc["b"][w][2] for w in range(1, 7)]
@@ -1870,6 +1960,13 @@ def main():
             o["sk"] = sk
             n_sk += 1
     print(f"  節間成績: {n_sk}レースに付与（B-file今節成績）")
+
+    # 節間成績グリッド（展示の直下表示用）。今節の各日の レースNo／進入(枠)／ST／着順 を
+    # K-file から再構成して各レースに r["skg"] を付与（o["day"]/o["sk"] 確定後に呼ぶ）。
+    try:
+        build_setsu_grids(out, regs_by_rid, base)
+    except Exception as e:
+        print(f"  節間成績グリッド生成スキップ: {e}")
 
     # 日付ラベル（当日/前日/前々日）
     rel_labels = ["当日", "前日", "前々日", "3日前", "4日前", "5日前", "6日前"]
@@ -2247,6 +2344,26 @@ HTML = r"""<!DOCTYPE html>
   .sk46{background:#1c2433;color:#8a93a2}
   .skx{background:#3a1c1c;color:#f09595}
   .sks{font-size:11px;color:#7e8796;white-space:nowrap}
+  /* 節間成績グリッド（展示の直下・日別×進入×ST×着順） */
+  .sgwrap{margin:10px 0 2px}
+  .sghd{color:#8fa8d0;font-size:13px;font-weight:600}
+  .sgsub{font-size:11px;color:#7e8796;font-weight:400;margin-left:6px}
+  .sgscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:6px;border:1px solid #2a3852;border-radius:8px;background:#141a26}
+  table.sg{border-collapse:collapse;width:100%;min-width:max-content}
+  table.sg th,table.sg td{border:0.5px solid #1f2838;text-align:center;padding:3px 6px;font-size:12px}
+  table.sg thead th{background:#172032;color:#9fb3d6;font-weight:600;white-space:nowrap}
+  table.sg th.sgw,table.sg td.sgw{position:sticky;left:0;z-index:1;min-width:30px;background:#141a26}
+  table.sg thead th.sgw{background:#172032;z-index:2}
+  .sgcell{min-width:48px;vertical-align:middle;line-height:1.3}
+  .sgempty{color:#4b5563}
+  .sgrace{display:inline-block;min-width:26px;padding:1px 4px;border-radius:4px;font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;border:0.5px solid rgba(0,0,0,.25)}
+  .sgst{display:block;font-size:11px;color:#9aa3b2;font-variant-numeric:tabular-nums;margin-top:1px}
+  .sgres{display:block;font-size:11px;font-weight:700;margin-top:1px}
+  .sgr1{color:#e0a93b}
+  .sgr2{color:#7fb2ff}
+  .sgr3{color:#c9a0e8}
+  .sgr46{color:#8a93a2}
+  .sgrx{color:#f09595}
 </style></head><body>
 <div id="app"></div>
 <button id="toTop" type="button" title="1番上へ戻る" aria-label="1番上へ戻る">▲<span>TOP</span></button>
@@ -3034,6 +3151,7 @@ function detailView(r){
    }}
   // #9 直前情報（展示）。更新で取得済みのときだけ表示。
   h+=exView(r);
+  h+=setsuGrid(r);        // 節間成績グリッド（展示の直下。展示が無くても表示＝事前の検討材料）
   // #10 直前情報あり本命（展示反映後の本命／展示取得時のみ表示）
   if(exOn){let bi=0;for(let w=1;w<6;w++)if(sb[w]>sb[bi])bi=w;const stot=sb.reduce((a,b)=>a+b,0)||1;
     h+='<div class="sec">直前情報あり本命<span class="kbadge" style="color:#43c59e;background:#10231d;border-color:#2f6f57">展示反映</span></div>';
@@ -3733,6 +3851,38 @@ function payTable(r){
   return '<div class="cause" style="border-left-color:#e0a93b"><span class="h" style="color:#e0a93b">配当一覧</span>'
     +'<table style="border-collapse:collapse;font-size:13px;margin-top:4px">'+h+'</table>'
     +'<div style="font-size:11px;color:#7e8796;margin-top:4px">※100円あたりの払戻金（公式確定・K-file）。</div></div>';
+}
+// 節間成績グリッド（展示の直下）。今節の各日ごとに「レースNo(その日の進入=枠色)・ST・着順」を
+// 枠別に横並び表示。データは build 時に K-file から合成（r.skg）。無ければ非表示。
+function setsuGrid(r){
+  const g=r.skg; if(!g||!g.d||!g.d.length)return '';
+  const stf=st=>st==null?'–':((st<0?'F':'')+'.'+Math.abs(Math.round(st*100)).toString().padStart(2,'0'));
+  let h='<div class="sgwrap"><div class="sghd">&#128202; 節間成績'
+    +'<span class="sgsub">今節ここまで（各日：レースNo＝進入枠色／ST／着順・左が初日）</span></div>';
+  h+='<div class="sgscroll"><table class="sg"><thead><tr><th class="sgw">枠</th>';
+  g.d.forEach(d=>{h+='<th>'+d[0]+'</th>';});
+  h+='</tr></thead><tbody>';
+  for(let w=0;w<6;w++){
+    h+='<tr><td class="sgw">'+chip(w+1,'mc')+'</td>';
+    const row=g.r[w]||[];
+    for(let k=0;k<g.d.length;k++){
+      const c=row[k];
+      if(!c){h+='<td class="sgcell sgempty">–</td>';continue;}
+      const race=c[0],lane=c[1],res=c[2],st=c[3];
+      const lc=LC[lane]||['#2a3852','#e6ecf5'];
+      const fin=/^[1-6]$/.test(res);
+      const rcls=res==='1'?'sgr1':res==='2'?'sgr2':res==='3'?'sgr3':fin?'sgr46':'sgrx';
+      h+='<td class="sgcell">'
+        +'<span class="sgrace" style="background:'+lc[0]+';color:'+lc[1]+'">'+race+'R</span>'
+        +'<span class="sgst">'+(res==='F'?'F':stf(st))+'</span>'
+        +'<span class="sgres '+rcls+'">'+(fin?res+'着':res)+'</span>'
+        +'</td>';
+    }
+    h+='</tr>';
+  }
+  h+='</tbody></table></div>';
+  h+='<div class="legend" style="margin:6px 0 2px">※ 今節の各日成績（左＝初日）。レースNoの色＝その日の進入(枠)。中段＝ST（Fはフライング）、下段＝着順。空欄＝欠場/データなし。朝の番組表＋K-fileから生成。</div></div>';
+  return h;
 }
 function exView(r){
   const e=r.ex; if(!e)return '';
