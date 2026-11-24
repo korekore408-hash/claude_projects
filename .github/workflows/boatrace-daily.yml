@@ -21,6 +21,16 @@ on:
     - cron: '41 3 * * *'    # 03:41 UTC = 12:41 JST（朝の枠が全滅した場合の同日リカバリ①）
     - cron: '41 6 * * *'    # 06:41 UTC = 15:41 JST（同②）
   workflow_dispatch:        # 手動実行も可
+  # 自己修復トリガ：確実に回る update ジョブの完了を種火にする。GitHub の cron が朝の
+  # daily 枠を取りこぼし「当日」が過去日で凍結しても、update 完了ごとに gate が
+  # today.html の base を点検し、過去日のときだけ daily を1回走らせて当日へロールオーバー
+  # する（＝スケジューラの取りこぼしに依存しない）。通常日は gate が go=0＝スキップ（冪等・
+  # 無負荷）。暴走を招いた旧構成は逆向き（daily→update の長時間ループ多重起動）であり、
+  # ここは update→daily（短時間・冪等・直列）なので再発しない。GITHUB_TOKEN の push は
+  # 追加のワークフローを起動しないためループも生じない。
+  workflow_run:
+    workflows: ["boatrace-update"]
+    types: [completed]
 
 concurrency:
   group: boatrace-daily
@@ -30,7 +40,39 @@ permissions:
   contents: write           # 生成物をリポジトリに push するため
 
 jobs:
+  # 実行要否ゲート：schedule / 手動は常にビルド。update 完了トリガ(workflow_run)のときだけ、
+  # コミット済み today.html の base が JST 当日より古い場合に限りビルドする（＝朝の枠が全滅して
+  # 当日が凍結したときの自己修復）。通常日（base が当日）は go=0 でスキップ＝無駄な再ビルドをしない。
+  gate:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo
+    outputs:
+      go: ${{ steps.g.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: decide whether to build
+        id: g
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
+            echo "go=1" >> "$GITHUB_OUTPUT"
+            echo "event=${{ github.event_name }} → 常にビルド"
+            exit 0
+          fi
+          today=$(date +%Y-%m-%d)
+          base=$(grep -o '"base":"[0-9-]*"' boatrace/today.html | head -1 | sed 's/.*"base":"//; s/"$//')
+          echo "today(JST)=$today  app base=$base  (trigger=update完了)"
+          if [ -n "$base" ] && [[ "$base" < "$today" ]]; then
+            echo "go=1" >> "$GITHUB_OUTPUT"
+            echo "base が過去日 → 自己修復ビルドを実行"
+          else
+            echo "go=0" >> "$GITHUB_OUTPUT"
+            echo "base は当日 → スキップ（冪等・無負荷）"
+          fi
+
   build:
+    needs: gate
+    if: needs.gate.outputs.go == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
